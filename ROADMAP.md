@@ -48,4 +48,8 @@
 [x] `/cwd` slash command + picker modal to switch the working directory at runtime
 [x] shrink viewport on mobile when virtual keyboard opens (visualViewport)
 [x] paste or drag/drop images into the composer as attachments
+[x] `--model <provider/id>` cli flag for default model selection
+[x] `--skill <path>` cli flag for additional skill sources (repeatable)
+[x] `--skill-allow` / `--skill-allow-file` cli flags for skill whitelist
+[x] `--hide-model` cli flag to hide the model name in the status bar
 ```

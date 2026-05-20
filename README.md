@@ -63,6 +63,11 @@ command-line flags:
 | flag | purpose |
 | --- | --- |
 | `--listen <host:port>` | http bind address; takes precedence over `HOST`/`PORT`. use `:port` for default host, or `[::1]:port` for ipv6. |
+| `--model <provider/id>` | default model for new sessions (e.g. `anthropic/claude-opus-4-7`). bare `id` is resolved against the model registry. |
+| `--skill <path>` | additional skill source (file or directory). repeatable, or use `:` / `,` to combine. |
+| `--skill-allow <names>` | comma-separated skill name whitelist; only these skills are loaded. |
+| `--skill-allow-file <path>` | whitelist file (one name per line, `#` for comments). missing file behaves as if unset. |
+| `--hide-model` | hide the model name shown in the status bar. |
 
 environment variables:
 
@@ -70,6 +75,11 @@ environment variables:
 | --- | --- | --- |
 | `PI_WEBUI_HOST` | `127.0.0.1` | http bind address |
 | `PI_WEBUI_PORT` | `4096` | http port |
+| `PI_WEBUI_MODEL` | (unset) | default model, same syntax as `--model` |
+| `PI_WEBUI_SKILLS` | (unset) | extra skill paths, `:` or `,` separated |
+| `PI_WEBUI_SKILL_ALLOW` | (unset) | skill name whitelist (comma-separated) |
+| `PI_WEBUI_SKILL_ALLOW_FILE` | (unset) | skill whitelist file path |
+| `PI_WEBUI_HIDE_MODEL` | `0` | `1` hides the model name in the status bar |
 | `PI_PROJECT_CWD` | `process.cwd()` | project directory used for sessions |
 | `PI_AGENT_DIR` | pi default (`~/.pi/agent`) | pi agent config directory |
 | `PI_SESSION_DIR` | pi default | session storage directory |
@@ -79,8 +89,14 @@ examples:
 
 ```bash
 pi-webui --listen 0.0.0.0:3000
+pi-webui --model anthropic/claude-opus-4-7 --hide-model
+pi-webui --skill ~/.claude/skills --skill-allow brainstorming,verify
 HOST=0.0.0.0 PORT=3000 PI_PROJECT_CWD=/path/to/project npm start
 ```
+
+when launched via the pi extension, equivalent pi flags are available:
+`--webui-model`, `--webui-skill`, `--webui-skill-allow`,
+`--webui-skill-allow-file`, `--webui-hide-model`.
 
 ## attachments
 
