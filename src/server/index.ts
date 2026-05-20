@@ -85,30 +85,51 @@ function printHelp() {
     "existing persisted pi sessions.",
     "",
     "options:",
-    "  --listen <host:port>  http bind address; takes precedence over PI_WEBUI_HOST/PI_WEBUI_PORT.",
-    "                        use ':port' for default host, or '[::1]:port' for ipv6.",
-    "  -h, --help            show this help and exit",
+    "  --listen <host:port>        http bind address; takes precedence over PI_WEBUI_HOST/PI_WEBUI_PORT.",
+    "                              use ':port' for default host, or '[::1]:port' for ipv6.",
+    "  --model <provider/id>       default model for new sessions (e.g. anthropic/claude-opus-4-7).",
+    "                              may be a bare id; the model registry resolves the match.",
+    "  --skill <path>              additional skill path (file or directory). repeatable;",
+    "                              or use ':' / ',' to combine in one value.",
+    "  --skill-allow <names>       comma-separated skill name whitelist; only these skills load.",
+    "  --skill-allow-file <path>   whitelist file (one name per line; '#' for comments).",
+    "                              file missing => behaves as if not set (all skills load).",
+    "  -h, --help                  show this help and exit",
     "",
     "environment variables:",
-    `  PI_WEBUI_HOST     http bind host (default ${DEFAULT_HOST})`,
-    `  PI_WEBUI_PORT     http bind port (default ${DEFAULT_PORT})`,
-    "  PI_PROJECT_CWD    project directory used for sessions (default cwd)",
-    "  PI_AGENT_DIR      pi agent config directory (default ~/.pi/agent)",
-    "  PI_SESSION_DIR    session storage directory (default pi default)",
+    `  PI_WEBUI_HOST              http bind host (default ${DEFAULT_HOST})`,
+    `  PI_WEBUI_PORT              http bind port (default ${DEFAULT_PORT})`,
+    "  PI_WEBUI_MODEL             default model (same syntax as --model)",
+    "  PI_WEBUI_SKILLS            extra skill paths, ':' or ',' separated",
+    "  PI_WEBUI_SKILL_ALLOW       skill whitelist names (comma-separated)",
+    "  PI_WEBUI_SKILL_ALLOW_FILE  skill whitelist file path",
+    "  PI_PROJECT_CWD             project directory used for sessions (default cwd)",
+    "  PI_AGENT_DIR               pi agent config directory (default ~/.pi/agent)",
+    "  PI_SESSION_DIR             session storage directory (default pi default)",
     "",
     "examples:",
     "  pi-webui --listen 0.0.0.0:3000",
+    "  pi-webui --model anthropic/claude-opus-4-7",
+    "  pi-webui --skill ~/.claude/skills --skill-allow brainstorming,verify",
     "  PI_WEBUI_HOST=0.0.0.0 PI_WEBUI_PORT=3000 pi-webui",
   ];
   process.stdout.write(lines.join("\n") + "\n");
 }
 
 function parseArgs(argv) {
-  const out = {};
+  const out = { skill: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--listen") out.listen = argv[++i];
     else if (a.startsWith("--listen=")) out.listen = a.slice("--listen=".length);
+    else if (a === "--model") out.model = argv[++i];
+    else if (a.startsWith("--model=")) out.model = a.slice("--model=".length);
+    else if (a === "--skill") out.skill.push(argv[++i]);
+    else if (a.startsWith("--skill=")) out.skill.push(a.slice("--skill=".length));
+    else if (a === "--skill-allow") out.skillAllow = argv[++i];
+    else if (a.startsWith("--skill-allow=")) out.skillAllow = a.slice("--skill-allow=".length);
+    else if (a === "--skill-allow-file") out.skillAllowFile = argv[++i];
+    else if (a.startsWith("--skill-allow-file=")) out.skillAllowFile = a.slice("--skill-allow-file=".length);
     else if (a === "--help" || a === "-h") out.help = true;
     else throw new Error(`unknown argument: ${a}`);
   }
@@ -134,6 +155,56 @@ const port = listenFromArg?.port ?? Number(process.env.PI_WEBUI_PORT || DEFAULT_
 // package root, so walk up two levels from import.meta.url.
 const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "public");
 const appCwd = resolve(process.env.PI_PROJECT_CWD || process.cwd());
+
+// 模型 pattern 來自 CLI 或環境變數,啟動後解析成 Model 物件
+const cliModelPattern = (args.model || process.env.PI_WEBUI_MODEL || "").trim() || null;
+
+// 收集所有技能路徑:--skill (可重複) 加上 PI_WEBUI_SKILLS (`:` 或 `,` 分隔)。
+// 解析為絕對路徑,沿用 appCwd 與 ~ 展開,確保切換 cwd 後仍指向同一處。
+function splitPathList(s) {
+  return String(s || "")
+    .split(/[:,]/)
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+function expandHome(p) {
+  if (!p) return p;
+  if (p === "~") return process.env.HOME || p;
+  if (p.startsWith("~/")) return resolve(process.env.HOME || "", p.slice(2));
+  return p;
+}
+const cliSkillPaths = [
+  ...(args.skill || []),
+  ...splitPathList(process.env.PI_WEBUI_SKILLS),
+]
+  .map((p) => resolve(appCwd, expandHome(p)))
+  .filter((p, i, arr) => arr.indexOf(p) === i);
+
+// 解析技能白名單:CLI flag > 檔案 > null (= 全部載入)。
+// 檔案不存在視同未設定。空檔(或全註解)會回傳空陣列,代表「白名單為空」=> 全部過濾掉。
+function readSkillAllowFile(path) {
+  if (!path) return null;
+  const resolved = resolve(appCwd, expandHome(path));
+  if (!existsSync(resolved)) return null;
+  const text = readFileSync(resolved, "utf8");
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/#.*$/, "").trim())
+    .filter(Boolean);
+}
+function computeSkillAllow(cliValue, filePath) {
+  if (cliValue && cliValue.trim()) {
+    return cliValue
+      .split(/[,\s]+/)
+      .map((v) => v.trim())
+      .filter(Boolean);
+  }
+  return readSkillAllowFile(filePath);
+}
+const cliSkillAllow = computeSkillAllow(
+  args.skillAllow || process.env.PI_WEBUI_SKILL_ALLOW || "",
+  args.skillAllowFile || process.env.PI_WEBUI_SKILL_ALLOW_FILE || "",
+);
 const HOME_DIR = process.env.HOME || "";
 const ALLOW_ANY_CWD = process.env.PI_WEBUI_CWD_ALLOW_ANY === "1";
 
@@ -232,14 +303,68 @@ function resolveScopedModelsFromSettings(services) {
   return matched;
 }
 
+// 依 CLI 白名單把 ResourceLoader 解析出的 skills 過濾掉名單外項目;
+// 不影響 diagnostics 流回前端。
+function buildSkillsOverride(allow) {
+  if (!allow) return undefined;
+  const allowSet = new Set(allow);
+  return (base) => ({
+    skills: base.skills.filter((s) => allowSet.has(s.name)),
+    diagnostics: base.diagnostics,
+  });
+}
+
+// 從 modelRegistry 把 "provider/id" 或單獨 id 解析成 Model 物件。
+// 找不到時印警告,讓 SDK 回退到預設模型。
+function resolveCliModel(services, pattern) {
+  if (!pattern) return undefined;
+  const available = services.modelRegistry.getAvailable();
+  const found =
+    available.find((m) => `${m.provider}/${m.id}` === pattern) ||
+    available.find((m) => m.id === pattern);
+  if (!found) {
+    process.stderr.write(
+      `[pi-webui] warning: model not found in registry: ${pattern}\n`,
+    );
+    return undefined;
+  }
+  return found;
+}
+
 const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
-  const services = await createAgentSessionServices({ cwd, agentDir });
+  const services = await createAgentSessionServices({
+    cwd,
+    agentDir,
+    resourceLoaderOptions: {
+      additionalSkillPaths: cliSkillPaths.length > 0 ? cliSkillPaths : undefined,
+      skillsOverride: buildSkillsOverride(cliSkillAllow),
+    },
+  });
   const scopedModels = resolveScopedModelsFromSettings(services);
+  const cliModel = resolveCliModel(services, cliModelPattern);
+
+  // 啟動時 log 一次,方便確認 --skill / --skill-allow 是否生效
+  try {
+    const { skills, diagnostics: skillDiags } = services.resourceLoader.getSkills();
+    logger.info("skills loaded", {
+      cwd,
+      count: skills.length,
+      names: skills.map((s) => s.name),
+      whitelist: cliSkillAllow ?? null,
+      diagnostics: skillDiags.length,
+    });
+  } catch (error) {
+    logger.warn("skills introspection failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   return {
     ...(await createAgentSessionFromServices({
       services,
       sessionManager,
       sessionStartEvent,
+      model: cliModel,
       scopedModels,
     })),
     services,

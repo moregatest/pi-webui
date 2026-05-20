@@ -83,6 +83,11 @@ function openUrl(url: string) {
 
 interface StartOptions {
 	listen?: string;
+	model?: string;
+	// 路徑用 ':' 或 ',' 分隔多個;會在這邊展開成多個 --skill 參數
+	skills?: string;
+	skillAllow?: string;
+	skillAllowFile?: string;
 	// When true, the spawned server is tied to this pi process (terminated on
 	// session_shutdown). When false, the server is detached and survives pi exit.
 	owned?: boolean;
@@ -96,21 +101,49 @@ function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 	}
 	try {
 		const __dirname = dirname(fileURLToPath(import.meta.url));
-		const serverPath = join(__dirname, "..", "server.mjs");
+		const serverPath = join(__dirname, "..", "server", "index.js");
 		const serverArgs = [serverPath];
 		if (opts.listen) serverArgs.push("--listen", opts.listen);
+		if (opts.model) serverArgs.push("--model", opts.model);
+		if (opts.skills) {
+			for (const p of opts.skills.split(/[:,]/).map((s) => s.trim()).filter(Boolean)) {
+				serverArgs.push("--skill", p);
+			}
+		}
+		if (opts.skillAllow) serverArgs.push("--skill-allow", opts.skillAllow);
+		if (opts.skillAllowFile) serverArgs.push("--skill-allow-file", opts.skillAllowFile);
 		const detached = !opts.owned;
-		const child = spawn("node", serverArgs, { detached, stdio: "ignore" });
+		// 收集 child stderr，避免 spawn 後因 MODULE_NOT_FOUND 等錯誤被吞掉
+		const child = spawn("node", serverArgs, {
+			detached,
+			stdio: ["ignore", "ignore", "pipe"],
+		});
 		const newPid = child.pid!;
 		setPid(newPid);
+		let stderrBuf = "";
+		child.stderr?.on("data", (chunk: Buffer) => {
+			stderrBuf += chunk.toString();
+			if (stderrBuf.length > 4096) stderrBuf = stderrBuf.slice(-4096);
+		});
+		// 若 child 在啟動初期就退出（例如路徑錯誤），清掉 pidfile 並把 stderr 回報出來
+		child.once("exit", (code, signal) => {
+			if (ownedChild === child) ownedChild = null;
+			const pidStillOurs = getPid() === newPid;
+			if (pidStillOurs) clearPid();
+			if (code && code !== 0) {
+				const tail = stderrBuf.trim().split("\n").slice(-3).join(" | ");
+				ctx.ui.notify(
+					`pi-webui server exited (code=${code}${signal ? `, signal=${signal}` : ""})${tail ? `: ${tail}` : ""}`,
+					"error",
+				);
+			}
+		});
 		if (detached) {
 			child.unref();
+			// stderr 內部是 Socket，型別上是 Readable 沒有 unref；用結構性 cast 跳過編譯期檢查
+			(child.stderr as unknown as { unref?: () => void } | null)?.unref?.();
 		} else {
 			ownedChild = child;
-			child.once("exit", () => {
-				if (ownedChild === child) ownedChild = null;
-				clearPid();
-			});
 		}
 		ctx.ui.notify(`launching pi-webui server at ${WEBUI_URL}`, "info");
 	} catch (error) {
@@ -185,6 +218,30 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		default: "",
 	});
 
+	pi.registerFlag?.("webui-model", {
+		description: "default model for pi-webui sessions (provider/id, or bare id). Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
+	pi.registerFlag?.("webui-skill", {
+		description: "extra skill paths for pi-webui (':' or ',' separated). Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
+	pi.registerFlag?.("webui-skill-allow", {
+		description: "skill whitelist for pi-webui (comma-separated names). Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
+	pi.registerFlag?.("webui-skill-allow-file", {
+		description: "skill whitelist file path for pi-webui. Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
 	pi.on("session_shutdown", () => {
 		const child = ownedChild;
 		if (!child) return;
@@ -221,10 +278,24 @@ export default function webuiExtension(pi: ExtensionAPI) {
 	// --webui flag is only meaningful for a top-level `pi --webui` invocation.
 	setImmediate(() => {
 		let listen: string;
+		let model: string;
+		let skills: string;
+		let skillAllow: string;
+		let skillAllowFile: string;
 		let want: boolean;
 		try {
 			listen = String(pi.getFlag?.("webui-listen") || "").trim();
-			want = !!pi.getFlag?.("webui") || listen.length > 0;
+			model = String(pi.getFlag?.("webui-model") || "").trim();
+			skills = String(pi.getFlag?.("webui-skill") || "").trim();
+			skillAllow = String(pi.getFlag?.("webui-skill-allow") || "").trim();
+			skillAllowFile = String(pi.getFlag?.("webui-skill-allow-file") || "").trim();
+			want =
+				!!pi.getFlag?.("webui") ||
+				listen.length > 0 ||
+				model.length > 0 ||
+				skills.length > 0 ||
+				skillAllow.length > 0 ||
+				skillAllowFile.length > 0;
 		} catch {
 			return;
 		}
@@ -235,6 +306,13 @@ export default function webuiExtension(pi: ExtensionAPI) {
 					process.stderr.write(`[pi-webui] ${level ?? "info"}: ${msg}\n`),
 			},
 		} as unknown as ExtensionCommandContext;
-		runStart(stubCtx, { listen: listen || undefined, owned: true });
+		runStart(stubCtx, {
+			listen: listen || undefined,
+			model: model || undefined,
+			skills: skills || undefined,
+			skillAllow: skillAllow || undefined,
+			skillAllowFile: skillAllowFile || undefined,
+			owned: true,
+		});
 	});
 }
