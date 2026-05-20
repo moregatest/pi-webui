@@ -1075,6 +1075,21 @@ class NativePiSessionController {
       }
     }
 
+    // 將載入的技能以 `skill:<name>` 形式列入(pi 的 /skill:name args 規格)
+    try {
+      const skills = this.runtime?.services?.resourceLoader?.getSkills?.()?.skills ?? [];
+      for (const s of skills) {
+        commands.push({
+          name: `skill:${s.name}`,
+          description: s.description || "",
+          source: "skill",
+          supported: true,
+        });
+      }
+    } catch {
+      /* ignore — 技能載入失敗不應阻擋指令列舉 */
+    }
+
     return commands;
   }
 
@@ -1288,12 +1303,14 @@ class NativePiSessionController {
           await this.runCommand(`slash:${name}`, () => handler(this, arg));
           return;
         }
-        // Fall through to extension/template dispatch via session.prompt — it
-        // detects "/cmd ..." text and routes to the registered handler.
+        // Fall through to extension/template/skill dispatch via session.prompt —
+        // it detects "/cmd ..." text and routes to the registered handler or
+        // (for "/skill:name args") expands the skill body inline.
         const runner = this.session.extensionRunner;
         const isExtension = runner?.getCommand && runner.getCommand(name);
         const isTemplate = (this.session.promptTemplates ?? []).some((t) => t.name === name);
-        if (isExtension || isTemplate) {
+        const isSkill = name.startsWith("skill:");
+        if (isExtension || isTemplate || isSkill) {
           const text = arg ? `/${name} ${arg}` : `/${name}`;
           await this.runCommand(`slash:${name}`, async () => {
             await this.session.prompt(text);
