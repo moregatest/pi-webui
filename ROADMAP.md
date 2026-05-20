@@ -55,4 +55,5 @@
 [x] auto-detect `<cwd>/.pi/skills-allow.txt` when no skill whitelist is given
 [x] surface loaded skills as `/skill:<name>` slash commands in the webui
 [x] `/webui start <flags>` forwards server flags inline from the pi extension
+[x] `--command-allow` / `--command-allow-file` slash command whitelist with auto-detect of `<cwd>/.pi/commands-allow.txt`
 ```

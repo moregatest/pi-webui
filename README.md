@@ -67,6 +67,8 @@ command-line flags:
 | `--skill <path>` | additional skill source (file or directory). repeatable, or use `:` / `,` to combine. |
 | `--skill-allow <names>` | comma-separated skill name whitelist; only these skills are loaded. |
 | `--skill-allow-file <path>` | whitelist file (one name per line, `#` for comments). missing file behaves as if unset. when neither this flag nor `PI_WEBUI_SKILL_ALLOW_FILE` is set, `<cwd>/.pi/skills-allow.txt` is auto-detected if present. |
+| `--command-allow <names>` | comma-separated slash command whitelist (names like `new`, `cwd`, `skill:foo`). only these commands appear in the slash menu and may be executed. |
+| `--command-allow-file <path>` | slash command whitelist file (one name per line, `#` for comments). missing file behaves as if unset. when neither this flag nor `PI_WEBUI_COMMAND_ALLOW_FILE` is set, `<cwd>/.pi/commands-allow.txt` is auto-detected if present. |
 | `--hide-model` | hide the model name shown in the status bar. |
 
 environment variables:
@@ -79,6 +81,8 @@ environment variables:
 | `PI_WEBUI_SKILLS` | (unset) | extra skill paths, `:` or `,` separated |
 | `PI_WEBUI_SKILL_ALLOW` | (unset) | skill name whitelist (comma-separated) |
 | `PI_WEBUI_SKILL_ALLOW_FILE` | (unset) | skill whitelist file path |
+| `PI_WEBUI_COMMAND_ALLOW` | (unset) | slash command name whitelist (comma-separated) |
+| `PI_WEBUI_COMMAND_ALLOW_FILE` | (unset) | slash command whitelist file path |
 | `PI_WEBUI_HIDE_MODEL` | `0` | `1` hides the model name in the status bar |
 | `PI_PROJECT_CWD` | `process.cwd()` | project directory used for sessions |
 | `PI_AGENT_DIR` | pi default (`~/.pi/agent`) | pi agent config directory |
@@ -96,7 +100,22 @@ HOST=0.0.0.0 PORT=3000 PI_PROJECT_CWD=/path/to/project npm start
 
 when launched via the pi extension, equivalent pi flags are available:
 `--webui-model`, `--webui-skill`, `--webui-skill-allow`,
-`--webui-skill-allow-file`, `--webui-hide-model`.
+`--webui-skill-allow-file`, `--webui-command-allow`,
+`--webui-command-allow-file`, `--webui-hide-model`.
+
+to lock down the slash command menu for a deployment, drop a
+`.pi/commands-allow.txt` in the project root with one command name per line
+(no leading `/`). missing file means all commands stay available; an empty
+file (or all-comments) means no commands are reachable.
+
+```
+# .pi/commands-allow.txt — bare minimum for support/customer deployments
+new
+quit
+help
+hotkeys
+skill:brainstorming
+```
 
 ## attachments
 
@@ -115,7 +134,8 @@ see [ROADMAP.md](ROADMAP.md) for implemented and planned features.
 src/
   extension/   pi extension entry (slash command + auto-start flag)
   server/      http + websocket server hosting the pi sdk runtime
-                 index.ts, event-log.ts, log.ts, watch.ts, ext-ui.ts
+                 index.ts, event-log.ts, log.ts, watch.ts, ext-ui.ts,
+                 command-allow.ts
 public/        browser client (vanilla js, no build step)
 test/          node --test files
 ```

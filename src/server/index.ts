@@ -38,6 +38,10 @@ import {
 import { createEventLog } from "./event-log.js";
 import { log as logger } from "./log.js";
 import { createExtUiBridge } from "./ext-ui.js";
+import {
+  computeCommandAllow,
+  resolveCommandAllowFile,
+} from "./command-allow.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -94,6 +98,13 @@ function printHelp() {
     "  --skill-allow <names>       comma-separated skill name whitelist; only these skills load.",
     "  --skill-allow-file <path>   whitelist file (one name per line; '#' for comments).",
     "                              file missing => behaves as if not set (all skills load).",
+    "  --command-allow <names>     comma-separated slash command whitelist (names like 'new',",
+    "                              'cwd', 'skill:foo'). only these commands appear in the slash",
+    "                              menu and may be executed.",
+    "  --command-allow-file <path> whitelist file (one name per line; '#' for comments).",
+    "                              file missing => behaves as if not set (all commands allowed).",
+    "                              when neither flag nor env var is set, <cwd>/.pi/commands-allow.txt",
+    "                              is auto-detected if present.",
     "  --hide-model                hide the model name shown in the status bar.",
     "  -h, --help                  show this help and exit",
     "",
@@ -104,6 +115,8 @@ function printHelp() {
     "  PI_WEBUI_SKILLS            extra skill paths, ':' or ',' separated",
     "  PI_WEBUI_SKILL_ALLOW       skill whitelist names (comma-separated)",
     "  PI_WEBUI_SKILL_ALLOW_FILE  skill whitelist file path",
+    "  PI_WEBUI_COMMAND_ALLOW     slash command whitelist names (comma-separated)",
+    "  PI_WEBUI_COMMAND_ALLOW_FILE slash command whitelist file path",
     "  PI_WEBUI_HIDE_MODEL        '1' to hide the model name in the status bar",
     "  PI_PROJECT_CWD             project directory used for sessions (default cwd)",
     "  PI_AGENT_DIR               pi agent config directory (default ~/.pi/agent)",
@@ -132,6 +145,10 @@ function parseArgs(argv) {
     else if (a.startsWith("--skill-allow=")) out.skillAllow = a.slice("--skill-allow=".length);
     else if (a === "--skill-allow-file") out.skillAllowFile = argv[++i];
     else if (a.startsWith("--skill-allow-file=")) out.skillAllowFile = a.slice("--skill-allow-file=".length);
+    else if (a === "--command-allow") out.commandAllow = argv[++i];
+    else if (a.startsWith("--command-allow=")) out.commandAllow = a.slice("--command-allow=".length);
+    else if (a === "--command-allow-file") out.commandAllowFile = argv[++i];
+    else if (a.startsWith("--command-allow-file=")) out.commandAllowFile = a.slice("--command-allow-file=".length);
     else if (a === "--hide-model") out.hideModel = true;
     else if (a === "--help" || a === "-h") out.help = true;
     else throw new Error(`unknown argument: ${a}`);
@@ -221,6 +238,22 @@ const cliSkillAllow = computeSkillAllow(
   args.skillAllow || process.env.PI_WEBUI_SKILL_ALLOW || "",
   effectiveSkillAllowFile,
 );
+
+// slash command 白名單。對稱 skills-allow 機制,但比對 collectSlashCommands()
+// 出口的指令 name(builtin/webui/template/extension 純名;skill 為 "skill:<name>")。
+// 模組層級算出後在閘門 1 (collectSlashCommands) 與閘門 2 (slash_command handler) 共用。
+const effectiveCommandAllowFile = resolveCommandAllowFile(
+  args.commandAllowFile,
+  process.env.PI_WEBUI_COMMAND_ALLOW_FILE,
+  appCwd,
+);
+const cliCommandAllow = computeCommandAllow(
+  args.commandAllow || process.env.PI_WEBUI_COMMAND_ALLOW || "",
+  effectiveCommandAllowFile,
+  appCwd,
+  process.env.HOME || "",
+);
+const cliCommandAllowSet = cliCommandAllow ? new Set(cliCommandAllow) : null;
 
 // 是否在 status bar 隱藏模型名稱。CLI 與環境變數任一為真即生效。
 const hideModel = !!args.hideModel || process.env.PI_WEBUI_HIDE_MODEL === "1";
@@ -378,6 +411,12 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
       error: error instanceof Error ? error.message : String(error),
     });
   }
+
+  logger.info("commands allowlist", {
+    count: cliCommandAllow?.length ?? null,
+    whitelist: cliCommandAllow ?? null,
+    whitelistSource: effectiveCommandAllowFile || null,
+  });
 
   return {
     ...(await createAgentSessionFromServices({
@@ -1104,6 +1143,10 @@ class NativePiSessionController {
       /* ignore — 技能載入失敗不應阻擋指令列舉 */
     }
 
+    // 套用 command 白名單。未設定 → 不過濾;設定後僅保留名單內。
+    if (cliCommandAllowSet) {
+      return commands.filter((c) => cliCommandAllowSet.has(c.name));
+    }
     return commands;
   }
 
@@ -1312,6 +1355,19 @@ class NativePiSessionController {
         const name = String(payload.name || "").trim();
         const arg = typeof payload.arg === "string" ? payload.arg : "";
         logger.info("slash command", { name, hasArg: arg.length > 0 });
+        // 閘門 2:白名單拒絕。null = 未設定時短路跳過。
+        if (cliCommandAllowSet && !cliCommandAllowSet.has(name)) {
+          logger.warn("slash command blocked by allowlist", { name });
+          sendJson(this.ws, {
+            type: "command_result",
+            payload: {
+              command: `slash:${name}`,
+              ok: false,
+              error: `/${name} is disabled by the command whitelist`,
+            },
+          });
+          return;
+        }
         const handler = SLASH_HANDLERS[name];
         if (handler) {
           await this.runCommand(`slash:${name}`, () => handler(this, arg));
