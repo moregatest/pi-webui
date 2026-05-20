@@ -52,4 +52,7 @@
 [x] `--skill <path>` cli flag for additional skill sources (repeatable)
 [x] `--skill-allow` / `--skill-allow-file` cli flags for skill whitelist
 [x] `--hide-model` cli flag to hide the model name in the status bar
+[x] auto-detect `<cwd>/.pi/skills-allow.txt` when no skill whitelist is given
+[x] surface loaded skills as `/skill:<name>` slash commands in the webui
+[x] `/webui start <flags>` forwards server flags inline from the pi extension
 ```

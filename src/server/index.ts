@@ -204,9 +204,22 @@ function computeSkillAllow(cliValue, filePath) {
   }
   return readSkillAllowFile(filePath);
 }
+// 若 CLI 與 env 都未指定 skill-allow-file,且 cwd 下有 .pi/skills-allow.txt,
+// 自動採用以省去每次 /webui start 都得帶完整路徑。
+function resolveSkillAllowFile(cliValue, envValue, cwd) {
+  if (cliValue) return cliValue;
+  if (envValue) return envValue;
+  const auto = resolve(cwd, ".pi/skills-allow.txt");
+  return existsSync(auto) ? auto : "";
+}
+const effectiveSkillAllowFile = resolveSkillAllowFile(
+  args.skillAllowFile,
+  process.env.PI_WEBUI_SKILL_ALLOW_FILE,
+  appCwd,
+);
 const cliSkillAllow = computeSkillAllow(
   args.skillAllow || process.env.PI_WEBUI_SKILL_ALLOW || "",
-  args.skillAllowFile || process.env.PI_WEBUI_SKILL_ALLOW_FILE || "",
+  effectiveSkillAllowFile,
 );
 
 // 是否在 status bar 隱藏模型名稱。CLI 與環境變數任一為真即生效。
@@ -357,6 +370,7 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
       count: skills.length,
       names: skills.map((s) => s.name),
       whitelist: cliSkillAllow ?? null,
+      whitelistSource: effectiveSkillAllowFile || null,
       diagnostics: skillDiags.length,
     });
   } catch (error) {

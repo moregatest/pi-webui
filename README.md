@@ -66,7 +66,7 @@ command-line flags:
 | `--model <provider/id>` | default model for new sessions (e.g. `anthropic/claude-opus-4-7`). bare `id` is resolved against the model registry. |
 | `--skill <path>` | additional skill source (file or directory). repeatable, or use `:` / `,` to combine. |
 | `--skill-allow <names>` | comma-separated skill name whitelist; only these skills are loaded. |
-| `--skill-allow-file <path>` | whitelist file (one name per line, `#` for comments). missing file behaves as if unset. |
+| `--skill-allow-file <path>` | whitelist file (one name per line, `#` for comments). missing file behaves as if unset. when neither this flag nor `PI_WEBUI_SKILL_ALLOW_FILE` is set, `<cwd>/.pi/skills-allow.txt` is auto-detected if present. |
 | `--hide-model` | hide the model name shown in the status bar. |
 
 environment variables:
