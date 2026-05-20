@@ -189,9 +189,50 @@ function runOpen(ctx: ExtensionCommandContext) {
 	ctx.ui.notify(`opening ${WEBUI_URL} in browser`, "info");
 }
 
-function dispatch(name: string, ctx: ExtensionCommandContext): boolean {
+// 簡易 shell-like tokenizer:支援單/雙引號與反斜線 escape,空白以外的 token 分割。
+function tokenize(s: string): string[] {
+	const out: string[] = [];
+	const re = /"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|(\S+)/g;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(s)) !== null) {
+		if (m[1] !== undefined) out.push(m[1].replace(/\\(.)/g, "$1"));
+		else if (m[2] !== undefined) out.push(m[2].replace(/\\(.)/g, "$1"));
+		else if (m[3] !== undefined) out.push(m[3]);
+	}
+	return out;
+}
+
+// 解析 `/webui start ...` 後續 tokens 成 StartOptions。
+function parseStartFlags(tokens: string[]): StartOptions {
+	const opts: StartOptions = {};
+	const skills: string[] = [];
+	const valueOf = (i: number, name: string): string => {
+		const v = tokens[i];
+		if (v === undefined) throw new Error(`${name} requires a value`);
+		return v;
+	};
+	for (let i = 0; i < tokens.length; i++) {
+		const t = tokens[i];
+		if (t === "--listen") opts.listen = valueOf(++i, t);
+		else if (t.startsWith("--listen=")) opts.listen = t.slice("--listen=".length);
+		else if (t === "--model") opts.model = valueOf(++i, t);
+		else if (t.startsWith("--model=")) opts.model = t.slice("--model=".length);
+		else if (t === "--skill") skills.push(valueOf(++i, t));
+		else if (t.startsWith("--skill=")) skills.push(t.slice("--skill=".length));
+		else if (t === "--skill-allow") opts.skillAllow = valueOf(++i, t);
+		else if (t.startsWith("--skill-allow=")) opts.skillAllow = t.slice("--skill-allow=".length);
+		else if (t === "--skill-allow-file") opts.skillAllowFile = valueOf(++i, t);
+		else if (t.startsWith("--skill-allow-file=")) opts.skillAllowFile = t.slice("--skill-allow-file=".length);
+		else if (t === "--hide-model") opts.hideModel = true;
+		else throw new Error(`unknown flag: ${t}`);
+	}
+	if (skills.length > 0) opts.skills = skills.join(":");
+	return opts;
+}
+
+function dispatch(name: string, ctx: ExtensionCommandContext, opts?: StartOptions): boolean {
 	switch (name) {
-		case "start": runStart(ctx); return true;
+		case "start": runStart(ctx, opts); return true;
 		case "status": runStatus(ctx); return true;
 		case "stop": runStop(ctx); return true;
 		case "open": runOpen(ctx); return true;
@@ -265,15 +306,36 @@ export default function webuiExtension(pi: ExtensionAPI) {
 	pi.registerCommand("webui", {
 		description: "control the pi-webui server",
 		handler: async (args, ctx) => {
-			const command = (args || "").trim().toLowerCase();
+			const raw = (args || "").trim();
 
-			if (!command || command === "help") {
+			if (!raw || raw.toLowerCase() === "help") {
 				await pickAndRun(ctx);
 				return;
 			}
 
-			if (!dispatch(command, ctx)) {
-				ctx.ui.notify(`unknown subcommand: ${command}`, "error");
+			const tokens = tokenize(raw);
+			const sub = (tokens.shift() || "").toLowerCase();
+
+			if (sub === "start") {
+				let opts: StartOptions;
+				try {
+					opts = parseStartFlags(tokens);
+				} catch (e) {
+					const msg = e instanceof Error ? e.message : String(e);
+					ctx.ui.notify(`/webui start: ${msg}`, "error");
+					return;
+				}
+				dispatch("start", ctx, opts);
+				return;
+			}
+
+			if (tokens.length > 0) {
+				ctx.ui.notify(`/webui ${sub}: extra arguments not allowed`, "error");
+				return;
+			}
+
+			if (!dispatch(sub, ctx)) {
+				ctx.ui.notify(`unknown subcommand: ${sub}`, "error");
 				await pickAndRun(ctx);
 			}
 		},
