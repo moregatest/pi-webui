@@ -94,6 +94,7 @@ function printHelp() {
     "  --skill-allow <names>       comma-separated skill name whitelist; only these skills load.",
     "  --skill-allow-file <path>   whitelist file (one name per line; '#' for comments).",
     "                              file missing => behaves as if not set (all skills load).",
+    "  --hide-model                hide the model name shown in the status bar.",
     "  -h, --help                  show this help and exit",
     "",
     "environment variables:",
@@ -103,6 +104,7 @@ function printHelp() {
     "  PI_WEBUI_SKILLS            extra skill paths, ':' or ',' separated",
     "  PI_WEBUI_SKILL_ALLOW       skill whitelist names (comma-separated)",
     "  PI_WEBUI_SKILL_ALLOW_FILE  skill whitelist file path",
+    "  PI_WEBUI_HIDE_MODEL        '1' to hide the model name in the status bar",
     "  PI_PROJECT_CWD             project directory used for sessions (default cwd)",
     "  PI_AGENT_DIR               pi agent config directory (default ~/.pi/agent)",
     "  PI_SESSION_DIR             session storage directory (default pi default)",
@@ -130,6 +132,7 @@ function parseArgs(argv) {
     else if (a.startsWith("--skill-allow=")) out.skillAllow = a.slice("--skill-allow=".length);
     else if (a === "--skill-allow-file") out.skillAllowFile = argv[++i];
     else if (a.startsWith("--skill-allow-file=")) out.skillAllowFile = a.slice("--skill-allow-file=".length);
+    else if (a === "--hide-model") out.hideModel = true;
     else if (a === "--help" || a === "-h") out.help = true;
     else throw new Error(`unknown argument: ${a}`);
   }
@@ -205,6 +208,9 @@ const cliSkillAllow = computeSkillAllow(
   args.skillAllow || process.env.PI_WEBUI_SKILL_ALLOW || "",
   args.skillAllowFile || process.env.PI_WEBUI_SKILL_ALLOW_FILE || "",
 );
+
+// 是否在 status bar 隱藏模型名稱。CLI 與環境變數任一為真即生效。
+const hideModel = !!args.hideModel || process.env.PI_WEBUI_HIDE_MODEL === "1";
 const HOME_DIR = process.env.HOME || "";
 const ALLOW_ANY_CWD = process.env.PI_WEBUI_CWD_ALLOW_ANY === "1";
 
@@ -773,6 +779,7 @@ class NativePiSessionController {
         homeDir: process.env.HOME || "",
         diagnostics: this.runtime.diagnostics,
         slashCommands: this.collectSlashCommands(),
+        hideModel,
       },
     });
     // Bootstrap is now driven by the client's `ready` message — they tell us

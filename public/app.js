@@ -44,6 +44,7 @@ let currentSessionState = null;
 const chatState = createChatState();
 let slashCommands = [];
 let homeDir = "";
+let hideModel = false;
 let slashFiltered = [];
 let slashIndex = 0;
 // Cursor into the server's session-event log. The server tags each
@@ -635,10 +636,12 @@ function connect() {
       case "connected":
         slashCommands = packet.payload.slashCommands || [];
         homeDir = packet.payload.homeDir || "";
+        hideModel = !!packet.payload.hideModel;
         logger.info("connected", {
           appCwd: packet.payload.appCwd,
           agentDir: packet.payload.agentDir,
           slashCommandCount: slashCommands.length,
+          hideModel,
         });
         if (packet.payload.diagnostics?.length) {
           for (const d of packet.payload.diagnostics) {
@@ -1008,9 +1011,12 @@ function renderStatusBar() {
   const name = s.sessionName ? `(${s.sessionName})` : "";
   const model = s.model ? `${s.model.provider}/${s.model.id}` : "(no model)";
   const think = s.thinkingLevel || "off";
+  const modelSpan = hideModel
+    ? ""
+    : `<span class="status-model">${escapeHtml(model)}</span> `;
   statusRight.innerHTML =
     `<span class="status-name">${escapeHtml(name)}</span> ` +
-    `<span class="status-model">${escapeHtml(model)}</span> ` +
+    modelSpan +
     `<span class="status-mode">•</span> ` +
     `<span class="status-thinking">${escapeHtml(think)}</span>`;
 }
