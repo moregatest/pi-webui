@@ -284,7 +284,6 @@ const trustProxy = !!args.trustProxy || process.env.PI_WEBUI_TRUST_PROXY === "1"
 const authEnabled = authPassword.length > 0;
 const authStore = authEnabled ? createAuthStore() : null;
 const LOGIN_PATH = "/login";
-const LOGIN_HTML = resolve(publicDir, "login.html");
 const HOME_DIR = process.env.HOME || "";
 const ALLOW_ANY_CWD = process.env.PI_WEBUI_CWD_ALLOW_ANY === "1";
 
@@ -477,10 +476,13 @@ function sendFile(res, filePath) {
 function readJsonBody(req, limit = 64 * 1024) {
   return new Promise((resolve, reject) => {
     let total = 0;
+    let destroyed = false;
     const chunks = [];
     req.on("data", (chunk) => {
+      if (destroyed) return;
       total += chunk.length;
       if (total > limit) {
+        destroyed = true;
         reject(new Error("Body too large"));
         req.destroy();
         return;
@@ -488,6 +490,7 @@ function readJsonBody(req, limit = 64 * 1024) {
       chunks.push(chunk);
     });
     req.on("end", () => {
+      if (destroyed) return;
       const raw = Buffer.concat(chunks).toString("utf8");
       if (!raw) return resolve({});
       try { resolve(JSON.parse(raw)); }
@@ -524,6 +527,8 @@ async function handleLogin(req, res) {
   catch (e) { return sendJsonHttp(res, 400, { ok: false, error: "Invalid request" }); }
   const submitted = typeof body?.password === "string" ? body.password : "";
   if (!comparePassword(submitted, authPassword)) {
+    // 250 ms 延遲:降低暴力破解速率,並讓錯密碼/對密碼的耗時差距變小,
+    // 不影響正常登入體感
     await sleep(250);
     return sendJsonHttp(res, 401, { ok: false, error: "Invalid password" });
   }
@@ -1593,7 +1598,7 @@ server.on("upgrade", (req, socket, head) => {
     return;
   }
   if (authEnabled && !authStore.verify(readAuthCookie(req.headers))) {
-    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+    socket.write("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return;
   }
