@@ -43,6 +43,15 @@ import {
   resolveCommandAllowFile,
 } from "./command-allow.js";
 import { listenWithFallback } from "./listen.js";
+import {
+  COOKIE_NAME,
+  buildClearCookie,
+  buildSetCookie,
+  comparePassword,
+  createAuthStore,
+  readAuthCookie,
+  shouldSetSecure,
+} from "./auth.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -106,6 +115,10 @@ function printHelp() {
     "                              file missing => behaves as if not set (all commands allowed).",
     "                              when neither flag nor env var is set, <cwd>/.pi/commands-allow.txt",
     "                              is auto-detected if present.",
+    "  --password <pw>             enable login; require this password to access the webui.",
+    "                              alias: PI_WEBUI_PASSWORD env var.",
+    "  --trust-proxy               honor X-Forwarded-Proto when deciding cookie Secure flag.",
+    "                              alias: PI_WEBUI_TRUST_PROXY=1 env var.",
     "  --hide-model                hide the model name shown in the status bar.",
     "  -h, --help                  show this help and exit",
     "",
@@ -118,6 +131,8 @@ function printHelp() {
     "  PI_WEBUI_SKILL_ALLOW_FILE  skill whitelist file path",
     "  PI_WEBUI_COMMAND_ALLOW     slash command whitelist names (comma-separated)",
     "  PI_WEBUI_COMMAND_ALLOW_FILE slash command whitelist file path",
+    "  PI_WEBUI_PASSWORD          enable login with this password (same as --password)",
+    "  PI_WEBUI_TRUST_PROXY       '1' to honor X-Forwarded-Proto for cookie Secure flag",
     "  PI_WEBUI_HIDE_MODEL        '1' to hide the model name in the status bar",
     "  PI_PROJECT_CWD             project directory used for sessions (default cwd)",
     "  PI_AGENT_DIR               pi agent config directory (default ~/.pi/agent)",
@@ -151,8 +166,14 @@ function parseArgs(argv) {
     else if (a === "--command-allow-file") out.commandAllowFile = argv[++i];
     else if (a.startsWith("--command-allow-file=")) out.commandAllowFile = a.slice("--command-allow-file=".length);
     else if (a === "--hide-model") out.hideModel = true;
+    else if (a === "--password") out.password = argv[++i];
+    else if (a.startsWith("--password=")) out.password = a.slice("--password=".length);
+    else if (a === "--trust-proxy") out.trustProxy = true;
     else if (a === "--help" || a === "-h") out.help = true;
     else throw new Error(`unknown argument: ${a}`);
+  }
+  if (out.password !== undefined && String(out.password).length === 0) {
+    throw new Error("--password cannot be empty");
   }
   return out;
 }
@@ -258,6 +279,12 @@ const cliCommandAllowSet = cliCommandAllow ? new Set(cliCommandAllow) : null;
 
 // 是否在 status bar 隱藏模型名稱。CLI 與環境變數任一為真即生效。
 const hideModel = !!args.hideModel || process.env.PI_WEBUI_HIDE_MODEL === "1";
+const authPassword = (args.password ?? process.env.PI_WEBUI_PASSWORD ?? "") || "";
+const trustProxy = !!args.trustProxy || process.env.PI_WEBUI_TRUST_PROXY === "1";
+const authEnabled = authPassword.length > 0;
+const authStore = authEnabled ? createAuthStore() : null;
+const LOGIN_PATH = "/login";
+const LOGIN_HTML = resolve(publicDir, "login.html");
 const HOME_DIR = process.env.HOME || "";
 const ALLOW_ANY_CWD = process.env.PI_WEBUI_CWD_ALLOW_ANY === "1";
 
@@ -447,9 +474,108 @@ function sendFile(res, filePath) {
   createReadStream(filePath).pipe(res);
 }
 
+function readJsonBody(req, limit = 64 * 1024) {
+  return new Promise((resolve, reject) => {
+    let total = 0;
+    const chunks = [];
+    req.on("data", (chunk) => {
+      total += chunk.length;
+      if (total > limit) {
+        reject(new Error("Body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      if (!raw) return resolve({});
+      try { resolve(JSON.parse(raw)); }
+      catch { reject(new Error("Invalid JSON")); }
+    });
+    req.on("error", reject);
+  });
+}
+
+// HTTP 回應用的 sendJson(注意與 WebSocket 版 sendJson 不同)
+function sendJsonHttp(res, status, body) {
+  res.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  res.end(JSON.stringify(body));
+}
+
+function sleep(ms) {
+  return new Promise((res) => setTimeout(res, ms));
+}
+
+function isAuthPublic(pathname, method) {
+  if (pathname === LOGIN_PATH && method === "GET") return true;
+  if (pathname === "/api/login" && method === "POST") return true;
+  if (pathname === "/api/logout" && method === "POST") return true;
+  if (pathname === "/favicon.svg" && method === "GET") return true;
+  return false;
+}
+
+async function handleLogin(req, res) {
+  let body;
+  try { body = await readJsonBody(req); }
+  catch (e) { return sendJsonHttp(res, 400, { ok: false, error: "Invalid request" }); }
+  const submitted = typeof body?.password === "string" ? body.password : "";
+  if (!comparePassword(submitted, authPassword)) {
+    await sleep(250);
+    return sendJsonHttp(res, 401, { ok: false, error: "Invalid password" });
+  }
+  const token = authStore.issue();
+  const secure = shouldSetSecure({ trustProxy, headers: req.headers });
+  res.setHeader("Set-Cookie", buildSetCookie(token, { secure }));
+  return sendJsonHttp(res, 200, { ok: true });
+}
+
+function handleLogout(req, res) {
+  const token = readAuthCookie(req.headers);
+  if (token) authStore.revoke(token);
+  const secure = shouldSetSecure({ trustProxy, headers: req.headers });
+  res.setHeader("Set-Cookie", buildClearCookie({ secure }));
+  return sendJsonHttp(res, 200, { ok: true });
+}
+
+// 回 true 表示已處理(放行 / login / logout / reject);
+// 回 false 表示需要繼續 serveStatic。
+async function handleAuth(req, res) {
+  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  const pathname = url.pathname;
+  const method = req.method || "GET";
+
+  if (!authEnabled) return false;
+
+  if (pathname === "/api/login" && method === "POST") {
+    await handleLogin(req, res);
+    return true;
+  }
+  if (pathname === "/api/logout" && method === "POST") {
+    handleLogout(req, res);
+    return true;
+  }
+  if (isAuthPublic(pathname, method)) return false;
+
+  if (authStore.verify(readAuthCookie(req.headers))) return false;
+
+  if (pathname.startsWith("/api/") || pathname === "/ws") {
+    sendJsonHttp(res, 401, { ok: false, error: "Unauthorized" });
+    return true;
+  }
+  res.writeHead(302, { location: `${LOGIN_PATH}?next=${encodeURIComponent(pathname + url.search)}` });
+  res.end();
+  return true;
+}
+
 function serveStatic(req, res) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
+  let pathname = url.pathname;
+  if (pathname === "/") pathname = "/index.html";
+  else if (pathname === "/login") pathname = "/login.html";
   const filePath = resolve(join(publicDir, pathname));
 
   if (!filePath.startsWith(publicDir) || !existsSync(filePath)) {
@@ -1438,11 +1564,41 @@ class NativePiSessionController {
   }
 }
 
-const server = createServer((req, res) => {
-  serveStatic(req, res);
+const server = createServer(async (req, res) => {
+  try {
+    const handled = await handleAuth(req, res);
+    if (handled) return;
+    serveStatic(req, res);
+  } catch (err) {
+    logger.error("request handler error", { error: err instanceof Error ? err.message : String(err) });
+    if (!res.headersSent) {
+      res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ ok: false, error: "Internal error" }));
+    }
+  }
 });
 
-const wss = new WebSocketServer({ server, path: "/ws" });
+const wss = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", (req, socket, head) => {
+  let url;
+  try {
+    url = new URL(req.url || "", `http://${req.headers.host || "localhost"}`);
+  } catch {
+    socket.destroy();
+    return;
+  }
+  if (url.pathname !== "/ws") {
+    socket.destroy();
+    return;
+  }
+  if (authEnabled && !authStore.verify(readAuthCookie(req.headers))) {
+    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+});
 
 wss.on("connection", (ws, req) => {
   const remote = req?.socket?.remoteAddress || "unknown";
@@ -1470,7 +1626,7 @@ wss.on("connection", (ws, req) => {
   });
 });
 
-const actualPort = await listenWithFallback(server, { host, port, logger, relayEmitter: wss });
+const actualPort = await listenWithFallback(server, { host, port, logger });
 const url = `http://${host}:${actualPort}`;
 logger.info("listening", {
   url,
@@ -1479,4 +1635,6 @@ logger.info("listening", {
   appCwd,
   agentDir,
   sessionDir: sessionDir || undefined,
+  auth: authEnabled ? "enabled" : "disabled",
+  trustProxy: authEnabled ? trustProxy : undefined,
 });
