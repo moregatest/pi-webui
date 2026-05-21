@@ -6,6 +6,10 @@ export const COOKIE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
 
 // 等長 constant-time 字串比對,避免 timing attack。
 // 任一方非字串或長度不同直接 false。
+//
+// 安全限制:長度不同會 early return,理論上會泄漏輸入密碼與 expected
+// 是否等長。對本機 webui (env var 比對) 威脅極低;若日後此函式被用在
+// 公開網路場景,需改成 padding 到等長後再 timingSafeEqual。
 export function comparePassword(input: unknown, expected: unknown): boolean {
   if (typeof input !== "string" || typeof expected !== "string") return false;
   if (input.length === 0 || expected.length === 0) return false;
@@ -52,6 +56,9 @@ export function shouldSetSecure(opts: {
   return value === "https";
 }
 
+// 注意:Path=/ 假設 webui 部署在 root。若日後透過 reverse proxy 掛到
+// subpath (例如 /webui/),需要把 Path 改成對應 prefix,否則 cookie 不會
+// 在子路徑生效。
 export function buildSetCookie(
   value: string,
   opts: { secure: boolean; maxAge?: number } = { secure: false },
@@ -81,6 +88,14 @@ export interface AuthStore {
 
 // 記憶體 token 儲存。issue 產 32 byte hex,verify 時 lazy GC 過期。
 // now 與 ttlMs 可注入,便於測試。
+//
+// 設計取捨:沒有主動的 GC 計時器,只在 verify 時清掉自己這筆。
+// 若 token 被 issue 後從來沒被 verify (例如使用者登入後直接關瀏覽器),
+// 會殘留到 server 重啟。對單一使用者的 webui,單 entry < 100 bytes,
+// 即使一年累積也只是 KB 等級,不值得加複雜度。
+//
+// size() 包含尚未 GC 的過期 entry,不適合拿來做 active session 數,
+// 只用於 debug / 測試。
 export function createAuthStore(
   opts: { ttlMs?: number; now?: () => number } = {},
 ): AuthStore {

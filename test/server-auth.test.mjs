@@ -84,6 +84,7 @@ test("createAuthStore.issue/verify/revoke 基本流程", () => {
   const t1 = store.issue();
   assert.equal(typeof t1, "string");
   assert.equal(t1.length, 64); // 32 bytes hex
+  assert.match(t1, /^[0-9a-f]{64}$/);
   assert.equal(store.verify(t1), true);
 
   const t2 = store.issue();
