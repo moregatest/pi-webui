@@ -69,6 +69,8 @@ command-line flags:
 | `--skill-allow-file <path>` | whitelist file (one name per line, `#` for comments). missing file behaves as if unset. when neither this flag nor `PI_WEBUI_SKILL_ALLOW_FILE` is set, `<cwd>/.pi/skills-allow.txt` is auto-detected if present. |
 | `--command-allow <names>` | comma-separated slash command whitelist (names like `new`, `cwd`, `skill:foo`). only these commands appear in the slash menu and may be executed. |
 | `--command-allow-file <path>` | slash command whitelist file (one name per line, `#` for comments). missing file behaves as if unset. when neither this flag nor `PI_WEBUI_COMMAND_ALLOW_FILE` is set, `<cwd>/.pi/commands-allow.txt` is auto-detected if present. |
+| `--password <pw>` | enable login; require this password to access the webui. alias: `PI_WEBUI_PASSWORD` env var. |
+| `--trust-proxy` | honor `X-Forwarded-Proto` when deciding cookie `Secure` flag; useful behind cloudflare tunnel / reverse proxy. alias: `PI_WEBUI_TRUST_PROXY=1`. |
 | `--hide-model` | hide the model name shown in the status bar. |
 
 environment variables:
@@ -83,6 +85,8 @@ environment variables:
 | `PI_WEBUI_SKILL_ALLOW_FILE` | (unset) | skill whitelist file path |
 | `PI_WEBUI_COMMAND_ALLOW` | (unset) | slash command name whitelist (comma-separated) |
 | `PI_WEBUI_COMMAND_ALLOW_FILE` | (unset) | slash command whitelist file path |
+| `PI_WEBUI_PASSWORD` | (unset) | enable login with this password (same as `--password`) |
+| `PI_WEBUI_TRUST_PROXY` | `0` | `1` to honor `X-Forwarded-Proto` for cookie `Secure` flag |
 | `PI_WEBUI_HIDE_MODEL` | `0` | `1` hides the model name in the status bar |
 | `PI_PROJECT_CWD` | `process.cwd()` | project directory used for sessions |
 | `PI_AGENT_DIR` | pi default (`~/.pi/agent`) | pi agent config directory |
@@ -96,12 +100,14 @@ pi-webui --listen 0.0.0.0:3000
 pi-webui --model anthropic/claude-opus-4-7 --hide-model
 pi-webui --skill ~/.claude/skills --skill-allow brainstorming,verify
 HOST=0.0.0.0 PORT=3000 PI_PROJECT_CWD=/path/to/project npm start
+PI_WEBUI_PASSWORD=hunter2 pi-webui --listen 0.0.0.0:3000 --trust-proxy
 ```
 
 when launched via the pi extension, equivalent pi flags are available:
 `--webui-model`, `--webui-skill`, `--webui-skill-allow`,
 `--webui-skill-allow-file`, `--webui-command-allow`,
-`--webui-command-allow-file`, `--webui-hide-model`.
+`--webui-command-allow-file`, `--webui-hide-model`,
+`--webui-password`, `--webui-trust-proxy`.
 
 to lock down the slash command menu for a deployment, drop a
 `.pi/commands-allow.txt` in the project root with one command name per line
@@ -135,6 +141,27 @@ rule of thumb:
   `commands-allow.txt` only.
 - remove from the session entirely (sandboxing, destructive skills,
   context savings) → also use `skills-allow.txt`.
+
+## authentication
+
+set `--password <pw>` or `PI_WEBUI_PASSWORD` to require login. when set,
+all requests outside `/login`, `/api/login`, `/api/logout` and `/favicon.svg`
+are redirected to the login page or rejected with 401.
+
+session cookies are kept in memory and revoked on server restart — users
+have to log in again after every restart. cookie lifetime is 7 days.
+
+**behind a reverse proxy (cloudflare tunnel, nginx, etc.):** add `--trust-proxy`
+so the cookie's `Secure` flag is set when `X-Forwarded-Proto: https` is forwarded.
+without `--trust-proxy`, the cookie has no `Secure` flag and works in both plain
+HTTP and tunneled HTTPS.
+
+**port note:** if the requested port is in use, pi-webui linearly searches
+`port..port+49` for the first free one and prints the actual port in the
+listening log line.
+
+passing the password on the command line exposes it in `ps aux`. prefer
+`PI_WEBUI_PASSWORD` env var or a wrapper script.
 
 ## attachments
 

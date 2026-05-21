@@ -56,4 +56,7 @@
 [x] surface loaded skills as `/skill:<name>` slash commands in the webui
 [x] `/webui start <flags>` forwards server flags inline from the pi extension
 [x] `--command-allow` / `--command-allow-file` slash command whitelist with auto-detect of `<cwd>/.pi/commands-allow.txt`
+[x] `--password` / `PI_WEBUI_PASSWORD` 啟用 cookie 登入認證
+[x] `--trust-proxy` / `PI_WEBUI_TRUST_PROXY` 控制 cookie `Secure` flag
+[x] 啟動 port 被佔用時自動 +1 找下一個可用 port (上限 50)
 ```
