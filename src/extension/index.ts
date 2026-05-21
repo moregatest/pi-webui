@@ -91,6 +91,8 @@ interface StartOptions {
 	commandAllow?: string;
 	commandAllowFile?: string;
 	hideModel?: boolean;
+	password?: string;
+	trustProxy?: boolean;
 	// When true, the spawned server is tied to this pi process (terminated on
 	// session_shutdown). When false, the server is detached and survives pi exit.
 	owned?: boolean;
@@ -118,6 +120,8 @@ function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 		if (opts.commandAllow) serverArgs.push("--command-allow", opts.commandAllow);
 		if (opts.commandAllowFile) serverArgs.push("--command-allow-file", opts.commandAllowFile);
 		if (opts.hideModel) serverArgs.push("--hide-model");
+		if (opts.password) serverArgs.push("--password", opts.password);
+		if (opts.trustProxy) serverArgs.push("--trust-proxy");
 		const detached = !opts.owned;
 		// 收集 child stderr，避免 spawn 後因 MODULE_NOT_FOUND 等錯誤被吞掉
 		const child = spawn("node", serverArgs, {
@@ -232,6 +236,9 @@ function parseStartFlags(tokens: string[]): StartOptions {
 		else if (t === "--command-allow-file") opts.commandAllowFile = valueOf(++i, t);
 		else if (t.startsWith("--command-allow-file=")) opts.commandAllowFile = t.slice("--command-allow-file=".length);
 		else if (t === "--hide-model") opts.hideModel = true;
+		else if (t === "--password") opts.password = valueOf(++i, t);
+		else if (t.startsWith("--password=")) opts.password = t.slice("--password=".length);
+		else if (t === "--trust-proxy") opts.trustProxy = true;
 		else throw new Error(`unknown flag: ${t}`);
 	}
 	if (skills.length > 0) opts.skills = skills.join(":");
@@ -311,6 +318,18 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		default: false,
 	});
 
+	pi.registerFlag?.("webui-password", {
+		description: "enable pi-webui login with this password. Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
+	pi.registerFlag?.("webui-trust-proxy", {
+		description: "honor X-Forwarded-Proto when deciding cookie Secure flag. Implies --webui.",
+		type: "boolean",
+		default: false,
+	});
+
 	pi.on("session_shutdown", () => {
 		const child = ownedChild;
 		if (!child) return;
@@ -375,6 +394,8 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		let commandAllow: string;
 		let commandAllowFile: string;
 		let hideModel: boolean;
+		let password: string;
+		let trustProxy: boolean;
 		let want: boolean;
 		try {
 			listen = String(pi.getFlag?.("webui-listen") || "").trim();
@@ -385,6 +406,8 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			commandAllow = String(pi.getFlag?.("webui-command-allow") || "").trim();
 			commandAllowFile = String(pi.getFlag?.("webui-command-allow-file") || "").trim();
 			hideModel = !!pi.getFlag?.("webui-hide-model");
+			password = String(pi.getFlag?.("webui-password") || "").trim();
+			trustProxy = !!pi.getFlag?.("webui-trust-proxy");
 			want =
 				!!pi.getFlag?.("webui") ||
 				listen.length > 0 ||
@@ -394,7 +417,9 @@ export default function webuiExtension(pi: ExtensionAPI) {
 				skillAllowFile.length > 0 ||
 				commandAllow.length > 0 ||
 				commandAllowFile.length > 0 ||
-				hideModel;
+				hideModel ||
+				password.length > 0 ||
+				trustProxy;
 		} catch {
 			return;
 		}
@@ -414,6 +439,8 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			commandAllow: commandAllow || undefined,
 			commandAllowFile: commandAllowFile || undefined,
 			hideModel: hideModel || undefined,
+			password: password || undefined,
+			trustProxy: trustProxy || undefined,
 			owned: true,
 		});
 	});
