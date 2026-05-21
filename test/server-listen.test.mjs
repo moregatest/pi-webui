@@ -117,3 +117,36 @@ test("listenWithFallback: fallback 時呼叫 logger.warn", async () => {
     await closeP(blocker.server);
   }
 });
+
+test("listenWithFallback: relayEmitter 在 retry 期間不 crash 且 listener 清零", async () => {
+  const { EventEmitter } = await import("node:events");
+  const relay = new EventEmitter();
+  let attempt = 0;
+  const fakeServer = {
+    once(event, fn) { this[`_${event}`] = fn; },
+    removeListener() {},
+    listen() {
+      attempt++;
+      setImmediate(() => {
+        const err = Object.assign(new Error("EADDRINUSE"), { code: "EADDRINUSE" });
+        // ws 套件在 server 的 'error' listener 鏈中同步 re-emit 到 wss:
+        // relay.emit 必須在 this._error 之前執行,模擬 ws 掛在 server.on('error', ...) 時的行為。
+        // 此時 no-op handler 仍然存在於 relay,才能防止 EventEmitter 拋出未處理的 error。
+        relay.emit("error", err);
+        this._error(err);
+      });
+    },
+  };
+  await assert.rejects(
+    () =>
+      listenWithFallback(fakeServer, {
+        host: "127.0.0.1",
+        port: 60000,
+        maxAttempts: 2,
+        relayEmitter: relay,
+      }),
+    /No free port/,
+  );
+  // listener 應全部清除,不殘留
+  assert.equal(relay.listenerCount("error"), 0);
+});
