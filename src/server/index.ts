@@ -42,6 +42,7 @@ import {
   computeCommandAllow,
   resolveCommandAllowFile,
 } from "./command-allow.js";
+import { listenWithFallback } from "./listen.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -1469,6 +1470,13 @@ wss.on("connection", (ws, req) => {
   });
 });
 
-server.listen(port, host, () => {
-  logger.info("listening", { url: `http://${host}:${port}`, appCwd, agentDir, sessionDir: sessionDir || undefined });
+const actualPort = await listenWithFallback(server, { host, port, logger, relayEmitter: wss });
+const url = `http://${host}:${actualPort}`;
+logger.info("listening", {
+  url,
+  requestedPort: port,
+  fallback: actualPort !== port,
+  appCwd,
+  agentDir,
+  sessionDir: sessionDir || undefined,
 });
