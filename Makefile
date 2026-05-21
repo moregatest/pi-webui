@@ -16,7 +16,7 @@ CURL              := curl -fsSL
 TS_SOURCES        := $(shell find src -name '*.ts' 2>/dev/null)
 JS_SOURCES        := $(shell find public test -name '*.mjs' -not -path './public/vendor/*' 2>/dev/null)
 
-.PHONY: build lint test precommit start install update vendor vendor-clean pack publish clean
+.PHONY: build lint test test-sandbox precommit start install update vendor vendor-clean pack publish clean
 
 .DEFAULT_GOAL := build
 
@@ -35,6 +35,12 @@ lint: node_modules
 test: build
 	@echo "==> test"
 	@node --test test/*.test.mjs
+
+# 真實 Gondolin VM 整合測試。預設不跑 (要 QEMU + 約 150MB asset 下載)。
+# 透過 SANDBOX_VM=1 切換 opt-in 標記。
+test-sandbox: build
+	@echo "==> test-sandbox (opt-in real VM)"
+	@SANDBOX_VM=1 node --test test/sandbox.test.mjs test/sandbox-vm.test.mjs
 
 precommit: lint test
 

@@ -12,6 +12,16 @@ import {
   getAgentDir,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
+// 這幾個 factory 沒在 index 包裝;走 dist 直接拿。
+const piToolsIndexUrl = pathToFileURL(
+  resolve(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")), "..", "core/tools/index.js"),
+).href;
+const {
+  createReadToolDefinition,
+  createWriteToolDefinition,
+  createEditToolDefinition,
+  createBashToolDefinition,
+} = await import(piToolsIndexUrl);
 
 // The package's `exports` field doesn't expose the slash-commands list.
 // Resolve the package's `import` entry via import.meta.resolve and load the
@@ -52,6 +62,7 @@ import {
   readAuthCookie,
   shouldSetSecure,
 } from "./auth.js";
+import { Sandbox, GUEST_WORKSPACE } from "./sandbox.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -120,6 +131,10 @@ function printHelp() {
     "  --trust-proxy               honor X-Forwarded-Proto when deciding cookie Secure flag.",
     "                              alias: PI_WEBUI_TRUST_PROXY=1 env var.",
     "  --hide-model                hide the model name shown in the status bar.",
+    "  --sandbox                   run read/write/edit/bash inside a Gondolin micro-VM.",
+    "                              requires qemu; alias: PI_WEBUI_SANDBOX=1.",
+    "  --sandbox-workspace <path>  host directory mounted as /workspace in the VM.",
+    "                              defaults to the project cwd. /cwd is disabled in sandbox mode.",
     "  -h, --help                  show this help and exit",
     "",
     "environment variables:",
@@ -134,6 +149,8 @@ function printHelp() {
     "  PI_WEBUI_PASSWORD          enable login with this password (same as --password)",
     "  PI_WEBUI_TRUST_PROXY       '1' to honor X-Forwarded-Proto for cookie Secure flag",
     "  PI_WEBUI_HIDE_MODEL        '1' to hide the model name in the status bar",
+    "  PI_WEBUI_SANDBOX           '1' to enable the Gondolin VM sandbox (same as --sandbox)",
+    "  PI_WEBUI_SANDBOX_WORKSPACE host directory used as the VM workspace mount",
     "  PI_PROJECT_CWD             project directory used for sessions (default cwd)",
     "  PI_AGENT_DIR               pi agent config directory (default ~/.pi/agent)",
     "  PI_SESSION_DIR             session storage directory (default pi default)",
@@ -169,6 +186,9 @@ function parseArgs(argv) {
     else if (a === "--password") out.password = argv[++i];
     else if (a.startsWith("--password=")) out.password = a.slice("--password=".length);
     else if (a === "--trust-proxy") out.trustProxy = true;
+    else if (a === "--sandbox") out.sandbox = true;
+    else if (a === "--sandbox-workspace") out.sandboxWorkspace = argv[++i];
+    else if (a.startsWith("--sandbox-workspace=")) out.sandboxWorkspace = a.slice("--sandbox-workspace=".length);
     else if (a === "--help" || a === "-h") out.help = true;
     else throw new Error(`unknown argument: ${a}`);
   }
@@ -354,6 +374,32 @@ async function collectRecentCwds() {
 const agentDir = process.env.PI_AGENT_DIR || getAgentDir();
 const sessionDir = process.env.PI_SESSION_DIR;
 
+// sandbox 啟用條件:CLI --sandbox 或 PI_WEBUI_SANDBOX=1。
+// workspace 預設取 appCwd;CLI / env 可指定別的目錄,但路徑必須存在且為 directory。
+const sandboxEnabled = !!args.sandbox || process.env.PI_WEBUI_SANDBOX === "1";
+const sandboxWorkspaceRaw =
+  args.sandboxWorkspace ||
+  process.env.PI_WEBUI_SANDBOX_WORKSPACE ||
+  appCwd;
+let sandbox = null;
+let sandboxInitError = null;
+if (sandboxEnabled) {
+  try {
+    Sandbox.ensureQemuInstalled();
+    const workspace = resolve(appCwd, expandHome(sandboxWorkspaceRaw));
+    sandbox = new Sandbox({ workspaceRoot: workspace, logger });
+    logger.info("sandbox enabled", {
+      workspace: sandbox.workspaceRoot,
+      guestPath: GUEST_WORKSPACE,
+    });
+  } catch (error) {
+    sandboxInitError = error instanceof Error ? error.message : String(error);
+    logger.error("sandbox init failed", { error: sandboxInitError });
+    // 不立即退出:fail-fast 體驗對 extension 使用者太硬,把錯誤帶到第一個
+    // WS connection 後再 surface。
+  }
+}
+
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
@@ -410,6 +456,19 @@ function resolveCliModel(services, pattern) {
   return found;
 }
 
+// sandbox 模式下用 host cwd 當 tool cwd:user 給 relative path 由 host cwd
+// 解析,operations 內部再 host→guest 轉。這樣 system prompt 看到的 cwd 一致,
+// 不需要拼裝額外的 mount-prompt。
+function buildSandboxCustomTools(cwd) {
+  if (!sandbox) return undefined;
+  return [
+    createReadToolDefinition(cwd, { operations: sandbox.createReadOperations() }),
+    createWriteToolDefinition(cwd, { operations: sandbox.createWriteOperations() }),
+    createEditToolDefinition(cwd, { operations: sandbox.createEditOperations() }),
+    createBashToolDefinition(cwd, { operations: sandbox.createBashOperations() }),
+  ];
+}
+
 const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
   const services = await createAgentSessionServices({
     cwd,
@@ -445,6 +504,11 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
     whitelistSource: effectiveCommandAllowFile || null,
   });
 
+  // sandbox 啟用時,把 read/write/edit/bash 從預設 builtin 改為走 VM 的版本。
+  // noTools="builtin" 會關掉 SDK 的內建 read/bash/edit/write,再用 customTools
+  // 重新註冊同名工具。
+  const sandboxTools = sandboxEnabled && sandbox ? buildSandboxCustomTools(cwd) : undefined;
+
   return {
     ...(await createAgentSessionFromServices({
       services,
@@ -452,9 +516,13 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
       sessionStartEvent,
       model: cliModel,
       scopedModels,
+      noTools: sandboxTools ? "builtin" : undefined,
+      customTools: sandboxTools,
     })),
     services,
     diagnostics: services.diagnostics,
+    sandboxEnabled: sandboxEnabled && !!sandbox,
+    sandboxError: sandboxInitError,
   };
 };
 
@@ -854,6 +922,22 @@ const SLASH_HANDLERS = {
     };
   },
   cwd: async (ctrl, arg) => {
+    // sandbox 模式下 workspace 已 mount,切 cwd 會讓 VM 拿不到新目錄。
+    // 改成只回報固定 workspace,讓前端 picker 直接 disable 切換。
+    if (sandboxEnabled && sandbox) {
+      const target = String(arg || "").trim();
+      if (target) {
+        throw new Error("cwd is locked in sandbox mode");
+      }
+      return {
+        needsPicker: "cwd",
+        currentCwd: ctrl.cwd,
+        homeDir: HOME_DIR,
+        cwds: [{ cwd: ctrl.cwd, modified: Date.now(), count: 0 }],
+        locked: true,
+        lockReason: "sandbox",
+      };
+    }
     const target = String(arg || "").trim();
     if (target) {
       const resolved = validateCwdTarget(target);
@@ -965,6 +1049,14 @@ class NativePiSessionController {
         diagnostics: this.runtime.diagnostics,
         slashCommands: this.collectSlashCommands(),
         hideModel,
+        sandbox: sandboxEnabled
+          ? {
+              enabled: !!sandbox,
+              workspace: sandbox?.workspaceRoot ?? null,
+              guestPath: GUEST_WORKSPACE,
+              error: sandboxInitError,
+            }
+          : null,
       },
     });
     // Bootstrap is now driven by the client's `ready` message — they tell us
@@ -1642,4 +1734,31 @@ logger.info("listening", {
   sessionDir: sessionDir || undefined,
   auth: authEnabled ? "enabled" : "disabled",
   trustProxy: authEnabled ? trustProxy : undefined,
+  sandbox: sandboxEnabled ? (sandbox ? "enabled" : `error:${sandboxInitError}`) : "disabled",
 });
+
+// SIGINT / SIGTERM 統一在這裡關掉 VM,避免留下 QEMU process。
+let shuttingDown = false;
+async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info("shutdown: starting", { signal });
+  try {
+    server.close();
+  } catch {
+    // ignore
+  }
+  if (sandbox) {
+    try {
+      await sandbox.close();
+    } catch (error) {
+      logger.warn("shutdown: sandbox close failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  logger.info("shutdown: done");
+  process.exit(0);
+}
+process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));

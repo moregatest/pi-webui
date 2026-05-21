@@ -148,6 +148,28 @@ input:focus {
   display: none;
 }
 
+.status-sandbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0 0.4rem;
+  border: 1px solid var(--tool);
+  border-radius: 3px;
+  color: var(--tool);
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.status-sandbox[hidden] {
+  display: none;
+}
+
+.status-sandbox.error {
+  border-color: var(--error);
+  color: var(--error);
+}
+
 .status-left,
 .status-right {
   white-space: nowrap;

@@ -71,6 +71,8 @@ command-line flags:
 | `--command-allow-file <path>` | slash command whitelist file (one name per line, `#` for comments). missing file behaves as if unset. when neither this flag nor `PI_WEBUI_COMMAND_ALLOW_FILE` is set, `<cwd>/.pi/commands-allow.txt` is auto-detected if present. |
 | `--password <pw>` | enable login; require this password to access the webui. alias: `PI_WEBUI_PASSWORD` env var. |
 | `--trust-proxy` | honor `X-Forwarded-Proto` when deciding cookie `Secure` flag; useful behind cloudflare tunnel / reverse proxy. alias: `PI_WEBUI_TRUST_PROXY=1`. |
+| `--sandbox` | run `read` / `write` / `edit` / `bash` inside a [Gondolin](https://github.com/earendil-works/gondolin) micro-VM. workspace path is locked to the launch cwd (or `--sandbox-workspace`); `/cwd` is disabled. requires QEMU. alias: `PI_WEBUI_SANDBOX=1`. |
+| `--sandbox-workspace <path>` | host directory mounted as `/workspace` inside the VM. defaults to the launch cwd. alias: `PI_WEBUI_SANDBOX_WORKSPACE`. |
 | `--hide-model` | hide the model name shown in the status bar. |
 
 environment variables:
@@ -87,6 +89,8 @@ environment variables:
 | `PI_WEBUI_COMMAND_ALLOW_FILE` | (unset) | slash command whitelist file path |
 | `PI_WEBUI_PASSWORD` | (unset) | enable login with this password (same as `--password`) |
 | `PI_WEBUI_TRUST_PROXY` | `0` | `1` to honor `X-Forwarded-Proto` for cookie `Secure` flag |
+| `PI_WEBUI_SANDBOX` | `0` | `1` to run tools inside a Gondolin micro-VM (same as `--sandbox`) |
+| `PI_WEBUI_SANDBOX_WORKSPACE` | (launch cwd) | host directory mounted as `/workspace` (same as `--sandbox-workspace`) |
 | `PI_WEBUI_HIDE_MODEL` | `0` | `1` hides the model name in the status bar |
 | `PI_PROJECT_CWD` | `process.cwd()` | project directory used for sessions |
 | `PI_AGENT_DIR` | pi default (`~/.pi/agent`) | pi agent config directory |
@@ -107,7 +111,8 @@ when launched via the pi extension, equivalent pi flags are available:
 `--webui-model`, `--webui-skill`, `--webui-skill-allow`,
 `--webui-skill-allow-file`, `--webui-command-allow`,
 `--webui-command-allow-file`, `--webui-hide-model`,
-`--webui-password`, `--webui-trust-proxy`.
+`--webui-password`, `--webui-trust-proxy`,
+`--webui-sandbox`, `--webui-sandbox-workspace`.
 
 to lock down the slash command menu for a deployment, drop a
 `.pi/commands-allow.txt` in the project root with one command name per line
@@ -163,6 +168,42 @@ listening log line.
 passing the password on the command line exposes it in `ps aux`. prefer
 `PI_WEBUI_PASSWORD` env var or a wrapper script.
 
+## sandbox
+
+`--sandbox` (or `PI_WEBUI_SANDBOX=1`) boots a [Gondolin](https://github.com/earendil-works/gondolin)
+QEMU micro-VM and routes every tool that touches the filesystem or shell
+(`read`, `write`, `edit`, `bash`) through it. Other host operations
+(slash commands, session storage, network egress from the server itself)
+still run in the host process.
+
+- **Mount layout.** The host directory passed via `--sandbox-workspace`
+  (default: the launch cwd) is mounted as `/workspace` inside the VM.
+  All host paths that resolve inside the workspace are mapped to the
+  corresponding `/workspace/...` path; anything outside is rejected.
+  Symlink escapes are blocked via `realpath` checks.
+- **Locked cwd.** Inside the sandbox the `/cwd` command is disabled —
+  switching cwd would point at a directory the VM never mounted.
+- **Lazy boot.** The VM starts on first tool call, not at server start.
+  The first boot downloads ~150 MB of QEMU assets into the gondolin
+  cache; subsequent boots are fast.
+- **Requirements.** QEMU must be installed (`brew install qemu` on
+  macOS; your distro's `qemu-system-<arch>` package on Linux). The
+  server fails fast at startup if the binaries are missing.
+- **Status bar.** A `sandbox` chip appears in the status bar when the
+  VM is active, or `sandbox: error` when init failed (hover the chip
+  for the workspace path or error message).
+
+```bash
+# engineer use — sandbox the current project
+pi-webui --sandbox
+
+# back-office / customer — bind to LAN with a fixed workspace
+pi-webui --sandbox --sandbox-workspace /srv/projects/demo --listen 0.0.0.0:3000
+```
+
+Real-VM integration tests are opt-in (`make test-sandbox`) so the
+default `make test` does not require QEMU.
+
 ## attachments
 
 paste images into the composer (Ctrl/Cmd+V) or drag and drop them onto the
@@ -189,13 +230,14 @@ test/          node --test files
 ## development
 
 ```bash
-make            # install deps + build (tsc)
-make start      # run the server
-make install    # install pi-webui globally from this checkout
-make update     # update dependencies (npm update)
-make test       # build + run tests
-make lint       # tsc --noEmit + node --check on .mjs sources
-make precommit  # lint + test
-make vendor     # refresh public/vendor (marked, highlight.js)
-make clean      # rm -rf dist build
+make             # install deps + build (tsc)
+make start       # run the server
+make install     # install pi-webui globally from this checkout
+make update      # update dependencies (npm update)
+make test        # build + run tests
+make test-sandbox# build + run real-VM sandbox tests (opt-in, needs QEMU)
+make lint        # tsc --noEmit + node --check on .mjs sources
+make precommit   # lint + test
+make vendor      # refresh public/vendor (marked, highlight.js)
+make clean       # rm -rf dist build
 ```

@@ -93,6 +93,8 @@ interface StartOptions {
 	hideModel?: boolean;
 	password?: string;
 	trustProxy?: boolean;
+	sandbox?: boolean;
+	sandboxWorkspace?: string;
 	// When true, the spawned server is tied to this pi process (terminated on
 	// session_shutdown). When false, the server is detached and survives pi exit.
 	owned?: boolean;
@@ -122,6 +124,8 @@ function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 		if (opts.hideModel) serverArgs.push("--hide-model");
 		if (opts.password) serverArgs.push("--password", opts.password);
 		if (opts.trustProxy) serverArgs.push("--trust-proxy");
+		if (opts.sandbox) serverArgs.push("--sandbox");
+		if (opts.sandboxWorkspace) serverArgs.push("--sandbox-workspace", opts.sandboxWorkspace);
 		const detached = !opts.owned;
 		// 收集 child stderr，避免 spawn 後因 MODULE_NOT_FOUND 等錯誤被吞掉
 		const child = spawn("node", serverArgs, {
@@ -239,6 +243,9 @@ function parseStartFlags(tokens: string[]): StartOptions {
 		else if (t === "--password") opts.password = valueOf(++i, t);
 		else if (t.startsWith("--password=")) opts.password = t.slice("--password=".length);
 		else if (t === "--trust-proxy") opts.trustProxy = true;
+		else if (t === "--sandbox") opts.sandbox = true;
+		else if (t === "--sandbox-workspace") opts.sandboxWorkspace = valueOf(++i, t);
+		else if (t.startsWith("--sandbox-workspace=")) opts.sandboxWorkspace = t.slice("--sandbox-workspace=".length);
 		else throw new Error(`unknown flag: ${t}`);
 	}
 	if (skills.length > 0) opts.skills = skills.join(":");
@@ -330,6 +337,18 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		default: false,
 	});
 
+	pi.registerFlag?.("webui-sandbox", {
+		description: "run pi-webui tools inside a Gondolin micro-VM. Implies --webui.",
+		type: "boolean",
+		default: false,
+	});
+
+	pi.registerFlag?.("webui-sandbox-workspace", {
+		description: "host directory mounted as /workspace inside the sandbox VM. Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
 	pi.on("session_shutdown", () => {
 		const child = ownedChild;
 		if (!child) return;
@@ -396,6 +415,8 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		let hideModel: boolean;
 		let password: string;
 		let trustProxy: boolean;
+		let sandbox: boolean;
+		let sandboxWorkspace: string;
 		let want: boolean;
 		try {
 			listen = String(pi.getFlag?.("webui-listen") || "").trim();
@@ -408,6 +429,8 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			hideModel = !!pi.getFlag?.("webui-hide-model");
 			password = String(pi.getFlag?.("webui-password") || "").trim();
 			trustProxy = !!pi.getFlag?.("webui-trust-proxy");
+			sandbox = !!pi.getFlag?.("webui-sandbox");
+			sandboxWorkspace = String(pi.getFlag?.("webui-sandbox-workspace") || "").trim();
 			want =
 				!!pi.getFlag?.("webui") ||
 				listen.length > 0 ||
@@ -419,7 +442,9 @@ export default function webuiExtension(pi: ExtensionAPI) {
 				commandAllowFile.length > 0 ||
 				hideModel ||
 				password.length > 0 ||
-				trustProxy;
+				trustProxy ||
+				sandbox ||
+				sandboxWorkspace.length > 0;
 		} catch {
 			return;
 		}
@@ -441,6 +466,8 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			hideModel: hideModel || undefined,
 			password: password || undefined,
 			trustProxy: trustProxy || undefined,
+			sandbox: sandbox || undefined,
+			sandboxWorkspace: sandboxWorkspace || undefined,
 			owned: true,
 		});
 	});

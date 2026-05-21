@@ -2,6 +2,31 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-05-21 (sandbox)
+
+### 新增
+
+- `--sandbox` / `PI_WEBUI_SANDBOX=1` 把 `read` / `write` / `edit` / `bash` 工具路由到 [Gondolin](https://github.com/earendil-works/gondolin) QEMU micro-VM
+  - 由 `src/server/sandbox.ts` 封裝 lazy boot、host↔guest 路徑映射、`realpath` 邊界檢查、symlink 逃逸阻擋
+  - 啟動時 fail-fast 檢查 `qemu-img` 與 `qemu-system-{aarch64|x86_64}`,缺哪一個直接報錯
+  - Lazy boot:首次 tool call 才啟動 VM;並發 `ensure()` 透過 in-flight Promise dedup 確保只啟動一次
+  - VM lifecycle 跟 server 一致;SIGINT/SIGTERM 走 graceful shutdown 關閉 QEMU
+  - sandbox 啟用時 `/cwd` 鎖死,server 回 `lockReason: "sandbox"`(避免切到 VM 沒 mount 的目錄)
+- `--sandbox-workspace <path>` / `PI_WEBUI_SANDBOX_WORKSPACE` 指定 host 端要 mount 成 `/workspace` 的目錄(預設為啟動 cwd)
+- pi extension 端對應旗標:`--webui-sandbox`、`--webui-sandbox-workspace`(會 forward 給 spawn 的 server)
+- WebUI status bar 新增 `sandbox` 標籤;hover 看 host workspace 路徑;init 失敗時切紅色並 toast 錯誤訊息
+- `connected` packet 增加 `sandbox: { enabled, workspace, guestPath, error }` 欄位
+- `make test-sandbox`:opt-in 真實 VM 整合測試(`SANDBOX_VM=1`),預設 `make test` 不依賴 QEMU
+
+### 測試
+
+- 單元測試 `test/sandbox.test.mjs`(22 case):workspace canonicalise、路徑映射、symlink 阻擋、ensure dedup、ensure 失敗重試、close 冪等、四種 ops factory 行為、bash env 轉換、AbortSignal 行為
+- 整合測試 `test/sandbox-vm.test.mjs`(opt-in):真實 Gondolin VM 上跑 `ls`、bash exec、雙向檔案讀寫、workspace 邊界檢查
+
+### 相關 commits
+
+設計文件:`docs/superpowers/specs/2026-05-21-gondolin-sandbox-design.md`
+
 ## 2026-05-21
 
 ### 新增

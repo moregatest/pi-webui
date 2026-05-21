@@ -12,6 +12,7 @@ const modalDialog = modal.querySelector(".modal");
 const statusLeft = document.getElementById("status-left");
 const statusRight = document.getElementById("status-right");
 const statusCwd = document.getElementById("status-cwd");
+const statusSandbox = document.getElementById("status-sandbox");
 const statusError = document.getElementById("status-error");
 
 import {
@@ -45,6 +46,7 @@ const chatState = createChatState();
 let slashCommands = [];
 let homeDir = "";
 let hideModel = false;
+let sandboxInfo = null;
 let slashFiltered = [];
 let slashIndex = 0;
 // Cursor into the server's session-event log. The server tags each
@@ -637,12 +639,23 @@ function connect() {
         slashCommands = packet.payload.slashCommands || [];
         homeDir = packet.payload.homeDir || "";
         hideModel = !!packet.payload.hideModel;
+        sandboxInfo = packet.payload.sandbox || null;
+        renderSandboxChip();
         logger.info("connected", {
           appCwd: packet.payload.appCwd,
           agentDir: packet.payload.agentDir,
           slashCommandCount: slashCommands.length,
           hideModel,
+          sandbox: sandboxInfo,
         });
+        if (sandboxInfo) {
+          if (sandboxInfo.error) {
+            showToast(`Sandbox init failed: ${sandboxInfo.error}`, "error");
+          } else if (sandboxInfo.enabled) {
+            const ws = sandboxInfo.workspace || "(unknown)";
+            showToast(`Sandbox 模式已啟用 (workspace: ${ws})`, "info");
+          }
+        }
         if (packet.payload.diagnostics?.length) {
           for (const d of packet.payload.diagnostics) {
             logger.warn("startup diagnostic", { diagnostic: d });
@@ -985,6 +998,32 @@ function showSessionPicker(payload) {
   openModal(items, (item) => {
     send({ type: "slash_command", name: "resume", arg: item.path });
   });
+}
+
+function renderSandboxChip() {
+  if (!statusSandbox) return;
+  if (!sandboxInfo) {
+    statusSandbox.hidden = true;
+    statusSandbox.textContent = "";
+    statusSandbox.title = "";
+    statusSandbox.classList.remove("error");
+    return;
+  }
+  if (sandboxInfo.error) {
+    statusSandbox.hidden = false;
+    statusSandbox.textContent = "sandbox: error";
+    statusSandbox.title = `Sandbox init failed: ${sandboxInfo.error}`;
+    statusSandbox.classList.add("error");
+    return;
+  }
+  if (sandboxInfo.enabled) {
+    statusSandbox.hidden = false;
+    statusSandbox.textContent = "sandbox";
+    statusSandbox.title = `workspace: ${sandboxInfo.workspace || "(unknown)"} → ${sandboxInfo.guestPath || "/workspace"}`;
+    statusSandbox.classList.remove("error");
+    return;
+  }
+  statusSandbox.hidden = true;
 }
 
 function renderStatusBar() {

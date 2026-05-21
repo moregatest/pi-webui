@@ -20,7 +20,9 @@
     "pi-webui": "dist/server/index.js"
   },
   "pi": {
-    "extensions": ["dist/extension/index.js"]
+    "extensions": [
+      "dist/extension/index.js"
+    ]
   },
   "files": [
     "dist",
@@ -41,6 +43,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@earendil-works/gondolin": "^0.12.0",
     "@earendil-works/pi-coding-agent": "^0.74.0",
     "ws": "^8.18.3"
   },
