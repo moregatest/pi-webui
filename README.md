@@ -117,6 +117,25 @@ hotkeys
 skill:brainstorming
 ```
 
+### `skills-allow.txt` vs `commands-allow.txt`
+
+these two files gate at different layers — they are independent and can be
+used alone or together:
+
+- `skills-allow.txt` is a **load gate**. a skill not in the list is never
+  loaded into the pi runtime. the agent can't see it, can't invoke it via
+  the `Skill` tool, and it doesn't take up context.
+- `commands-allow.txt` is a **surface gate**. the skill is still loaded,
+  but it's hidden from the slash menu and manual `/skill:<name>` is
+  blocked. the agent can still invoke it on its own.
+
+rule of thumb:
+
+- hide from users but keep available to the agent →
+  `commands-allow.txt` only.
+- remove from the session entirely (sandboxing, destructive skills,
+  context savings) → also use `skills-allow.txt`.
+
 ## attachments
 
 paste images into the composer (Ctrl/Cmd+V) or drag and drop them onto the
