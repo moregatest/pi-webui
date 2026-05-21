@@ -48,10 +48,13 @@ export async function listenWithFallback(
         server.once("listening", onListening);
         server.listen(tryPort, host);
       });
+      // port=0 時 OS 會派 ephemeral port,從 server.address() 取得實際綁定的 port
+      const addr = server.address();
+      const actualPort = addr && typeof addr === "object" ? addr.port : tryPort;
       if (attempt > 0) {
-        logger?.warn?.("port fallback", { requested: port, actual: tryPort });
+        logger?.warn?.("port fallback", { requested: port, actual: actualPort });
       }
-      return tryPort;
+      return actualPort;
     } catch (err: any) {
       if (err?.code !== "EADDRINUSE") throw err;
     }
