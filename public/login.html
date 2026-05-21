@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>pi-webui · login</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+    <style>
+      .login-shell {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--bg, #111);
+      }
+      .login-card {
+        background: var(--panel, #1c1c1c);
+        color: var(--text, #eee);
+        padding: 32px;
+        border-radius: 8px;
+        width: min(360px, 90vw);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+      }
+      .login-card h1 {
+        margin: 0 0 16px;
+        font-size: 18px;
+        font-weight: 600;
+      }
+      .login-card input[type="password"] {
+        width: 100%;
+        padding: 10px 12px;
+        font-size: 14px;
+        background: rgba(255, 255, 255, 0.05);
+        color: inherit;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 4px;
+        box-sizing: border-box;
+        margin-bottom: 12px;
+      }
+      .login-card button {
+        width: 100%;
+        padding: 10px;
+        font-size: 14px;
+        background: #3b82f6;
+        color: white;
+        border: 0;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .login-card button:disabled { opacity: 0.6; cursor: wait; }
+      .login-error {
+        color: #f87171;
+        font-size: 13px;
+        margin-top: 8px;
+        min-height: 1.2em;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="login-shell">
+      <form class="login-card" id="login-form">
+        <h1>pi-webui</h1>
+        <input
+          type="password"
+          id="password"
+          placeholder="password"
+          autocomplete="current-password"
+          autofocus
+          required
+        />
+        <button type="submit" id="submit">Sign in</button>
+        <div class="login-error" id="error"></div>
+      </form>
+    </div>
+    <script>
+      const form = document.getElementById("login-form");
+      const pw = document.getElementById("password");
+      const btn = document.getElementById("submit");
+      const err = document.getElementById("error");
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        err.textContent = "";
+        btn.disabled = true;
+        try {
+          const res = await fetch("/api/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ password: pw.value }),
+            credentials: "same-origin",
+          });
+          if (res.ok) {
+            const redirect = new URLSearchParams(location.search).get("next") || "/";
+            location.href = redirect.startsWith("/") ? redirect : "/";
+            return;
+          }
+          let msg = "Login failed";
+          try {
+            const body = await res.json();
+            if (body && body.error) msg = body.error;
+          } catch {}
+          err.textContent = msg;
+        } catch (ex) {
+          err.textContent = String(ex && ex.message ? ex.message : ex);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
