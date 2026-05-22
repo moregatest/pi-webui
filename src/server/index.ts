@@ -2,9 +2,10 @@
 // @ts-nocheck
 import { createServer } from "node:http";
 import { execSync } from "node:child_process";
-import { createReadStream, existsSync, readdirSync, readFileSync, statSync, watch as fsWatch } from "node:fs";
+import { createReadStream, chmodSync, existsSync, readdirSync, readFileSync, statSync, watch as fsWatch, writeFileSync } from "node:fs";
 import { extname, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { randomBytes } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import {
   createAgentSessionFromServices,
@@ -310,10 +311,17 @@ const cliCommandAllowSet = cliCommandAllow ? new Set(cliCommandAllow) : null;
 
 // 是否在 status bar 隱藏模型名稱。CLI 與環境變數任一為真即生效。
 const hideModel = !!args.hideModel || process.env.PI_WEBUI_HIDE_MODEL === "1";
-const authPassword = (args.password ?? process.env.PI_WEBUI_PASSWORD ?? "") || "";
+// tunnel 啟用條件:CLI --tunnel 或 PI_WEBUI_TUNNEL=1。
+// effective binary path:CLI > env > "cloudflared"(走 PATH)
+const tunnelEnabled = !!args.tunnel || process.env.PI_WEBUI_TUNNEL === "1";
+const tunnelCloudflared =
+  args.tunnelCloudflared || process.env.PI_WEBUI_CLOUDFLARED || "cloudflared";
+let authPassword = (args.password ?? process.env.PI_WEBUI_PASSWORD ?? "") || "";
+let tunnelPasswordPath: string | null = null;
+let tunnelPasswordGenerated = false;
 const trustProxy = !!args.trustProxy || process.env.PI_WEBUI_TRUST_PROXY === "1";
-const authEnabled = authPassword.length > 0;
-const authStore = authEnabled ? createAuthStore() : null;
+// authEnabled / authStore 在 agentDir 確定後才算(tunnel 可能自動產生密碼)
+// ↓ 見下方 agentDir 之後的 block
 const LOGIN_PATH = "/login";
 const HOME_DIR = process.env.HOME || "";
 const ALLOW_ANY_CWD = process.env.PI_WEBUI_CWD_ALLOW_ANY === "1";
@@ -385,11 +393,30 @@ async function collectRecentCwds() {
 const agentDir = process.env.PI_AGENT_DIR || getAgentDir();
 const sessionDir = process.env.PI_SESSION_DIR;
 
-// tunnel 啟用條件:CLI --tunnel 或 PI_WEBUI_TUNNEL=1。
-// effective binary path:CLI > env > "cloudflared"(走 PATH)
-const tunnelEnabled = !!args.tunnel || process.env.PI_WEBUI_TUNNEL === "1";
-const tunnelCloudflared =
-  args.tunnelCloudflared || process.env.PI_WEBUI_CLOUDFLARED || "cloudflared";
+// tunnel 啟用且未帶 --password:自動產生 32 字元亂數並寫檔
+if (tunnelEnabled && !authPassword) {
+  authPassword = generateTunnelPassword();
+  tunnelPasswordPath = writeTunnelPasswordFile(agentDir, authPassword);
+  tunnelPasswordGenerated = true;
+}
+const authEnabled = authPassword.length > 0;
+const authStore = authEnabled ? createAuthStore() : null;
+
+function generateTunnelPassword(): string {
+  // 24 bytes → 32 字元 base64url(取掉 padding)
+  return randomBytes(24).toString("base64url");
+}
+
+function writeTunnelPasswordFile(agentDir: string, password: string): string {
+  const path = resolve(agentDir, "tunnel-password.txt");
+  writeFileSync(path, password + "\n", { mode: 0o600 });
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    /* mode 已對,忽略 */
+  }
+  return path;
+}
 
 function isCloudflaredAvailable(bin: string): boolean {
   if (!bin) return false;
