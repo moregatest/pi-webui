@@ -204,6 +204,55 @@ pi-webui --sandbox --sandbox-workspace /srv/projects/demo --listen 0.0.0.0:3000
 Real-VM integration tests are opt-in (`make test-sandbox`) so the
 default `make test` does not require QEMU.
 
+## tunnel
+
+`--tunnel` (or `PI_WEBUI_TUNNEL=1`) spawns a [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/)
+quick tunnel and exposes the server on a public `trycloudflare.com` URL — no
+Cloudflare account required.
+
+security defaults applied automatically when `--tunnel` is active:
+
+- **auto-generated password.** if `--password` is not provided, a 32-character
+  base64url random password is generated, printed to console, and written to
+  `<agentDir>/tunnel-password.txt` (mode `0600`; default location: `~/.pi/agent/`).
+- **`--trust-proxy` implied.** `X-Forwarded-Proto` from the cloudflared edge is
+  trusted so the session cookie carries the `Secure` flag correctly.
+- **cloudflared must be in `PATH`.** the server fails fast at startup if the
+  binary is missing. install with `brew install cloudflared` (macOS), your
+  distro's package manager, or `cargo install cloudflared`.
+
+flags and env vars:
+
+| flag | env var | description |
+|------|---------|-------------|
+| `--tunnel` | `PI_WEBUI_TUNNEL=1` | enable quick tunnel |
+| `--tunnel-cloudflared <path>` | `PI_WEBUI_CLOUDFLARED` | custom cloudflared binary path |
+
+```bash
+# simplest — public URL with auto-generated password
+pi-webui --tunnel
+
+# recommended — public URL + sandboxed filesystem access
+pi-webui --tunnel --sandbox
+```
+
+**security notes:**
+
+- running `--tunnel` without `--sandbox` exposes the server with full host
+  filesystem access. the server prints a `stderr` warning at startup; pairing
+  with `--sandbox` is strongly recommended.
+- combining `--listen 0.0.0.0:*` and `--tunnel` exposes the port on both LAN
+  and the public internet simultaneously. the server prints a `stderr` warning
+  at startup.
+- the quick tunnel URL changes on every restart; it is not a stable hostname.
+
+**status bar.** a `tunnel` chip appears while the tunnel is active — yellow
+while starting, green when the URL is ready, red on error, grey when stopped.
+click the chip (active state) to copy the public URL to the clipboard.
+
+Real-tunnel integration tests are opt-in (`make test-tunnel`) so the
+default `make test` does not require a network connection or cloudflared.
+
 ## attachments
 
 paste images into the composer (Ctrl/Cmd+V) or drag and drop them onto the

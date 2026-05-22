@@ -2,6 +2,36 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-05-22 (tunnel)
+
+### 新增
+
+- `--tunnel` / `PI_WEBUI_TUNNEL=1` 啟用 cloudflared quick tunnel,自動把 server expose 到 `trycloudflare.com`
+  - 由 `src/server/tunnel.ts` 的 `TunnelManager` 封裝 spawn / URL parse / lifecycle
+  - 啟動鐵則寫死:`--no-autoupdate --config /dev/null --url <actualUrl>`,徹底繞 `~/.cloudflared/config.yml`
+  - cloudflared binary 缺失 fail-fast,印 install 指引(brew / apt / cargo)
+  - `--tunnel` 沒帶 `--password` 自動產生 32 字元 base64url 亂數,印 console + 寫 `<agentDir>/tunnel-password.txt`(mode 600)
+  - `--tunnel` 自動 imply `--trust-proxy`,確保 cookie `Secure` flag 在 cloudflared edge 後正確
+  - `--listen 0.0.0.0:*` / `!sandbox` 與 `--tunnel` 同開時印 stderr warning
+  - cloudflared 中途 crash 不自動 restart;30 秒沒拿到 URL 標 error 並 SIGTERM child
+  - SIGINT/SIGTERM 走 gracefulShutdown,先 stop tunnel(SIGTERM + 5s SIGKILL fallback)再 close sandbox
+- `--tunnel-cloudflared <path>` / `PI_WEBUI_CLOUDFLARED` 自訂 cloudflared binary
+- pi extension 端對應旗標:`--webui-tunnel`、`--webui-tunnel-cloudflared`(forward 給 spawn 的 server)
+- WebUI status bar 新增 `tunnel` chip;starting=黃 / active=綠 / error=紅 / stopped=灰;active 時點擊複製 URL
+- `connected` packet 增加 `tunnel: { enabled, phase, url?, error? }` 欄位;狀態變化透過新 packet `tunnel_state` broadcast
+
+### 測試
+
+- 單元測試 `test/tunnel.test.mjs`:TunnelManager 完整 lifecycle(stub spawn),涵蓋 args 鐵則、URL parse、30s timeout、child crash、stop SIGTERM、5s SIGKILL fallback、idempotent
+- 整合測試 `test/server-tunnel.test.mjs`:spawn 真 server + fake cloudflared fixture,驗證 banner / connected payload / WS broadcast / 自動密碼寫檔 / mode 600 / fail-fast / warnings
+- 端到端 `test/tunnel-real.test.mjs`(opt-in `TUNNEL_REAL=1`,`make test-tunnel`):spawn server `--tunnel`,等真 cloudflared 報 URL,curl edge `/login` 確認回 200
+
+### 相關 commits
+
+設計文件:`docs/superpowers/specs/2026-05-22-cloudflared-integration-design.md`(對應 `2026-05-21-cloudflared-integration-requirements.md` 事故彙整)
+
+commit range:`ca92a84..HEAD`(從設計文件 commit 到 docs commit,共 ~25 commits)
+
 ## 2026-05-21 (sandbox)
 
 ### 新增

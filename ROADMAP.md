@@ -60,4 +60,5 @@
 [x] `--trust-proxy` / `PI_WEBUI_TRUST_PROXY` 控制 cookie `Secure` flag
 [x] 啟動 port 被佔用時自動 +1 找下一個可用 port (上限 50)
 [x] `--sandbox` / `--sandbox-workspace` 把 read/write/edit/bash 路由到 Gondolin micro-VM
+[x] `--tunnel` / `PI_WEBUI_TUNNEL` 啟動 cloudflared quick tunnel(trycloudflare.com)
 ```
