@@ -225,3 +225,72 @@ test("TunnelManager: starting 階段 child 直接 exit → state error", async (
   assert.equal(mgr.getState().phase, "error");
   assert.equal(errors.length, 1);
 });
+
+test("TunnelManager.stop: SIGTERM child 並等 exit,phase=stopped", async () => {
+  const { spawn, children } = makeFakeSpawn();
+  const mgr = new TunnelManager({ cloudflaredBin: "cloudflared", spawn });
+  mgr.start("http://127.0.0.1:4096");
+  const c = children[0];
+  c.stderr.emit(
+    "data",
+    Buffer.from("https://aaa-bbb-ccc.trycloudflare.com\n"),
+  );
+
+  const p = mgr.stop();
+  assert.ok(c.killSignals.includes("SIGTERM"));
+  c.emit("exit", null, "SIGTERM");
+  await p;
+  assert.equal(mgr.getState().phase, "stopped");
+});
+
+test("TunnelManager.stop: child 5s 沒退 → SIGKILL", async () => {
+  const { spawn, children } = makeFakeSpawn();
+  const mgr = new TunnelManager({
+    cloudflaredBin: "cloudflared",
+    spawn,
+    stopTimeoutMs: 50,
+  });
+  mgr.start("http://127.0.0.1:4096");
+  const c = children[0];
+  c.stderr.emit(
+    "data",
+    Buffer.from("https://aaa-bbb-ccc.trycloudflare.com\n"),
+  );
+
+  const p = mgr.stop();
+  // 不發 exit 模擬卡死,等 stopTimeoutMs 過
+  await new Promise((r) => setTimeout(r, 80));
+  assert.ok(c.killSignals.includes("SIGKILL"));
+  // SIGKILL 後 forced state
+  c.emit("exit", null, "SIGKILL");
+  await p;
+  assert.equal(mgr.getState().phase, "stopped");
+});
+
+test("TunnelManager.stop: idle 狀態呼叫不會炸,直接 resolve", async () => {
+  const { spawn } = makeFakeSpawn();
+  const mgr = new TunnelManager({ cloudflaredBin: "cloudflared", spawn });
+  await mgr.stop();
+  assert.equal(mgr.getState().phase, "stopped");
+});
+
+test("TunnelManager.stop: 連續兩次 stop 冪等", async () => {
+  const { spawn, children } = makeFakeSpawn();
+  const mgr = new TunnelManager({ cloudflaredBin: "cloudflared", spawn });
+  mgr.start("http://127.0.0.1:4096");
+  const c = children[0];
+  c.stderr.emit(
+    "data",
+    Buffer.from("https://aaa-bbb-ccc.trycloudflare.com\n"),
+  );
+  const p1 = mgr.stop();
+  const p2 = mgr.stop();
+  c.emit("exit", null, "SIGTERM");
+  await Promise.all([p1, p2]);
+  assert.equal(mgr.getState().phase, "stopped");
+  // SIGTERM 只發一次
+  assert.equal(
+    c.killSignals.filter((s) => s === "SIGTERM").length,
+    1,
+  );
+});
