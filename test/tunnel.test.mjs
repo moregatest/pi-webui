@@ -143,3 +143,49 @@ test("TunnelManager: parse 出 URL 後再來的輸出不重複 emit", () => {
   c.stderr.emit("data", Buffer.from("https://xxx-yyy-zzz.trycloudflare.com\n"));
   assert.equal(urls.length, 1);
 });
+
+test("TunnelManager: 啟動 timeout 內沒 URL 會 emit 'error' + state error,並 kill child", async () => {
+  const { spawn, children } = makeFakeSpawn();
+  const mgr = new TunnelManager({
+    cloudflaredBin: "cloudflared",
+    spawn,
+    startupTimeoutMs: 50,
+  });
+  const errors = [];
+  const states = [];
+  mgr.on("error", (e) => errors.push(e));
+  mgr.on("state", (s) => states.push(s));
+
+  mgr.start("http://127.0.0.1:4098");
+
+  await new Promise((r) => setTimeout(r, 80));
+
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /did not report URL within 50ms/);
+  assert.equal(mgr.getState().phase, "error");
+  assert.match(mgr.getState().error, /did not report URL/);
+
+  // child 必須被 kill 掉
+  const child = children[0];
+  assert.equal(child.killed, true);
+  assert.ok(child.killSignals.includes("SIGTERM"));
+});
+
+test("TunnelManager: timeout 前拿到 URL 就不會觸發 error", async () => {
+  const { spawn, children } = makeFakeSpawn();
+  const mgr = new TunnelManager({
+    cloudflaredBin: "cloudflared",
+    spawn,
+    startupTimeoutMs: 60,
+  });
+  const errors = [];
+  mgr.on("error", (e) => errors.push(e));
+  mgr.start("http://127.0.0.1:4096");
+  children[0].stderr.emit(
+    "data",
+    Buffer.from("https://aaa-bbb-ccc.trycloudflare.com\n"),
+  );
+  await new Promise((r) => setTimeout(r, 90));
+  assert.equal(errors.length, 0);
+  assert.equal(mgr.getState().phase, "active");
+});
