@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { Resolver } from "node:dns/promises";
 
 const enabled = process.env.TUNNEL_REAL === "1";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -48,17 +49,53 @@ test("real cloudflared: spawn server, wait for URL, fetch /login, shutdown", { s
     console.log("tunnel URL:", url);
 
     // edge 拿 login 頁(server 自動產生密碼,login 頁應該回 200)
-    // edge 同步可能需要幾秒,給 retry
-    let ok = false;
-    for (let i = 0; i < 10 && !ok; i++) {
-      const r = await fetch(`${url}/login`).catch(() => null);
-      if (r && r.status === 200) {
-        ok = true;
+    // 實測 trycloudflare edge 同步要 ~5-15 秒,DNS propagation 偶爾更久。
+    // 先等 DNS 解得到再開始 HTTP retry,避免 fetch 卡在 connect timeout。
+    //
+    // 注意:走專屬 Resolver 直接打 1.1.1.1 / 8.8.8.8,避開 Node 預設 resolver
+    // 可能被 Tailscale (100.100.100.100) / mDNSResponder 攔截導致 ENOTFOUND。
+    const resolver = new Resolver();
+    resolver.setServers(["1.1.1.1", "8.8.8.8"]);
+    const hostname = new URL(url).hostname;
+    const dnsDeadline = Date.now() + 60_000;
+    let dnsReady = false;
+    let lastDnsErr = "";
+    while (!dnsReady && Date.now() < dnsDeadline) {
+      try {
+        await resolver.resolve4(hostname);
+        dnsReady = true;
         break;
+      } catch (e) {
+        lastDnsErr = e?.code ?? e?.message ?? String(e);
+        await new Promise((r) => setTimeout(r, 1500));
       }
-      await new Promise((r) => setTimeout(r, 1000));
     }
-    assert.ok(ok, "edge did not return 200 for /login within 10s");
+    assert.ok(dnsReady, `DNS for ${hostname} did not resolve within 60s (last: ${lastDnsErr})`);
+
+    const httpDeadline = Date.now() + 60_000;
+    let lastStatus = "no response";
+    let ok = false;
+    while (!ok && Date.now() < httpDeadline) {
+      const r = await fetch(`${url}/login`).catch((e) => {
+        lastStatus = `fetch error: ${e.cause?.code ?? e.message}`;
+        return null;
+      });
+      if (r) {
+        lastStatus = `status=${r.status}`;
+        if (r.status === 200) {
+          ok = true;
+          break;
+        }
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    if (!ok) {
+      console.error(`[diagnostic] child.killed=${child.killed} exitCode=${child.exitCode} signalCode=${child.signalCode}`);
+      console.error(`[diagnostic] stdout length=${stdout.length} stderr length=${stderr.length}`);
+      console.error(`[diagnostic] server stdout FULL:\n${stdout}`);
+      console.error(`[diagnostic] server stderr FULL:\n${stderr}`);
+    }
+    assert.ok(ok, `edge did not return 200 for /login within 60s after DNS ready (last: ${lastStatus})`);
   } finally {
     child.kill("SIGTERM");
     await new Promise((r) => child.once("exit", r));
