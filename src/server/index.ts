@@ -1899,7 +1899,14 @@ logger.info("listening", {
   auth: authEnabled ? "enabled" : "disabled",
   trustProxy: authEnabled ? trustProxy : undefined,
   sandbox: sandboxEnabled ? (sandbox ? "enabled" : `error:${sandboxInitError}`) : "disabled",
+  tunnel: tunnelEnabled ? "starting" : "disabled",
 });
+
+if (tunnelPasswordGenerated) {
+  process.stdout.write(
+    `  password: ${authPassword}  (written to ${tunnelPasswordPath})\n`,
+  );
+}
 
 // SIGINT / SIGTERM 統一在這裡關掉 VM,避免留下 QEMU process。
 let shuttingDown = false;
@@ -1911,6 +1918,15 @@ async function gracefulShutdown(signal) {
     server.close();
   } catch {
     // ignore
+  }
+  if (tunnel) {
+    try {
+      await tunnel.stop();
+    } catch (error) {
+      logger.warn("shutdown: tunnel stop failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
   if (sandbox) {
     try {
