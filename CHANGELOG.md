@@ -2,6 +2,18 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-05-22 (sandbox-hardening)
+
+### 改動
+
+- `src/server/index.ts` 的 `handleReady`:sandbox 啟用時,若 client 嘗試切到不同 cwd 的 session,改成 fall through 用當前 session,不嘗試 switch
+  - 解決 sandbox 把 workspace 鎖死後,client 透過 session 切換把 cwd 換到別的目錄,後續 `read` / `write` / `bash` 會踩到 workspace 邊界的問題
+  - 與 sandbox 既有的「`/cwd` 鎖死」共用同一條原則:VM 內 cwd 只能是 launch 時 mount 的 workspace
+
+### 相關 commits
+
+`b9c7d45`
+
 ## 2026-05-22 (tunnel-hardening)
 
 ### 改動
