@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // @ts-nocheck
 import { createServer } from "node:http";
+import { execSync } from "node:child_process";
 import { createReadStream, existsSync, readdirSync, readFileSync, statSync, watch as fsWatch } from "node:fs";
 import { extname, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -390,6 +391,25 @@ const tunnelEnabled = !!args.tunnel || process.env.PI_WEBUI_TUNNEL === "1";
 const tunnelCloudflared =
   args.tunnelCloudflared || process.env.PI_WEBUI_CLOUDFLARED || "cloudflared";
 
+function isCloudflaredAvailable(bin: string): boolean {
+  if (!bin) return false;
+  // 絕對路徑直接 fs 檢查
+  if (bin.startsWith("/")) {
+    try {
+      return statSync(bin).isFile();
+    } catch {
+      return false;
+    }
+  }
+  // 走 PATH 偵測
+  try {
+    execSync(`command -v ${JSON.stringify(bin)}`, { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // sandbox 啟用條件:CLI --sandbox 或 PI_WEBUI_SANDBOX=1。
 // workspace 預設取 appCwd;CLI / env 可指定別的目錄,但路徑必須存在且為 directory。
 const sandboxEnabled = !!args.sandbox || process.env.PI_WEBUI_SANDBOX === "1";
@@ -414,6 +434,17 @@ if (sandboxEnabled) {
     // 不立即退出:fail-fast 體驗對 extension 使用者太硬,把錯誤帶到第一個
     // WS connection 後再 surface。
   }
+}
+
+if (tunnelEnabled && !isCloudflaredAvailable(tunnelCloudflared)) {
+  process.stderr.write(
+    `error: --tunnel requires cloudflared binary, not found: ${tunnelCloudflared}\n` +
+      "install:\n" +
+      "  macOS:  brew install cloudflared\n" +
+      "  Linux:  https://pkg.cloudflare.com/index.html\n" +
+      "  cargo:  cargo install cloudflared\n",
+  );
+  process.exit(2);
 }
 
 // 讀 session jsonl 的第一行 header,拿 cwd 欄位。sandbox guard 用來判斷
