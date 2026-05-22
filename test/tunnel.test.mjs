@@ -43,3 +43,45 @@ test("TunnelManager: 初始 state 是 idle", () => {
   const mgr = new TunnelManager({ cloudflaredBin: "cloudflared", spawn });
   assert.deepEqual(mgr.getState(), { phase: "idle" });
 });
+
+test("TunnelManager.start: spawn cloudflared 用寫死的 args(鐵則)", async () => {
+  const { spawn, calls } = makeFakeSpawn();
+  // startupTimeoutMs=1 讓 timer 快速結束;掛 error listener 避免 unhandled
+  const mgr = new TunnelManager({ cloudflaredBin: "cloudflared", spawn, startupTimeoutMs: 1 });
+  mgr.on("error", () => {});
+
+  mgr.start("http://127.0.0.1:4098");
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cmd, "cloudflared");
+  assert.deepEqual(calls[0].args, [
+    "--no-autoupdate",
+    "--config",
+    "/dev/null",
+    "tunnel",
+    "--url",
+    "http://127.0.0.1:4098",
+  ]);
+  assert.equal(mgr.getState().phase, "starting");
+  // 等 timer 過期,避免 timer 洩漏到 test harness
+  await new Promise((r) => setTimeout(r, 10));
+});
+
+test("TunnelManager.start: 自訂 binary 路徑會傳給 spawn", async () => {
+  const { spawn, calls } = makeFakeSpawn();
+  const mgr = new TunnelManager({ cloudflaredBin: "/opt/bin/cloudflared", spawn, startupTimeoutMs: 1 });
+  mgr.on("error", () => {});
+  mgr.start("http://127.0.0.1:4096");
+  assert.equal(calls[0].cmd, "/opt/bin/cloudflared");
+  await new Promise((r) => setTimeout(r, 10));
+});
+
+test("TunnelManager.start: 重複 start 不會再 spawn", async () => {
+  const { spawn, calls } = makeFakeSpawn();
+  const mgr = new TunnelManager({ cloudflaredBin: "cloudflared", spawn, startupTimeoutMs: 1 });
+  mgr.on("error", () => {});
+  mgr.start("http://127.0.0.1:4096");
+  mgr.start("http://127.0.0.1:4096");
+  assert.equal(calls.length, 1);
+  await new Promise((r) => setTimeout(r, 10));
+});
