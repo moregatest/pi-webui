@@ -95,6 +95,8 @@ interface StartOptions {
 	trustProxy?: boolean;
 	sandbox?: boolean;
 	sandboxWorkspace?: string;
+	tunnel?: boolean;
+	tunnelCloudflared?: string;
 	// When true, the spawned server is tied to this pi process (terminated on
 	// session_shutdown). When false, the server is detached and survives pi exit.
 	owned?: boolean;
@@ -126,6 +128,8 @@ function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 		if (opts.trustProxy) serverArgs.push("--trust-proxy");
 		if (opts.sandbox) serverArgs.push("--sandbox");
 		if (opts.sandboxWorkspace) serverArgs.push("--sandbox-workspace", opts.sandboxWorkspace);
+		if (opts.tunnel) serverArgs.push("--tunnel");
+		if (opts.tunnelCloudflared) serverArgs.push("--tunnel-cloudflared", opts.tunnelCloudflared);
 		const detached = !opts.owned;
 		// 收集 child stderr，避免 spawn 後因 MODULE_NOT_FOUND 等錯誤被吞掉
 		const child = spawn("node", serverArgs, {
@@ -246,6 +250,9 @@ function parseStartFlags(tokens: string[]): StartOptions {
 		else if (t === "--sandbox") opts.sandbox = true;
 		else if (t === "--sandbox-workspace") opts.sandboxWorkspace = valueOf(++i, t);
 		else if (t.startsWith("--sandbox-workspace=")) opts.sandboxWorkspace = t.slice("--sandbox-workspace=".length);
+		else if (t === "--tunnel") opts.tunnel = true;
+		else if (t === "--tunnel-cloudflared") opts.tunnelCloudflared = valueOf(++i, t);
+		else if (t.startsWith("--tunnel-cloudflared=")) opts.tunnelCloudflared = t.slice("--tunnel-cloudflared=".length);
 		else throw new Error(`unknown flag: ${t}`);
 	}
 	if (skills.length > 0) opts.skills = skills.join(":");
@@ -349,6 +356,18 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		default: "",
 	});
 
+	pi.registerFlag?.("webui-tunnel", {
+		description: "Enable cloudflared quick tunnel for pi-webui. Implies --webui.",
+		type: "boolean",
+		default: false,
+	});
+
+	pi.registerFlag?.("webui-tunnel-cloudflared", {
+		description: "Custom cloudflared binary path. Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
 	pi.on("session_shutdown", () => {
 		const child = ownedChild;
 		if (!child) return;
@@ -417,6 +436,8 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		let trustProxy: boolean;
 		let sandbox: boolean;
 		let sandboxWorkspace: string;
+		let tunnel: boolean;
+		let tunnelCloudflared: string;
 		let want: boolean;
 		try {
 			listen = String(pi.getFlag?.("webui-listen") || "").trim();
@@ -431,6 +452,8 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			trustProxy = !!pi.getFlag?.("webui-trust-proxy");
 			sandbox = !!pi.getFlag?.("webui-sandbox");
 			sandboxWorkspace = String(pi.getFlag?.("webui-sandbox-workspace") || "").trim();
+			tunnel = !!pi.getFlag?.("webui-tunnel");
+			tunnelCloudflared = String(pi.getFlag?.("webui-tunnel-cloudflared") || "").trim();
 			want =
 				!!pi.getFlag?.("webui") ||
 				listen.length > 0 ||
@@ -444,7 +467,9 @@ export default function webuiExtension(pi: ExtensionAPI) {
 				password.length > 0 ||
 				trustProxy ||
 				sandbox ||
-				sandboxWorkspace.length > 0;
+				sandboxWorkspace.length > 0 ||
+				tunnel ||
+				tunnelCloudflared.length > 0;
 		} catch {
 			return;
 		}
@@ -468,6 +493,8 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			trustProxy: trustProxy || undefined,
 			sandbox: sandbox || undefined,
 			sandboxWorkspace: sandboxWorkspace || undefined,
+			tunnel: tunnel || undefined,
+			tunnelCloudflared: tunnelCloudflared || undefined,
 			owned: true,
 		});
 	});
