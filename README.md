@@ -74,6 +74,16 @@ command-line flags:
 | `--sandbox` | run `read` / `write` / `edit` / `bash` inside a [Gondolin](https://github.com/earendil-works/gondolin) micro-VM. workspace path is locked to the launch cwd (or `--sandbox-workspace`); `/cwd` is disabled. requires QEMU. alias: `PI_WEBUI_SANDBOX=1`. |
 | `--sandbox-workspace <path>` | host directory mounted as `/workspace` inside the VM. defaults to the launch cwd. alias: `PI_WEBUI_SANDBOX_WORKSPACE`. |
 | `--hide-model` | hide the model name shown in the status bar. |
+| `--hide-thinking` | drop `thinking` blocks before they reach the browser (server-side filter, not just css). |
+| `--hide-tool-calls` | drop `tool_call` / `tool_result` blocks before they reach the browser. |
+| `--show-tool-progress` | when tool calls are hidden, send a compact "doing X…" spinner so the user knows the agent is working. no-op if `--hide-tool-calls` is off. |
+| `--hide-status-chips` | hide the status bar (cwd / sandbox / tunnel / context / model). errors still surface. |
+| `--hide-session-picker` | disable the session picker; `/resume` style triggers show a toast instead. |
+| `--safe-errors` | wrap `server_error` payloads as a generic message with a 6-hex ticket; raw message is written to server log keyed by the same ticket. |
+| `--brand-name <text>` | inject into `<title>` and the header. |
+| `--brand-color <#hex>` | accent color; sets the `--brand-color` CSS variable. `#rgb` or `#rrggbb`. |
+| `--brand-logo <path>` | replace `/brand/logo` route with this file (svg / png / jpg / gif / webp). path must exist or boot fails. |
+| `--ui-profile <preset>` | preset that expands to a set of the above flags. currently supported: `customer` (= `--hide-thinking --hide-tool-calls --show-tool-progress --hide-status-chips --hide-session-picker --hide-model --safe-errors`). individual flags can still be set alongside; they only ever flip in the same direction (no "un-hide"). |
 
 environment variables:
 
@@ -92,6 +102,16 @@ environment variables:
 | `PI_WEBUI_SANDBOX` | `0` | `1` to run tools inside a Gondolin micro-VM (same as `--sandbox`) |
 | `PI_WEBUI_SANDBOX_WORKSPACE` | (launch cwd) | host directory mounted as `/workspace` (same as `--sandbox-workspace`) |
 | `PI_WEBUI_HIDE_MODEL` | `0` | `1` hides the model name in the status bar |
+| `PI_WEBUI_HIDE_THINKING` | `0` | `1` drops thinking blocks server-side (same as `--hide-thinking`) |
+| `PI_WEBUI_HIDE_TOOL_CALLS` | `0` | `1` drops tool_call / tool_result blocks server-side (same as `--hide-tool-calls`) |
+| `PI_WEBUI_SHOW_TOOL_PROGRESS` | `0` | `1` enables tool progress spinner when tool calls are hidden (same as `--show-tool-progress`) |
+| `PI_WEBUI_HIDE_STATUS_CHIPS` | `0` | `1` hides the status bar (same as `--hide-status-chips`) |
+| `PI_WEBUI_HIDE_SESSION_PICKER` | `0` | `1` disables the session picker (same as `--hide-session-picker`) |
+| `PI_WEBUI_SAFE_ERRORS` | `0` | `1` wraps server errors as generic message + ticket (same as `--safe-errors`) |
+| `PI_WEBUI_BRAND_NAME` | (unset) | brand name injected into title / header (same as `--brand-name`) |
+| `PI_WEBUI_BRAND_COLOR` | (unset) | accent color hex (same as `--brand-color`) |
+| `PI_WEBUI_BRAND_LOGO` | (unset) | logo file path served at `/brand/logo` (same as `--brand-logo`) |
+| `PI_WEBUI_UI_PROFILE` | (unset) | preset name (`customer`); same as `--ui-profile` |
 | `PI_PROJECT_CWD` | `process.cwd()` | project directory used for sessions |
 | `PI_AGENT_DIR` | pi default (`~/.pi/agent`) | pi agent config directory |
 | `PI_SESSION_DIR` | pi default | session storage directory |
@@ -105,6 +125,7 @@ pi-webui --model anthropic/claude-opus-4-7 --hide-model
 pi-webui --skill ~/.claude/skills --skill-allow brainstorming,verify
 HOST=0.0.0.0 PORT=3000 PI_PROJECT_CWD=/path/to/project npm start
 PI_WEBUI_PASSWORD=hunter2 pi-webui --listen 0.0.0.0:3000 --trust-proxy
+pi-webui --ui-profile customer --brand-name "Acme Bot" --brand-color "#0066cc" --brand-logo ./logo.svg
 ```
 
 when launched via the pi extension, equivalent pi flags are available:
@@ -112,7 +133,12 @@ when launched via the pi extension, equivalent pi flags are available:
 `--webui-skill-allow-file`, `--webui-command-allow`,
 `--webui-command-allow-file`, `--webui-hide-model`,
 `--webui-password`, `--webui-trust-proxy`,
-`--webui-sandbox`, `--webui-sandbox-workspace`.
+`--webui-sandbox`, `--webui-sandbox-workspace`,
+`--webui-hide-thinking`, `--webui-hide-tool-calls`,
+`--webui-show-tool-progress`, `--webui-hide-status-chips`,
+`--webui-hide-session-picker`, `--webui-safe-errors`,
+`--webui-brand-name`, `--webui-brand-color`, `--webui-brand-logo`,
+`--webui-ui-profile`.
 
 to lock down the slash command menu for a deployment, drop a
 `.pi/commands-allow.txt` in the project root with one command name per line
@@ -264,6 +290,82 @@ click the chip (active state) to copy the public URL to the clipboard.
 
 Real-tunnel integration tests are opt-in (`make test-tunnel`) so the
 default `make test` does not require a network connection or cloudflared.
+
+## customer profile
+
+pi-webui can be reskinned and stripped down for non-engineer customers.
+the goal is a calm chat surface — no thinking blocks, no raw tool output,
+no model names, no internal status chips — while keeping the agent fully
+functional underneath.
+
+three concerns, three sets of flags:
+
+**1. what content reaches the browser.** filtering happens server-side
+(`src/server/ui-profile.ts`), so devtools cannot recover what was hidden.
+
+- `--hide-thinking` drops `thinking` blocks.
+- `--hide-tool-calls` drops `tool_call` / `tool_result` blocks.
+- `--show-tool-progress` (only effective with `--hide-tool-calls`) converts
+  tool execution events into compact "doing X…" progress lines so the user
+  is not staring at silence while the agent works.
+- `--hide-status-chips` hides the cwd / sandbox / tunnel / context bar.
+- `--hide-session-picker` disables the session picker entirely.
+- `--hide-model` hides the model name.
+- `--safe-errors` wraps `server_error` payloads as a generic
+  "發生錯誤,請聯繫支援 (ticket: <6-hex>)" message and writes the raw
+  cause to the server log keyed by the same ticket — so support can
+  look it up without exposing internals to the user.
+
+**2. preset.** `--ui-profile customer` expands to all seven flags above.
+the preset name lives next to `customer` in case future deployments need
+a different bundle. individual flags layer on top — they only flip in
+the "hide more" direction, there are no `--no-hide-*` reverses.
+
+**3. branding.**
+
+- `--brand-name "Acme Bot"` rewrites `<title>` and a header row.
+- `--brand-color "#0066cc"` sets the `--brand-color` CSS variable; the
+  default is the existing anthropic orange. styles built on the `--accent`
+  token pick it up automatically.
+- `--brand-logo /path/to/logo.svg` registers a `GET /brand/logo` route
+  that serves the file (svg / png / jpg / gif / webp). when no logo is
+  set, `/brand/logo` 302s to `/favicon.svg` so the client `<img>` never
+  shows a broken icon. invalid path → boot fails fast.
+
+invalid input is rejected at startup, not at request time:
+`--brand-color` must match `#rgb` / `#rrggbb`; `--brand-logo` must point
+to an existing file; `--ui-profile <name>` must be a known preset.
+
+typical customer-facing deployment (sandbox + tunnel + password + brand):
+
+```bash
+pi-webui \
+  --ui-profile customer \
+  --brand-name "Acme Bot" \
+  --brand-color "#0066cc" \
+  --brand-logo ./acme-logo.svg \
+  --sandbox \
+  --tunnel \
+  --password "$(cat .password)" \
+  --trust-proxy
+```
+
+via env vars (for systemd / docker):
+
+```bash
+PI_WEBUI_UI_PROFILE=customer \
+PI_WEBUI_BRAND_NAME="Acme Bot" \
+PI_WEBUI_BRAND_COLOR="#0066cc" \
+PI_WEBUI_BRAND_LOGO=/etc/pi-webui/logo.svg \
+PI_WEBUI_SANDBOX=1 \
+PI_WEBUI_TUNNEL=1 \
+PI_WEBUI_PASSWORD=hunter2 \
+PI_WEBUI_TRUST_PROXY=1 \
+pi-webui
+```
+
+pair this with `.pi/commands-allow.txt` to also trim the slash menu down
+to what a customer should be able to do.
 
 ## attachments
 

@@ -61,4 +61,5 @@
 [x] 啟動 port 被佔用時自動 +1 找下一個可用 port (上限 50)
 [x] `--sandbox` / `--sandbox-workspace` 把 read/write/edit/bash 路由到 Gondolin micro-VM
 [x] `--tunnel` / `PI_WEBUI_TUNNEL` 啟動 cloudflared quick tunnel(trycloudflare.com)
+[x] `--ui-profile customer` + `--brand-name` / `--brand-color` / `--brand-logo` + `--safe-errors` + 個別 hide-* 旗標(客戶導向 UI:thinking / tool 細節 / status chip / session picker / model 名稱可獨立隱藏;tool 細節隱藏後可用 `--show-tool-progress` 換 user-friendly 標籤;`--safe-errors` 把 server_error 包成 generic 訊息 + ticket 對應 log)
 ```

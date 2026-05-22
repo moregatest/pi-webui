@@ -2,6 +2,54 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-05-22 (customer-ui-profile)
+
+### 新增
+
+- 客戶導向 UI profile:整套切片旗標 + `customer` preset + branding,把 webui 改造成可直接讓非工程客戶看的介面
+- 個別切片旗標(都同時支援 CLI 與 env;CLI 優先):
+  - `--hide-thinking` / `PI_WEBUI_HIDE_THINKING`:隱藏 thinking block
+  - `--hide-tool-calls` / `PI_WEBUI_HIDE_TOOL_CALLS`:隱藏 tool_call / tool_result block
+  - `--show-tool-progress` / `PI_WEBUI_SHOW_TOOL_PROGRESS`:hide-tool-calls 開啟時改顯示「正在讀取檔案…」spinner,避免客戶以為 AI 當機
+  - `--hide-status-chips` / `PI_WEBUI_HIDE_STATUS_CHIPS`:藏 sandbox / tunnel / cwd / context / model 等 status chip
+  - `--hide-session-picker` / `PI_WEBUI_HIDE_SESSION_PICKER`:session picker 完全禁用(`/resume` 之類觸發時顯示 toast)
+  - `--safe-errors` / `PI_WEBUI_SAFE_ERRORS`:`server_error` 包成 generic 訊息 + 6-hex ticket,原訊息寫進 server log
+  - 既有的 `--hide-model` 被歸進這組(改由 `parseUiProfile` 為 single source of truth)
+- preset:`--ui-profile customer` / `PI_WEBUI_UI_PROFILE=customer` 一鍵展開上述 7 個 flag
+- branding:
+  - `--brand-name <text>` / `PI_WEBUI_BRAND_NAME`:注入 `<title>` 與 header
+  - `--brand-color <#hex>` / `PI_WEBUI_BRAND_COLOR`:CSS `--brand-color` 變數(預設 anthropic orange);accent 色票統一改用 `var(--brand-color)`
+  - `--brand-logo <path>` / `PI_WEBUI_BRAND_LOGO`:server 新增 `GET /brand/logo` route(svg / png / jpg / gif / webp,content-type 由副檔名判定);沒設時 302 → `/favicon.svg`;client 一律用 `<img src="/brand/logo">`
+  - 啟動 fail-fast:`--brand-color` 不是合法 hex / `--brand-logo` 路徑不存在 / `--ui-profile` 不認得的 preset 名 都 exit 2 + stderr 提示
+- server-side event filtering:
+  - `src/server/ui-profile.ts` 的 `filterEvent` 三向分流:`null`(drop)/ `{kind: "event", event}` / `{kind: "tool_progress", payload}`
+  - thinking / tool 細節隱藏發生在 server 出口,client devtools network 也看不到 raw bytes(不是只在 DOM 隱藏)
+  - eventLog 仍存原始 event 替 replay 用;state machine 仍跑原始 event.type 維持原本行為
+- pi extension 對應 forward 旗標:`--webui-hide-thinking` / `--webui-hide-tool-calls` / `--webui-show-tool-progress` / `--webui-hide-status-chips` / `--webui-hide-session-picker` / `--webui-safe-errors` / `--webui-ui-profile` / `--webui-brand-name` / `--webui-brand-color` / `--webui-brand-logo`
+- `connected` packet 加 `uiProfile` 序列化欄位(7 boolean + brand 三欄);client 拿到後立刻套 branding + 各 render 函式以此為依據隱藏 status chip / session picker / model
+
+### 改動
+
+- `public/styles.css`:`:root` 加 `--brand-color`(預設 `#d97757`);`--accent` 改用 `var(--brand-color)`;`.main` grid `auto 1fr auto`(brand-header `display:none` 不佔位);新增 `.brand-header` / `.tool-progress-block` / `.spinner` 樣式
+- `public/index.html`:`<main>` 內 log 之前加 `#brand-header` DOM(預設 hidden)
+- `public/app.js`:新增 `applyBranding` / `handleToolProgress`;`renderSandboxChip` / `renderTunnelChip` / `renderStatusBar` 對 `hideStatusChips` early return;`showSessionPicker` 對 `hideSessionPicker` 顯示 toast 後 noop;`session_reset` 時清掉所有 `tool_progress` DOM
+
+### 測試
+
+- `test/ui-profile.test.mjs`:33 個 unit case,覆蓋 `parseUiProfile`(preset / env / CLI 優先順序 / 驗證 fail-fast)、`filterEvent`(三向分流 / message_update content 過濾)、`filterMessageHistory`、`safeError`(ticket 機率不重複 / 無 logger 也不崩)、`toolLabel` 映射
+- `test/server-ui-profile.test.mjs`:9 個整合 case,spawn 真實 server 驗證 WS connected payload(全 false 預設 / customer preset / brand 三欄)、`GET /brand/logo`(有設 logo 200 + content-type / 沒設 302 → favicon / password 模式下白名單)、啟動 fail-fast(不存在 logo / 不合法 color / 未知 preset)
+- 共 294 tests 全綠
+
+### 文件
+
+- `README.md`:`## configuration` 表加 10 個新 flag 與 env var;新增 `## customer profile` 段(preset 說明、典型部署範例)
+- `ROADMAP.md`:`done` 加一行
+- `docs/superpowers/specs/2026-05-22-customer-ui-profile-design.md`:設計文件(324 行,brainstorming 產出)
+
+### 相關 commits
+
+`2b390bc` → `edfc1fa` 區間(spec / tool-labels / ui-profile.ts / server 整合 / extension forward / client 套用 uiProfile / 整合測試)
+
 ## 2026-05-22 (sandbox-hardening)
 
 ### 改動
