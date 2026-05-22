@@ -121,12 +121,19 @@ export class TunnelManager extends EventEmitter {
 
   async stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
+    // stop() 在 starting 階段被呼叫時清除 startupTimer,避免 timeout 後再次 fail()
+    if (this.startupTimer) {
+      clearTimeout(this.startupTimer);
+      this.startupTimer = null;
+    }
     if (this.state.phase === "idle" || this.state.phase === "stopped") {
       this.setState({ phase: "stopped" });
       return;
     }
     const child = this.child;
-    if (!child) {
+    if (!child || child.killed) {
+      // child 已死或從未起來,直接收尾
+      this.child = null;
       this.setState({ phase: "stopped" });
       return;
     }
@@ -209,6 +216,14 @@ export class TunnelManager extends EventEmitter {
   }
 
   private fail(error: Error): void {
+    // 冪等:已經 error / stopping / stopped 不再 fail
+    if (
+      this.state.phase === "error" ||
+      this.state.phase === "stopping" ||
+      this.state.phase === "stopped"
+    ) {
+      return;
+    }
     if (this.startupTimer) {
       clearTimeout(this.startupTimer);
       this.startupTimer = null;

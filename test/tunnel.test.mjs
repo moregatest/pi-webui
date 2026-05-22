@@ -158,7 +158,7 @@ test("TunnelManager: 啟動 timeout 內沒 URL 會 emit 'error' + state error,�
 
   mgr.start("http://127.0.0.1:4098");
 
-  await new Promise((r) => setTimeout(r, 80));
+  await new Promise((r) => setTimeout(r, 120)); // margin 70ms
 
   assert.equal(errors.length, 1);
   assert.match(errors[0].message, /did not report URL within 50ms/);
@@ -176,7 +176,7 @@ test("TunnelManager: timeout 前拿到 URL 就不會觸發 error", async () => {
   const mgr = new TunnelManager({
     cloudflaredBin: "cloudflared",
     spawn,
-    startupTimeoutMs: 60,
+    startupTimeoutMs: 30,
   });
   const errors = [];
   mgr.on("error", (e) => errors.push(e));
@@ -185,7 +185,7 @@ test("TunnelManager: timeout 前拿到 URL 就不會觸發 error", async () => {
     "data",
     Buffer.from("https://aaa-bbb-ccc.trycloudflare.com\n"),
   );
-  await new Promise((r) => setTimeout(r, 90));
+  await new Promise((r) => setTimeout(r, 80)); // margin 50ms
   assert.equal(errors.length, 0);
   assert.equal(mgr.getState().phase, "active");
 });
@@ -293,4 +293,72 @@ test("TunnelManager.stop: 連續兩次 stop 冪等", async () => {
     c.killSignals.filter((s) => s === "SIGTERM").length,
     1,
   );
+});
+
+// ── Important #1:fail() 冪等 ──────────────────────────────────────────────────
+
+test("TunnelManager: timeout 後 child 跟著 exit 不會二次 emit error", async () => {
+  const { spawn, children } = makeFakeSpawn();
+  const mgr = new TunnelManager({
+    cloudflaredBin: "cloudflared",
+    spawn,
+    startupTimeoutMs: 30,
+  });
+  const errors = [];
+  mgr.on("error", (e) => errors.push(e));
+  mgr.start("http://127.0.0.1:4096");
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(mgr.getState().phase, "error");
+  // timeout 觸發 SIGTERM,模擬 child 真的退出
+  children[0].emit("exit", null, "SIGTERM");
+  await new Promise((r) => setImmediate(r));
+  assert.equal(errors.length, 1, "child exit 後不應該再 emit 一次 error");
+});
+
+// ── Important #2 + Minor #3:stop() 在 error 階段不 hang + 清 startupTimer ───
+
+test("TunnelManager.stop: error 階段 child 已 exit 時 stop() 不會 hang", async () => {
+  const { spawn, children } = makeFakeSpawn();
+  const mgr = new TunnelManager({
+    cloudflaredBin: "cloudflared",
+    spawn,
+    startupTimeoutMs: 20,
+  });
+  mgr.on("error", () => {});
+  mgr.start("http://127.0.0.1:4096");
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(mgr.getState().phase, "error");
+  // child 跟著 exit
+  children[0].emit("exit", null, "SIGTERM");
+  await new Promise((r) => setImmediate(r));
+  // stop() 應該秒收(不 hang)
+  const t0 = Date.now();
+  await Promise.race([
+    mgr.stop(),
+    new Promise((_r, rej) =>
+      setTimeout(() => rej(new Error("stop() hung")), 100),
+    ),
+  ]);
+  assert.ok(Date.now() - t0 < 100);
+  assert.equal(mgr.getState().phase, "stopped");
+});
+
+test("TunnelManager.stop: starting 階段呼叫 stop 會清掉 startupTimer", async () => {
+  const { spawn, children } = makeFakeSpawn();
+  const mgr = new TunnelManager({
+    cloudflaredBin: "cloudflared",
+    spawn,
+    startupTimeoutMs: 50,
+  });
+  const errors = [];
+  mgr.on("error", (e) => errors.push(e));
+  mgr.start("http://127.0.0.1:4096");
+  const p = mgr.stop();
+  // 模擬 child 收到 SIGTERM 後 exit
+  children[0].emit("exit", null, "SIGTERM");
+  await p;
+  // 等到 startupTimeoutMs 之後也不能再 emit error
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(errors.length, 0);
+  assert.equal(mgr.getState().phase, "stopped");
 });
