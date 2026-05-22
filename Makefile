@@ -16,7 +16,7 @@ CURL              := curl -fsSL
 TS_SOURCES        := $(shell find src -name '*.ts' 2>/dev/null)
 JS_SOURCES        := $(shell find public test -name '*.mjs' -not -path './public/vendor/*' 2>/dev/null)
 
-.PHONY: build lint test test-sandbox precommit start install update vendor vendor-clean pack publish clean
+.PHONY: build lint test test-sandbox test-tunnel precommit start install update vendor vendor-clean pack publish clean
 
 .DEFAULT_GOAL := build
 
@@ -41,6 +41,12 @@ test: build
 test-sandbox: build
 	@echo "==> test-sandbox (opt-in real VM)"
 	@SANDBOX_VM=1 node --test test/sandbox.test.mjs test/sandbox-vm.test.mjs
+
+# 真實 cloudflared 整合測試。預設不跑 (要 cloudflared binary + 網路)。
+# 透過 TUNNEL_REAL=1 切換 opt-in 標記。
+test-tunnel: build
+	@echo "==> test-tunnel (opt-in real cloudflared)"
+	@TUNNEL_REAL=1 node --test test/tunnel.test.mjs test/tunnel-real.test.mjs
 
 precommit: lint test
 
