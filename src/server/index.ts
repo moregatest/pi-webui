@@ -400,6 +400,19 @@ if (sandboxEnabled) {
   }
 }
 
+// 讀 session jsonl 的第一行 header,拿 cwd 欄位。sandbox guard 用來判斷
+// client request 的 session 是否屬於目前 mount 的 workspace。
+function readSessionCwdSync(sessionFile) {
+  try {
+    const head = readFileSync(sessionFile, "utf8").split("\n", 2)[0] || "";
+    if (!head) return null;
+    const parsed = JSON.parse(head);
+    return typeof parsed?.cwd === "string" ? parsed.cwd : null;
+  } catch {
+    return null;
+  }
+}
+
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
@@ -1395,15 +1408,37 @@ class NativePiSessionController {
   // fresh bootstrap.
   async handleReady(lastSeq, sessionFile) {
     if (sessionFile && sessionFile !== (this.session.sessionFile || null)) {
-      try {
-        logger.info("client requested session", { sessionFile });
-        const switched = await this.runtime.switchSession(sessionFile);
-        if (!switched?.cancelled) await this.bindSession();
-      } catch (error) {
-        logger.warn("client requested session unavailable", {
-          sessionFile,
-          error: error instanceof Error ? error.message : String(error),
-        });
+      // sandbox 模式下 workspace 被 mount 鎖死。Client 若 request 切到別個
+      // cwd 的 session,read/write/bash 工具會通通踩到 workspace 邊界被擋。
+      // 直接拒絕跨 workspace 的 session switch,server 繼續用啟動時的 cwd。
+      if (sandboxEnabled && sandbox) {
+        const sessionCwd = readSessionCwdSync(sessionFile);
+        const wsRoot = sandbox.workspaceRoot;
+        if (sessionCwd && resolve(sessionCwd) !== resolve(wsRoot)) {
+          logger.warn("sandbox: refused cross-workspace session switch", {
+            sessionFile,
+            sessionCwd,
+            workspaceRoot: wsRoot,
+          });
+          // fall through,不 switchSession;往下走 bootstrap 用當前 session
+          sessionFile = null;
+        }
+      }
+      if (sessionFile) {
+        try {
+          logger.info("client requested session", { sessionFile });
+          const switched = await this.runtime.switchSession(sessionFile);
+          if (!switched?.cancelled) await this.bindSession();
+        } catch (error) {
+          logger.warn("client requested session unavailable", {
+            sessionFile,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      } else {
+        // sandbox refused switch — 直接 reset bootstrap 讓 client 用 server 端 session
+        await this.sendBootstrap({ reset: true });
+        return;
       }
     }
     const result = this.eventLog.eventsAfter(lastSeq);
