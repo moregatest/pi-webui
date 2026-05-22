@@ -13,6 +13,7 @@ const statusLeft = document.getElementById("status-left");
 const statusRight = document.getElementById("status-right");
 const statusCwd = document.getElementById("status-cwd");
 const statusSandbox = document.getElementById("status-sandbox");
+const statusTunnel = document.getElementById("status-tunnel");
 const statusError = document.getElementById("status-error");
 
 import {
@@ -47,6 +48,7 @@ let slashCommands = [];
 let homeDir = "";
 let hideModel = false;
 let sandboxInfo = null;
+let tunnelInfo = null;
 let slashFiltered = [];
 let slashIndex = 0;
 // Cursor into the server's session-event log. The server tags each
@@ -640,7 +642,9 @@ function connect() {
         homeDir = packet.payload.homeDir || "";
         hideModel = !!packet.payload.hideModel;
         sandboxInfo = packet.payload.sandbox || null;
+        tunnelInfo = packet.payload.tunnel || null;
         renderSandboxChip();
+        renderTunnelChip();
         logger.info("connected", {
           appCwd: packet.payload.appCwd,
           agentDir: packet.payload.agentDir,
@@ -753,6 +757,10 @@ function connect() {
         return;
       case "ext_ui_custom_close":
         customOverlay.close(packet.payload || {});
+        return;
+      case "tunnel_state":
+        tunnelInfo = { enabled: true, ...packet.payload };
+        renderTunnelChip();
         return;
       default:
         return;
@@ -1024,6 +1032,65 @@ function renderSandboxChip() {
     return;
   }
   statusSandbox.hidden = true;
+}
+
+function renderTunnelChip() {
+  if (!statusTunnel) return;
+  if (!tunnelInfo || !tunnelInfo.enabled) {
+    statusTunnel.hidden = true;
+    statusTunnel.textContent = "";
+    statusTunnel.title = "";
+    statusTunnel.removeAttribute("data-phase");
+    statusTunnel.onclick = null;
+    return;
+  }
+  statusTunnel.hidden = false;
+  const phase = tunnelInfo.phase || "starting";
+  statusTunnel.dataset.phase = phase;
+  let label = "tunnel: ?";
+  let tooltip = "";
+  let clickHandler = null;
+  switch (phase) {
+    case "starting":
+      label = "tunnel: connecting...";
+      tooltip = "Waiting for cloudflared to report URL";
+      break;
+    case "active": {
+      const url = tunnelInfo.url || "";
+      let host = url;
+      try {
+        host = new URL(url).host;
+      } catch {
+        /* keep url as host */
+      }
+      label = `tunnel: ${host}`;
+      tooltip = `${url}\n(click to copy)`;
+      clickHandler = async () => {
+        try {
+          await navigator.clipboard.writeText(url);
+          showToast?.("tunnel URL copied", "info");
+        } catch {
+          /* clipboard denied */
+        }
+      };
+      break;
+    }
+    case "stopping":
+      label = "tunnel: stopping...";
+      tooltip = "";
+      break;
+    case "error":
+      label = "tunnel: error";
+      tooltip = tunnelInfo.error || "Tunnel error";
+      break;
+    case "stopped":
+      label = "tunnel: stopped";
+      tooltip = "Tunnel was stopped";
+      break;
+  }
+  statusTunnel.textContent = label;
+  statusTunnel.title = tooltip;
+  statusTunnel.onclick = clickHandler;
 }
 
 function renderStatusBar() {
