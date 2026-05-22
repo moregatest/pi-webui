@@ -15,6 +15,9 @@ const statusCwd = document.getElementById("status-cwd");
 const statusSandbox = document.getElementById("status-sandbox");
 const statusTunnel = document.getElementById("status-tunnel");
 const statusError = document.getElementById("status-error");
+const brandHeader = document.getElementById("brand-header");
+const brandLogo = document.getElementById("brand-logo");
+const brandName = document.getElementById("brand-name");
 
 import {
   createChatState,
@@ -49,6 +52,19 @@ let homeDir = "";
 let hideModel = false;
 let sandboxInfo = null;
 let tunnelInfo = null;
+// 客戶導向 UI profile;預設全 false + brand 全 null,跟 server 端 parseUiProfile 對齊
+let uiProfile = {
+  hideThinking: false,
+  hideToolCalls: false,
+  showToolProgress: false,
+  hideStatusChips: false,
+  hideSessionPicker: false,
+  hideModel: false,
+  safeErrors: false,
+  brand: { name: null, logoUrl: null, color: null },
+};
+// tool_progress packet 對應的 DOM 區塊。Map<id, HTMLElement>。
+const toolProgressNodes = new Map();
 let slashFiltered = [];
 let slashIndex = 0;
 // Cursor into the server's session-event log. The server tags each
@@ -331,6 +347,14 @@ function renderBlocksHtml(blocks) {
   const parts = [];
   for (const b of blocks) {
     if (!b) continue;
+    // defensive secondary filter:server 已過濾,client 再防一手(非安全機制)
+    if (uiProfile?.hideThinking && b.type === "thinking") continue;
+    if (
+      uiProfile?.hideToolCalls &&
+      (b.type === "tool_call" || b.type === "tool_result")
+    ) {
+      continue;
+    }
     switch (b.type) {
       case "text":
         parts.push(renderTextBlockHtml(b.text || ""));
@@ -619,6 +643,66 @@ function handleSessionEvent(event) {
   }
 }
 
+// tool_progress packet 對應 UI:start 時把帶 spinner 的 block 插到 log 末尾,
+// end 時拿掉。client 不嘗試在 chat-state 內維護它(它不參與 message 結構);
+// 純粹是 ephemeral 提示,server reset / 切 session 時整批清掉。
+function handleToolProgress(payload) {
+  if (!payload || typeof payload !== "object") return;
+  const id = String(payload.id ?? "");
+  if (!id) return;
+  if (payload.phase === "start") {
+    if (toolProgressNodes.has(id)) return;
+    const el = document.createElement("div");
+    el.className = "tool-progress-block";
+    el.innerHTML = `<span class="spinner"></span><span class="tool-progress-label"></span>`;
+    el.querySelector(".tool-progress-label").textContent = String(payload.label ?? "");
+    log.appendChild(el);
+    toolProgressNodes.set(id, el);
+    scrollLogToBottom();
+  } else if (payload.phase === "end") {
+    const el = toolProgressNodes.get(id);
+    if (el) {
+      el.remove();
+      toolProgressNodes.delete(id);
+    }
+  }
+}
+
+// 把 server 告知的 brand 套到頁面:CSS var、header DOM、document.title。
+// brand.name / brand.logoUrl / brand.color 任一為 null/空 都當「未設定」處理。
+function applyBranding(brand) {
+  if (!brand) return;
+  if (brand.color) {
+    document.documentElement.style.setProperty("--brand-color", brand.color);
+  }
+  const hasName = !!brand.name;
+  const hasLogo = !!brand.logoUrl;
+  if (hasName || hasLogo) {
+    brandHeader.classList.add("is-visible");
+    if (hasName) {
+      brandName.textContent = brand.name;
+      brandName.hidden = false;
+      document.title = brand.name;
+    } else {
+      brandName.textContent = "";
+      brandName.hidden = true;
+    }
+    if (hasLogo) {
+      brandLogo.src = brand.logoUrl;
+      brandLogo.hidden = false;
+    } else {
+      brandLogo.removeAttribute("src");
+      brandLogo.hidden = true;
+    }
+  } else {
+    brandHeader.classList.remove("is-visible");
+    brandName.textContent = "";
+    brandName.hidden = true;
+    brandLogo.removeAttribute("src");
+    brandLogo.hidden = true;
+  }
+}
+
 function connect() {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   const url = `${protocol}://${location.host}/ws`;
@@ -640,9 +724,15 @@ function connect() {
       case "connected":
         slashCommands = packet.payload.slashCommands || [];
         homeDir = packet.payload.homeDir || "";
-        hideModel = !!packet.payload.hideModel;
         sandboxInfo = packet.payload.sandbox || null;
         tunnelInfo = packet.payload.tunnel || null;
+        // 客戶導向 UI profile;server 沒送(舊版相容)就保留模組層級的全 false 預設。
+        if (packet.payload.uiProfile) {
+          uiProfile = packet.payload.uiProfile;
+        }
+        // hideModel 沿用既有變數;優先取 uiProfile.hideModel,fallback 到舊欄位。
+        hideModel = !!(uiProfile?.hideModel ?? packet.payload.hideModel);
+        applyBranding(uiProfile.brand);
         renderSandboxChip();
         renderTunnelChip();
         logger.info("connected", {
@@ -651,6 +741,7 @@ function connect() {
           slashCommandCount: slashCommands.length,
           hideModel,
           sandbox: sandboxInfo,
+          uiProfile,
         });
         if (sandboxInfo) {
           if (sandboxInfo.error) {
@@ -695,6 +786,9 @@ function connect() {
         // session switch, or replay miss.
         logger.info("session reset", { currentSeq: packet.payload?.currentSeq ?? null });
         csResetHistory(chatState, []);
+        // 把進行中的 tool_progress 也整批清掉(切 session / cold start)。
+        for (const el of toolProgressNodes.values()) el.remove();
+        toolProgressNodes.clear();
         if (typeof packet.payload?.currentSeq === "number") {
           lastSeq = packet.payload.currentSeq;
         } else {
@@ -711,6 +805,11 @@ function connect() {
       case "session_event":
         if (typeof packet.seq === "number") lastSeq = packet.seq;
         handleSessionEvent(packet.payload);
+        return;
+      case "tool_progress":
+        // server 在 hideToolCalls + showToolProgress 時轉 tool_execution_* 為 progress packet。
+        // start:插入帶 spinner 的 progress block;end:移掉對應 block。
+        handleToolProgress(packet.payload);
         return;
       case "list_dir_result":
         handleListDirResult(packet.payload);
@@ -969,6 +1068,11 @@ function formatRelativeTime(iso) {
 }
 
 function showSessionPicker(payload) {
+  // 客戶導向 profile:session picker 整個禁用
+  if (uiProfile?.hideSessionPicker) {
+    showToast("Session picker disabled by UI profile", "info");
+    return;
+  }
   const merged = [];
   const seen = new Set();
   const lists = [payload.sessions?.currentProject || [], payload.sessions?.allProjects || []];
@@ -1010,6 +1114,14 @@ function showSessionPicker(payload) {
 
 function renderSandboxChip() {
   if (!statusSandbox) return;
+  // 客戶導向 profile:status chip 整組隱藏
+  if (uiProfile?.hideStatusChips) {
+    statusSandbox.hidden = true;
+    statusSandbox.textContent = "";
+    statusSandbox.title = "";
+    statusSandbox.classList.remove("error");
+    return;
+  }
   if (!sandboxInfo) {
     statusSandbox.hidden = true;
     statusSandbox.textContent = "";
@@ -1036,6 +1148,15 @@ function renderSandboxChip() {
 
 function renderTunnelChip() {
   if (!statusTunnel) return;
+  // 客戶導向 profile:status chip 整組隱藏
+  if (uiProfile?.hideStatusChips) {
+    statusTunnel.hidden = true;
+    statusTunnel.textContent = "";
+    statusTunnel.title = "";
+    statusTunnel.removeAttribute("data-phase");
+    statusTunnel.onclick = null;
+    return;
+  }
   if (!tunnelInfo || !tunnelInfo.enabled) {
     statusTunnel.hidden = true;
     statusTunnel.textContent = "";
@@ -1096,6 +1217,13 @@ function renderTunnelChip() {
 function renderStatusBar() {
   statusError.textContent = chatState.lastError || "";
   statusError.title = chatState.lastError || "";
+  // 客戶導向 profile:整列 cwd / left / right 都藏,但 error 還是顯示
+  if (uiProfile?.hideStatusChips) {
+    statusLeft.textContent = "";
+    statusRight.textContent = "";
+    statusCwd.textContent = "";
+    return;
+  }
   const s = currentSessionState;
   if (!s) {
     statusLeft.textContent = "";
