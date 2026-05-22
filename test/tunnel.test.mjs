@@ -85,3 +85,61 @@ test("TunnelManager.start: 重複 start 不會再 spawn", async () => {
   assert.equal(calls.length, 1);
   await new Promise((r) => setTimeout(r, 10));
 });
+
+test("TunnelManager: 從 stderr parse 出 trycloudflare.com URL,emit 'url' + state active", () => {
+  const { spawn, children } = makeFakeSpawn();
+  const mgr = new TunnelManager({ cloudflaredBin: "cloudflared", spawn });
+  const urls = [];
+  const states = [];
+  mgr.on("url", (u) => urls.push(u));
+  mgr.on("state", (s) => states.push(s));
+
+  mgr.start("http://127.0.0.1:4098");
+
+  const child = children[0];
+  child.stderr.emit(
+    "data",
+    Buffer.from(
+      "INF |  Your quick Tunnel has been created! Visit it at  |\n" +
+        "INF |  https://blue-fish-xx.trycloudflare.com  |\n",
+    ),
+  );
+
+  assert.deepEqual(urls, ["https://blue-fish-xx.trycloudflare.com"]);
+  assert.equal(mgr.getState().phase, "active");
+  assert.equal(mgr.getState().url, "https://blue-fish-xx.trycloudflare.com");
+  // state event 順序:starting 然後 active
+  assert.equal(states.length, 2);
+  assert.equal(states[0].phase, "starting");
+  assert.equal(states[1].phase, "active");
+  assert.equal(states[1].url, "https://blue-fish-xx.trycloudflare.com");
+  // URL 拿到後 startupTimer 已被 clearTimeout,不需要額外清理
+});
+
+test("TunnelManager: stdout 出現 URL 也能 parse(防保險)", () => {
+  const { spawn, children } = makeFakeSpawn();
+  const mgr = new TunnelManager({ cloudflaredBin: "cloudflared", spawn });
+  const urls = [];
+  mgr.on("url", (u) => urls.push(u));
+
+  mgr.start("http://127.0.0.1:4096");
+  children[0].stdout.emit(
+    "data",
+    Buffer.from("https://abc-def-ghi.trycloudflare.com\n"),
+  );
+
+  assert.deepEqual(urls, ["https://abc-def-ghi.trycloudflare.com"]);
+  // URL 拿到後 startupTimer 已被 clearTimeout
+});
+
+test("TunnelManager: parse 出 URL 後再來的輸出不重複 emit", () => {
+  const { spawn, children } = makeFakeSpawn();
+  const mgr = new TunnelManager({ cloudflaredBin: "cloudflared", spawn });
+  const urls = [];
+  mgr.on("url", (u) => urls.push(u));
+  mgr.start("http://127.0.0.1:4096");
+  const c = children[0];
+  c.stderr.emit("data", Buffer.from("https://aaa-bbb-ccc.trycloudflare.com\n"));
+  c.stderr.emit("data", Buffer.from("https://xxx-yyy-zzz.trycloudflare.com\n"));
+  assert.equal(urls.length, 1);
+});
