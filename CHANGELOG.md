@@ -30,7 +30,7 @@
 
 設計文件:`docs/superpowers/specs/2026-05-22-cloudflared-integration-design.md`(對應 `2026-05-21-cloudflared-integration-requirements.md` 事故彙整)
 
-commit range:`ca92a84..HEAD`(從設計文件 commit 到 docs commit,共 ~25 commits)
+`ca92a84..e9aad17`(24 commits,涵蓋設計文件、實作計畫、TunnelManager 模組、server 串接、整合測試、extension forward、WebUI chip 與 README/ROADMAP/CHANGELOG 文件更新)
 
 ## 2026-05-21 (sandbox)
 
