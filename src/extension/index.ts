@@ -98,6 +98,17 @@ interface StartOptions {
 	tunnel?: boolean;
 	tunnelCloudflared?: string;
 	allowUnsafeTunnel?: boolean;
+	// 客戶導向 UI profile 旗標(整組 forward 給 server)
+	hideThinking?: boolean;
+	hideToolCalls?: boolean;
+	showToolProgress?: boolean;
+	hideStatusChips?: boolean;
+	hideSessionPicker?: boolean;
+	safeErrors?: boolean;
+	brandName?: string;
+	brandLogo?: string;
+	brandColor?: string;
+	uiProfile?: string;
 	// When true, the spawned server is tied to this pi process (terminated on
 	// session_shutdown). When false, the server is detached and survives pi exit.
 	owned?: boolean;
@@ -132,6 +143,16 @@ function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 		if (opts.tunnel) serverArgs.push("--tunnel");
 		if (opts.tunnelCloudflared) serverArgs.push("--tunnel-cloudflared", opts.tunnelCloudflared);
 		if (opts.allowUnsafeTunnel) serverArgs.push("--allow-unsafe-tunnel");
+		if (opts.hideThinking) serverArgs.push("--hide-thinking");
+		if (opts.hideToolCalls) serverArgs.push("--hide-tool-calls");
+		if (opts.showToolProgress) serverArgs.push("--show-tool-progress");
+		if (opts.hideStatusChips) serverArgs.push("--hide-status-chips");
+		if (opts.hideSessionPicker) serverArgs.push("--hide-session-picker");
+		if (opts.safeErrors) serverArgs.push("--safe-errors");
+		if (opts.brandName) serverArgs.push("--brand-name", opts.brandName);
+		if (opts.brandLogo) serverArgs.push("--brand-logo", opts.brandLogo);
+		if (opts.brandColor) serverArgs.push("--brand-color", opts.brandColor);
+		if (opts.uiProfile) serverArgs.push("--ui-profile", opts.uiProfile);
 		const detached = !opts.owned;
 		// 收集 child stderr，避免 spawn 後因 MODULE_NOT_FOUND 等錯誤被吞掉
 		const child = spawn("node", serverArgs, {
@@ -256,6 +277,20 @@ function parseStartFlags(tokens: string[]): StartOptions {
 		else if (t === "--tunnel-cloudflared") opts.tunnelCloudflared = valueOf(++i, t);
 		else if (t.startsWith("--tunnel-cloudflared=")) opts.tunnelCloudflared = t.slice("--tunnel-cloudflared=".length);
 		else if (t === "--allow-unsafe-tunnel") opts.allowUnsafeTunnel = true;
+		else if (t === "--hide-thinking") opts.hideThinking = true;
+		else if (t === "--hide-tool-calls") opts.hideToolCalls = true;
+		else if (t === "--show-tool-progress") opts.showToolProgress = true;
+		else if (t === "--hide-status-chips") opts.hideStatusChips = true;
+		else if (t === "--hide-session-picker") opts.hideSessionPicker = true;
+		else if (t === "--safe-errors") opts.safeErrors = true;
+		else if (t === "--brand-name") opts.brandName = valueOf(++i, t);
+		else if (t.startsWith("--brand-name=")) opts.brandName = t.slice("--brand-name=".length);
+		else if (t === "--brand-logo") opts.brandLogo = valueOf(++i, t);
+		else if (t.startsWith("--brand-logo=")) opts.brandLogo = t.slice("--brand-logo=".length);
+		else if (t === "--brand-color") opts.brandColor = valueOf(++i, t);
+		else if (t.startsWith("--brand-color=")) opts.brandColor = t.slice("--brand-color=".length);
+		else if (t === "--ui-profile") opts.uiProfile = valueOf(++i, t);
+		else if (t.startsWith("--ui-profile=")) opts.uiProfile = t.slice("--ui-profile=".length);
 		else throw new Error(`unknown flag: ${t}`);
 	}
 	if (skills.length > 0) opts.skills = skills.join(":");
@@ -377,6 +412,66 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		default: false,
 	});
 
+	pi.registerFlag?.("webui-hide-thinking", {
+		description: "drop assistant thinking blocks in pi-webui. Implies --webui.",
+		type: "boolean",
+		default: false,
+	});
+
+	pi.registerFlag?.("webui-hide-tool-calls", {
+		description: "drop tool_execution events / tool_call blocks in pi-webui. Implies --webui.",
+		type: "boolean",
+		default: false,
+	});
+
+	pi.registerFlag?.("webui-show-tool-progress", {
+		description: "with --webui-hide-tool-calls, send tool_progress packets with friendly labels. Implies --webui.",
+		type: "boolean",
+		default: false,
+	});
+
+	pi.registerFlag?.("webui-hide-status-chips", {
+		description: "hide sandbox/tunnel/session chips in the pi-webui status bar. Implies --webui.",
+		type: "boolean",
+		default: false,
+	});
+
+	pi.registerFlag?.("webui-hide-session-picker", {
+		description: "hide the session picker UI in pi-webui. Implies --webui.",
+		type: "boolean",
+		default: false,
+	});
+
+	pi.registerFlag?.("webui-safe-errors", {
+		description: "wrap pi-webui server_error payloads as generic + ticket id. Implies --webui.",
+		type: "boolean",
+		default: false,
+	});
+
+	pi.registerFlag?.("webui-brand-name", {
+		description: "override the pi-webui title and header label. Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
+	pi.registerFlag?.("webui-brand-logo", {
+		description: "file served at GET /brand/logo in pi-webui. Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
+	pi.registerFlag?.("webui-brand-color", {
+		description: "brand accent color (#rgb or #rrggbb) for pi-webui. Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
+	pi.registerFlag?.("webui-ui-profile", {
+		description: "pi-webui UI profile preset (e.g. 'customer'). Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
 	pi.on("session_shutdown", () => {
 		const child = ownedChild;
 		if (!child) return;
@@ -448,6 +543,16 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		let tunnel: boolean;
 		let tunnelCloudflared: string;
 		let allowUnsafeTunnel: boolean;
+		let hideThinking: boolean;
+		let hideToolCalls: boolean;
+		let showToolProgress: boolean;
+		let hideStatusChips: boolean;
+		let hideSessionPicker: boolean;
+		let safeErrors: boolean;
+		let brandName: string;
+		let brandLogo: string;
+		let brandColor: string;
+		let uiProfile: string;
 		let want: boolean;
 		try {
 			listen = String(pi.getFlag?.("webui-listen") || "").trim();
@@ -465,6 +570,16 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			tunnel = !!pi.getFlag?.("webui-tunnel");
 			tunnelCloudflared = String(pi.getFlag?.("webui-tunnel-cloudflared") || "").trim();
 			allowUnsafeTunnel = !!pi.getFlag?.("webui-allow-unsafe-tunnel");
+			hideThinking = !!pi.getFlag?.("webui-hide-thinking");
+			hideToolCalls = !!pi.getFlag?.("webui-hide-tool-calls");
+			showToolProgress = !!pi.getFlag?.("webui-show-tool-progress");
+			hideStatusChips = !!pi.getFlag?.("webui-hide-status-chips");
+			hideSessionPicker = !!pi.getFlag?.("webui-hide-session-picker");
+			safeErrors = !!pi.getFlag?.("webui-safe-errors");
+			brandName = String(pi.getFlag?.("webui-brand-name") || "").trim();
+			brandLogo = String(pi.getFlag?.("webui-brand-logo") || "").trim();
+			brandColor = String(pi.getFlag?.("webui-brand-color") || "").trim();
+			uiProfile = String(pi.getFlag?.("webui-ui-profile") || "").trim();
 			want =
 				!!pi.getFlag?.("webui") ||
 				listen.length > 0 ||
@@ -481,7 +596,17 @@ export default function webuiExtension(pi: ExtensionAPI) {
 				sandboxWorkspace.length > 0 ||
 				tunnel ||
 				tunnelCloudflared.length > 0 ||
-				allowUnsafeTunnel;
+				allowUnsafeTunnel ||
+				hideThinking ||
+				hideToolCalls ||
+				showToolProgress ||
+				hideStatusChips ||
+				hideSessionPicker ||
+				safeErrors ||
+				brandName.length > 0 ||
+				brandLogo.length > 0 ||
+				brandColor.length > 0 ||
+				uiProfile.length > 0;
 		} catch {
 			return;
 		}
@@ -508,6 +633,16 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			tunnel: tunnel || undefined,
 			tunnelCloudflared: tunnelCloudflared || undefined,
 			allowUnsafeTunnel: allowUnsafeTunnel || undefined,
+			hideThinking: hideThinking || undefined,
+			hideToolCalls: hideToolCalls || undefined,
+			showToolProgress: showToolProgress || undefined,
+			hideStatusChips: hideStatusChips || undefined,
+			hideSessionPicker: hideSessionPicker || undefined,
+			safeErrors: safeErrors || undefined,
+			brandName: brandName || undefined,
+			brandLogo: brandLogo || undefined,
+			brandColor: brandColor || undefined,
+			uiProfile: uiProfile || undefined,
 			owned: true,
 		});
 	});
