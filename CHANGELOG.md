@@ -2,6 +2,29 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-05-22 (tunnel-hardening)
+
+### 改動
+
+- `--tunnel` 沒帶 `--sandbox` 從「印 warning」升級成「硬阻擋」:server 啟動直接 exit 2,提示同時需要 `--sandbox` 或 `--allow-unsafe-tunnel` 才能繞
+  - 解決對外曝露時 AI 工具(`read` / `write` / `edit` / `bash`)有 full host access 的安全空窗
+  - opt-out 用 `--allow-unsafe-tunnel` / `PI_WEBUI_ALLOW_UNSAFE_TUNNEL=1`;設了會印 warning 提醒風險
+  - pi extension 端對應旗標:`--webui-allow-unsafe-tunnel`(forward 給 spawn 的 server)
+- 多開 server 場景:`PI_AGENT_DIR` 指向「沒 `auth.json`、但預設 `~/.pi/agent` 有」時,印 hint 教使用者怎麼共用 credential
+  - 解決「為了隔離 session 設了 fresh `PI_AGENT_DIR`,結果 AI 對接失敗找不到 API key」這個容易踩的坑
+
+### 測試
+
+- `test/server-tunnel.test.mjs` 新增 2 個 case:
+  - `--tunnel` 沒 `--sandbox` 沒 `--allow-unsafe-tunnel` → exit 2 + stderr 有提示
+  - `--tunnel` 沒 `--sandbox` + `PI_WEBUI_ALLOW_UNSAFE_TUNNEL=1` → 通過 + 印 warning
+- 原 LAN warning test 加 `--allow-unsafe-tunnel` 通過新 gate,維持兩個 warning assertion
+
+### 文件
+
+- README `## tunnel` 段:`--sandbox` required 移到 security defaults 首條;新增「running multiple tunnels in parallel」最佳實踐段
+- flags table 新增 `--allow-unsafe-tunnel`
+
 ## 2026-05-22 (tunnel)
 
 ### 新增

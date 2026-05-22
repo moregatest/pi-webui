@@ -212,6 +212,10 @@ Cloudflare account required.
 
 security defaults applied automatically when `--tunnel` is active:
 
+- **`--sandbox` required.** `--tunnel` without `--sandbox` would let anyone with
+  the public URL + password execute `read` / `write` / `edit` / `bash` against
+  the host filesystem. the server **refuses to start** unless either `--sandbox`
+  or `--allow-unsafe-tunnel` is also set.
 - **auto-generated password.** if `--password` is not provided, a 32-character
   base64url random password is generated, printed to console, and written to
   `<agentDir>/tunnel-password.txt` (mode `0600`; default location: `~/.pi/agent/`).
@@ -227,24 +231,32 @@ flags and env vars:
 |------|---------|-------------|
 | `--tunnel` | `PI_WEBUI_TUNNEL=1` | enable quick tunnel |
 | `--tunnel-cloudflared <path>` | `PI_WEBUI_CLOUDFLARED` | custom cloudflared binary path |
+| `--allow-unsafe-tunnel` | `PI_WEBUI_ALLOW_UNSAFE_TUNNEL=1` | bypass the `--sandbox` requirement (UNSAFE — full host access) |
 
 ```bash
-# simplest — public URL with auto-generated password
-pi-webui --tunnel
-
 # recommended — public URL + sandboxed filesystem access
 pi-webui --tunnel --sandbox
+
+# UNSAFE — only when you fully trust everyone with the URL
+pi-webui --tunnel --allow-unsafe-tunnel
 ```
 
 **security notes:**
 
-- running `--tunnel` without `--sandbox` exposes the server with full host
-  filesystem access. the server prints a `stderr` warning at startup; pairing
-  with `--sandbox` is strongly recommended.
+- without `--sandbox`, `--tunnel` is refused unless you pass
+  `--allow-unsafe-tunnel`. that flag lets remote callers execute tools with
+  full host filesystem access; only set it on a fully trusted host.
 - combining `--listen 0.0.0.0:*` and `--tunnel` exposes the port on both LAN
   and the public internet simultaneously. the server prints a `stderr` warning
   at startup.
 - the quick tunnel URL changes on every restart; it is not a stable hostname.
+
+**running multiple tunnels in parallel** (e.g. one per project): keep
+`PI_AGENT_DIR` unset (or pointing at the default `~/.pi/agent`) so all
+servers share the same OAuth credential, but give each instance its own
+`--listen <port>` and `--password <pw>`. setting `PI_AGENT_DIR` to a fresh
+empty directory will break model auth — the server prints a `hint` to
+`stderr` when it detects this case.
 
 **status bar.** a `tunnel` chip appears while the tunnel is active — yellow
 while starting, green when the URL is ready, red on error, grey when stopped.
