@@ -67,6 +67,13 @@ import {
 import { Sandbox, GUEST_WORKSPACE } from "./sandbox.js";
 import { TunnelManager } from "./tunnel.js";
 import type { TunnelState } from "./tunnel.js";
+import {
+  filterEvent,
+  filterMessageHistory,
+  parseUiProfile,
+  safeError,
+} from "./ui-profile.js";
+import type { UiProfile } from "./ui-profile.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -135,6 +142,31 @@ function printHelp() {
     "  --trust-proxy               honor X-Forwarded-Proto when deciding cookie Secure flag.",
     "                              alias: PI_WEBUI_TRUST_PROXY=1 env var.",
     "  --hide-model                hide the model name shown in the status bar.",
+    "  --hide-thinking             drop assistant thinking blocks from session events.",
+    "                              alias: PI_WEBUI_HIDE_THINKING=1.",
+    "  --hide-tool-calls           drop tool_execution_* events and tool_call/tool_result",
+    "                              blocks. alias: PI_WEBUI_HIDE_TOOL_CALLS=1.",
+    "  --show-tool-progress        with --hide-tool-calls, send user-friendly tool_progress",
+    "                              packets so the UI shows a spinner with Chinese labels",
+    "                              (read → 正在讀取檔案... etc).",
+    "                              alias: PI_WEBUI_SHOW_TOOL_PROGRESS=1.",
+    "  --hide-status-chips         hide sandbox/tunnel/session chips in the status bar.",
+    "                              alias: PI_WEBUI_HIDE_STATUS_CHIPS=1.",
+    "  --hide-session-picker       hide the session picker / switcher entry points.",
+    "                              alias: PI_WEBUI_HIDE_SESSION_PICKER=1.",
+    "  --safe-errors               wrap server_error payloads as generic + 6-hex ticket;",
+    "                              the raw message is logged with the same ticket id.",
+    "                              alias: PI_WEBUI_SAFE_ERRORS=1.",
+    "  --brand-name <text>         override the title and header label shown to the client.",
+    "                              alias: PI_WEBUI_BRAND_NAME env var.",
+    "  --brand-logo <path>         file served at GET /brand/logo (svg/png/jpg by ext).",
+    "                              alias: PI_WEBUI_BRAND_LOGO env var.",
+    "  --brand-color <hex>         #rgb or #rrggbb; sets CSS --brand-color custom property.",
+    "                              alias: PI_WEBUI_BRAND_COLOR env var.",
+    "  --ui-profile <name>         apply a preset bundle. supported: customer (= hide-thinking",
+    "                              + hide-tool-calls + show-tool-progress + hide-status-chips",
+    "                              + hide-session-picker + hide-model + safe-errors).",
+    "                              alias: PI_WEBUI_UI_PROFILE env var.",
     "  --sandbox                   run read/write/edit/bash inside a Gondolin micro-VM.",
     "                              requires qemu; alias: PI_WEBUI_SANDBOX=1.",
     "  --sandbox-workspace <path>  host directory mounted as /workspace in the VM.",
@@ -163,6 +195,16 @@ function printHelp() {
     "  PI_WEBUI_PASSWORD          enable login with this password (same as --password)",
     "  PI_WEBUI_TRUST_PROXY       '1' to honor X-Forwarded-Proto for cookie Secure flag",
     "  PI_WEBUI_HIDE_MODEL        '1' to hide the model name in the status bar",
+    "  PI_WEBUI_HIDE_THINKING     '1' to drop assistant thinking blocks",
+    "  PI_WEBUI_HIDE_TOOL_CALLS   '1' to drop tool_execution_* events / tool_call blocks",
+    "  PI_WEBUI_SHOW_TOOL_PROGRESS '1' to send tool_progress packets when tool calls hidden",
+    "  PI_WEBUI_HIDE_STATUS_CHIPS '1' to hide sandbox/tunnel/session chips",
+    "  PI_WEBUI_HIDE_SESSION_PICKER '1' to hide the session picker UI",
+    "  PI_WEBUI_SAFE_ERRORS       '1' to wrap server_error payloads with a ticket id",
+    "  PI_WEBUI_BRAND_NAME        override webui title / header label",
+    "  PI_WEBUI_BRAND_LOGO        path to a file served at /brand/logo",
+    "  PI_WEBUI_BRAND_COLOR       brand accent color (#rgb or #rrggbb)",
+    "  PI_WEBUI_UI_PROFILE        preset name (currently: customer)",
     "  PI_WEBUI_SANDBOX           '1' to enable the Gondolin VM sandbox (same as --sandbox)",
     "  PI_WEBUI_SANDBOX_WORKSPACE host directory used as the VM workspace mount",
     "  PI_WEBUI_TUNNEL            '1' to expose the webui via a cloudflared quick tunnel",
@@ -200,6 +242,20 @@ function parseArgs(argv) {
     else if (a === "--command-allow-file") out.commandAllowFile = argv[++i];
     else if (a.startsWith("--command-allow-file=")) out.commandAllowFile = a.slice("--command-allow-file=".length);
     else if (a === "--hide-model") out.hideModel = true;
+    else if (a === "--hide-thinking") out.hideThinking = true;
+    else if (a === "--hide-tool-calls") out.hideToolCalls = true;
+    else if (a === "--show-tool-progress") out.showToolProgress = true;
+    else if (a === "--hide-status-chips") out.hideStatusChips = true;
+    else if (a === "--hide-session-picker") out.hideSessionPicker = true;
+    else if (a === "--safe-errors") out.safeErrors = true;
+    else if (a === "--ui-profile") out.uiProfile = argv[++i];
+    else if (a.startsWith("--ui-profile=")) out.uiProfile = a.slice("--ui-profile=".length);
+    else if (a === "--brand-name") out.brandName = argv[++i];
+    else if (a.startsWith("--brand-name=")) out.brandName = a.slice("--brand-name=".length);
+    else if (a === "--brand-logo") out.brandLogo = argv[++i];
+    else if (a.startsWith("--brand-logo=")) out.brandLogo = a.slice("--brand-logo=".length);
+    else if (a === "--brand-color") out.brandColor = argv[++i];
+    else if (a.startsWith("--brand-color=")) out.brandColor = a.slice("--brand-color=".length);
     else if (a === "--password") out.password = argv[++i];
     else if (a.startsWith("--password=")) out.password = a.slice("--password=".length);
     else if (a === "--trust-proxy") out.trustProxy = true;
@@ -318,8 +374,36 @@ const cliCommandAllow = computeCommandAllow(
 );
 const cliCommandAllowSet = cliCommandAllow ? new Set(cliCommandAllow) : null;
 
-// 是否在 status bar 隱藏模型名稱。CLI 與環境變數任一為真即生效。
-const hideModel = !!args.hideModel || process.env.PI_WEBUI_HIDE_MODEL === "1";
+// 客戶導向 UI profile:整合 hide-* / show-* / brand-* / --ui-profile preset。
+// 失敗(brand-logo 不存在 / brand-color 不合法 / unknown preset)直接 fail-fast。
+let effectiveUiProfile: UiProfile;
+try {
+  effectiveUiProfile = parseUiProfile(args, process.env);
+} catch (error) {
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(2);
+}
+// hideModel 沿用既有變數名避免大改;effectiveUiProfile.hideModel 是 single source of truth。
+const hideModel = effectiveUiProfile.hideModel;
+
+// connected packet / 前端 render 要的 client-friendly view:把 brand.logoPath 換成
+// 統一的 /brand/logo URL(避免洩漏 host 路徑);沒設 logo 時保 null。
+function serializeUiProfile(profile: UiProfile) {
+  return {
+    hideThinking: profile.hideThinking,
+    hideToolCalls: profile.hideToolCalls,
+    showToolProgress: profile.showToolProgress,
+    hideStatusChips: profile.hideStatusChips,
+    hideSessionPicker: profile.hideSessionPicker,
+    hideModel: profile.hideModel,
+    safeErrors: profile.safeErrors,
+    brand: {
+      name: profile.brand.name,
+      logoUrl: profile.brand.logoPath ? "/brand/logo" : null,
+      color: profile.brand.color,
+    },
+  };
+}
 // tunnel 啟用條件:CLI --tunnel 或 PI_WEBUI_TUNNEL=1。
 // effective binary path:CLI > env > "cloudflared"(走 PATH)
 const tunnelEnabled = !!args.tunnel || process.env.PI_WEBUI_TUNNEL === "1";
@@ -725,6 +809,8 @@ function isAuthPublic(pathname, method) {
   if (pathname === "/api/login" && method === "POST") return true;
   if (pathname === "/api/logout" && method === "POST") return true;
   if (pathname === "/favicon.svg" && method === "GET") return true;
+  // brand logo 要在 login 頁面也能顯示
+  if (pathname === "/brand/logo" && method === "GET") return true;
   return false;
 }
 
@@ -783,9 +869,39 @@ async function handleAuth(req, res) {
   return true;
 }
 
+// --brand-logo 指定的檔走這條路由,Content-Type 由副檔名推。
+// 未指定 logo 時 fallback redirect 到 /favicon.svg,讓 client 端 <img src="/brand/logo"> 永遠有東西。
+const BRAND_LOGO_MIME: Record<string, string> = {
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+
+function serveBrandLogo(req, res) {
+  const logoPath = effectiveUiProfile.brand.logoPath;
+  if (!logoPath) {
+    res.writeHead(302, { location: "/favicon.svg" });
+    res.end();
+    return;
+  }
+  const type = BRAND_LOGO_MIME[extname(logoPath).toLowerCase()] || "application/octet-stream";
+  res.writeHead(200, {
+    "content-type": type,
+    "cache-control": "no-cache, no-store, must-revalidate",
+  });
+  createReadStream(logoPath).pipe(res);
+}
+
 function serveStatic(req, res) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   let pathname = url.pathname;
+  if (pathname === "/brand/logo") {
+    serveBrandLogo(req, res);
+    return;
+  }
   if (pathname === "/") pathname = "/index.html";
   else if (pathname === "/login") pathname = "/login.html";
   const filePath = resolve(join(publicDir, pathname));
@@ -1165,7 +1281,8 @@ class NativePiSessionController {
     });
     this.ready = this.init().catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
-      sendJson(this.ws, { type: "server_error", payload: message });
+      const safe = safeError(effectiveUiProfile, message, logger);
+      sendJson(this.ws, { type: "server_error", payload: safe });
       throw error;
     });
   }
@@ -1188,6 +1305,7 @@ class NativePiSessionController {
         diagnostics: this.runtime.diagnostics,
         slashCommands: this.collectSlashCommands(),
         hideModel,
+        uiProfile: serializeUiProfile(effectiveUiProfile),
         sandbox: sandboxEnabled
           ? {
               enabled: !!sandbox,
@@ -1244,9 +1362,19 @@ class NativePiSessionController {
     // Mark self-activity so the file watcher can ignore writes we caused.
     this.lastSelfActivity = Date.now();
 
+    // eventLog 存原始 event(替 replay 用),向 client 出口時才過 ui-profile 過濾。
     const seq = this.eventLog.append(event);
     this.logSessionEvent(event, seq);
-    sendJson(this.ws, { type: "session_event", payload: event, seq });
+
+    const filtered = filterEvent(event, effectiveUiProfile);
+    if (filtered === null) {
+      // event drop;但仍要走後續 sendState / sendMessages / trimSettled,
+      // 因為 state 機器跟 event 出口是兩件事
+    } else if (filtered.kind === "tool_progress") {
+      sendJson(this.ws, { type: "tool_progress", payload: filtered.payload });
+    } else {
+      sendJson(this.ws, { type: "session_event", payload: filtered.event, seq });
+    }
 
     if (shouldRefreshState(event.type)) {
       this.sendState();
@@ -1381,7 +1509,8 @@ class NativePiSessionController {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.error("external refresh failed", { sessionFile, error: message });
-      sendJson(this.ws, { type: "server_error", payload: `External refresh failed: ${message}` });
+      const safe = safeError(effectiveUiProfile, `External refresh failed: ${message}`, logger);
+      sendJson(this.ws, { type: "server_error", payload: safe });
     } finally {
       this.refreshing = false;
     }
@@ -1433,7 +1562,10 @@ class NativePiSessionController {
   }
 
   async sendMessages() {
-    sendJson(this.ws, { type: "message_history", payload: this.session.messages });
+    // 客戶 mode 下,history 也要剝 thinking / tool_call / tool_result block;
+    // 否則重連 / refresh 時 client 仍會拿到細節
+    const filtered = filterMessageHistory(this.session.messages, effectiveUiProfile);
+    sendJson(this.ws, { type: "message_history", payload: filtered });
   }
 
   async sendSessions() {
@@ -1886,12 +2018,14 @@ wss.on("connection", (ws, req) => {
       void controller.handle(data).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         logger.error("ws handler error", { error: message });
-        sendJson(ws, { type: "server_error", payload: message });
+        const safe = safeError(effectiveUiProfile, message, logger);
+        sendJson(ws, { type: "server_error", payload: safe });
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.error("ws parse error", { error: message });
-      sendJson(ws, { type: "server_error", payload: message });
+      const safe = safeError(effectiveUiProfile, message, logger);
+      sendJson(ws, { type: "server_error", payload: safe });
     }
   });
 
