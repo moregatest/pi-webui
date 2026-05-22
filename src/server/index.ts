@@ -135,6 +135,11 @@ function printHelp() {
     "                              requires qemu; alias: PI_WEBUI_SANDBOX=1.",
     "  --sandbox-workspace <path>  host directory mounted as /workspace in the VM.",
     "                              defaults to the project cwd. /cwd is disabled in sandbox mode.",
+    "  --tunnel                    啟用 cloudflared quick tunnel(trycloudflare.com)。",
+    "                              強制 --password(沒指定會自動產生)與 --trust-proxy。",
+    "                              alias: PI_WEBUI_TUNNEL=1.",
+    "  --tunnel-cloudflared <path> 自訂 cloudflared binary 路徑。",
+    "                              alias: PI_WEBUI_CLOUDFLARED.",
     "  -h, --help                  show this help and exit",
     "",
     "environment variables:",
@@ -151,6 +156,8 @@ function printHelp() {
     "  PI_WEBUI_HIDE_MODEL        '1' to hide the model name in the status bar",
     "  PI_WEBUI_SANDBOX           '1' to enable the Gondolin VM sandbox (same as --sandbox)",
     "  PI_WEBUI_SANDBOX_WORKSPACE host directory used as the VM workspace mount",
+    "  PI_WEBUI_TUNNEL            '1' 啟用 cloudflared quick tunnel",
+    "  PI_WEBUI_CLOUDFLARED       cloudflared binary path",
     "  PI_PROJECT_CWD             project directory used for sessions (default cwd)",
     "  PI_AGENT_DIR               pi agent config directory (default ~/.pi/agent)",
     "  PI_SESSION_DIR             session storage directory (default pi default)",
@@ -189,6 +196,9 @@ function parseArgs(argv) {
     else if (a === "--sandbox") out.sandbox = true;
     else if (a === "--sandbox-workspace") out.sandboxWorkspace = argv[++i];
     else if (a.startsWith("--sandbox-workspace=")) out.sandboxWorkspace = a.slice("--sandbox-workspace=".length);
+    else if (a === "--tunnel") out.tunnel = true;
+    else if (a === "--tunnel-cloudflared") out.tunnelCloudflared = argv[++i];
+    else if (a.startsWith("--tunnel-cloudflared=")) out.tunnelCloudflared = a.slice("--tunnel-cloudflared=".length);
     else if (a === "--help" || a === "-h") out.help = true;
     else throw new Error(`unknown argument: ${a}`);
   }
@@ -373,6 +383,12 @@ async function collectRecentCwds() {
 }
 const agentDir = process.env.PI_AGENT_DIR || getAgentDir();
 const sessionDir = process.env.PI_SESSION_DIR;
+
+// tunnel 啟用條件:CLI --tunnel 或 PI_WEBUI_TUNNEL=1。
+// effective binary path:CLI > env > "cloudflared"(走 PATH)
+const tunnelEnabled = !!args.tunnel || process.env.PI_WEBUI_TUNNEL === "1";
+const tunnelCloudflared =
+  args.tunnelCloudflared || process.env.PI_WEBUI_CLOUDFLARED || "cloudflared";
 
 // sandbox 啟用條件:CLI --sandbox 或 PI_WEBUI_SANDBOX=1。
 // workspace 預設取 appCwd;CLI / env 可指定別的目錄,但路徑必須存在且為 directory。
