@@ -79,7 +79,7 @@ async function startServer(extraArgs = []) {
 }
 
 test("server --tunnel: tunnel chip / connected payload / WS broadcast / shutdown", async () => {
-  const srv = await startServer(["--tunnel", "--tunnel-cloudflared", FAKE_CLOUDFLARED]);
+  const srv = await startServer(["--tunnel", "--tunnel-cloudflared", FAKE_CLOUDFLARED, "--allow-unsafe-tunnel"]);
   try {
     // 等 fake cloudflared 印 URL 到 server stdout
     await waitFor(
@@ -149,7 +149,7 @@ test("server --tunnel: tunnel chip / connected payload / WS broadcast / shutdown
   }
 });
 
-test("server --tunnel + --listen 0.0.0.0: 印 LAN 警告", async () => {
+test("server --tunnel + --listen 0.0.0.0 (+ --allow-unsafe-tunnel): 印 LAN + 沙盒繞行警告", async () => {
   const port = takeFreePort();
   const agentDir = mkdtempSync(resolve(tmpdir(), "pi-webui-tunnel-warn-"));
   const child = spawn(
@@ -161,6 +161,7 @@ test("server --tunnel + --listen 0.0.0.0: 印 LAN 警告", async () => {
       "--tunnel",
       "--tunnel-cloudflared",
       FAKE_CLOUDFLARED,
+      "--allow-unsafe-tunnel",
     ],
     {
       stdio: ["ignore", "pipe", "pipe"],
@@ -182,7 +183,82 @@ test("server --tunnel + --listen 0.0.0.0: 印 LAN 警告", async () => {
       () => `stderr=${stderr} stdout=${stdout}`,
     );
     assert.match(stderr, /LAN and public concurrently/);
+    assert.match(stderr, /allow-unsafe-tunnel set/);
     assert.match(stderr, /tools have full host access/);
+  } finally {
+    child.kill("SIGTERM");
+    await new Promise((r) => child.once("exit", r));
+    rmSync(agentDir, { recursive: true, force: true });
+  }
+});
+
+test("server --tunnel 沒 --sandbox 沒 --allow-unsafe-tunnel → exit 2 + 提示", async () => {
+  const port = takeFreePort();
+  const agentDir = mkdtempSync(resolve(tmpdir(), "pi-webui-tunnel-gate-"));
+  const child = spawn(
+    "node",
+    [
+      SERVER_PATH,
+      "--listen",
+      `127.0.0.1:${port}`,
+      "--tunnel",
+      "--tunnel-cloudflared",
+      FAKE_CLOUDFLARED,
+    ],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, PI_AGENT_DIR: agentDir },
+    },
+  );
+  let stderr = "";
+  child.stderr.on("data", (c) => {
+    stderr += c.toString();
+  });
+  try {
+    const code = await new Promise((r) => child.once("exit", r));
+    assert.equal(code, 2);
+    assert.match(stderr, /exposes the webui to the public internet/);
+    assert.match(stderr, /add --sandbox/);
+    assert.match(stderr, /--allow-unsafe-tunnel/);
+  } finally {
+    rmSync(agentDir, { recursive: true, force: true });
+  }
+});
+
+test("server --tunnel 沒 --sandbox 但 PI_WEBUI_ALLOW_UNSAFE_TUNNEL=1 → 通過 + warning", async () => {
+  const port = takeFreePort();
+  const agentDir = mkdtempSync(resolve(tmpdir(), "pi-webui-tunnel-envopt-"));
+  const child = spawn(
+    "node",
+    [
+      SERVER_PATH,
+      "--listen",
+      `127.0.0.1:${port}`,
+      "--tunnel",
+      "--tunnel-cloudflared",
+      FAKE_CLOUDFLARED,
+    ],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, PI_AGENT_DIR: agentDir, PI_WEBUI_ALLOW_UNSAFE_TUNNEL: "1" },
+    },
+  );
+  let stderr = "";
+  child.stderr.on("data", (c) => {
+    stderr += c.toString();
+  });
+  let stdout = "";
+  child.stdout.on("data", (c) => {
+    stdout += c.toString();
+  });
+  try {
+    await waitFor(
+      () => stderr.includes("listening") || stdout.includes("listening"),
+      5000,
+      () => `stderr=${stderr} stdout=${stdout}`,
+    );
+    assert.match(stderr, /allow-unsafe-tunnel set/);
+    assert.doesNotMatch(stderr, /exposes the webui to the public internet/);
   } finally {
     child.kill("SIGTERM");
     await new Promise((r) => child.once("exit", r));

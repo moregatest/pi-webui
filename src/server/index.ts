@@ -141,9 +141,14 @@ function printHelp() {
     "                              defaults to the project cwd. /cwd is disabled in sandbox mode.",
     "  --tunnel                    expose the webui via a cloudflared quick tunnel (trycloudflare.com).",
     "                              forces --password (auto-generated if not given) and --trust-proxy.",
+    "                              REQUIRES --sandbox unless --allow-unsafe-tunnel is also set.",
     "                              alias: PI_WEBUI_TUNNEL=1.",
     "  --tunnel-cloudflared <path> cloudflared binary path (defaults to PATH lookup).",
     "                              alias: PI_WEBUI_CLOUDFLARED env var.",
+    "  --allow-unsafe-tunnel       bypass the --sandbox requirement of --tunnel.",
+    "                              tools will run with full host access; only set this if you",
+    "                              fully trust everyone who can reach the tunnel URL.",
+    "                              alias: PI_WEBUI_ALLOW_UNSAFE_TUNNEL=1.",
     "  -h, --help                  show this help and exit",
     "",
     "environment variables:",
@@ -162,6 +167,7 @@ function printHelp() {
     "  PI_WEBUI_SANDBOX_WORKSPACE host directory used as the VM workspace mount",
     "  PI_WEBUI_TUNNEL            '1' to expose the webui via a cloudflared quick tunnel",
     "  PI_WEBUI_CLOUDFLARED       cloudflared binary path",
+    "  PI_WEBUI_ALLOW_UNSAFE_TUNNEL '1' to skip the --sandbox requirement of --tunnel (UNSAFE)",
     "  PI_PROJECT_CWD             project directory used for sessions (default cwd)",
     "  PI_AGENT_DIR               pi agent config directory (default ~/.pi/agent)",
     "  PI_SESSION_DIR             session storage directory (default pi default)",
@@ -203,6 +209,7 @@ function parseArgs(argv) {
     else if (a === "--tunnel") out.tunnel = true;
     else if (a === "--tunnel-cloudflared") out.tunnelCloudflared = argv[++i];
     else if (a.startsWith("--tunnel-cloudflared=")) out.tunnelCloudflared = a.slice("--tunnel-cloudflared=".length);
+    else if (a === "--allow-unsafe-tunnel") out.allowUnsafeTunnel = true;
     else if (a === "--help" || a === "-h") out.help = true;
     else throw new Error(`unknown argument: ${a}`);
   }
@@ -398,6 +405,24 @@ async function collectRecentCwds() {
 const agentDir = process.env.PI_AGENT_DIR || getAgentDir();
 const sessionDir = process.env.PI_SESSION_DIR;
 
+// 偵測使用者顯式設了 PI_AGENT_DIR 但該目錄沒有 auth.json,而預設 ~/.pi/agent 有。
+// 這通常表示使用者想隔離 session 但忘了把 OAuth credential 帶過去,會導致 AI 對接失敗。
+if (process.env.PI_AGENT_DIR) {
+  const defaultDir = getAgentDir();
+  if (resolve(agentDir) !== resolve(defaultDir)) {
+    let customHasAuth = false;
+    let defaultHasAuth = false;
+    try { customHasAuth = statSync(resolve(agentDir, "auth.json")).size > 0; } catch { /* missing */ }
+    try { defaultHasAuth = statSync(resolve(defaultDir, "auth.json")).size > 0; } catch { /* missing */ }
+    if (!customHasAuth && defaultHasAuth) {
+      process.stderr.write(
+        `hint: PI_AGENT_DIR=${agentDir} has no auth.json, but ${defaultDir} does.\n` +
+        `      to share OAuth credential: unset PI_AGENT_DIR, or copy ${defaultDir}/auth.json into ${agentDir}.\n`,
+      );
+    }
+  }
+}
+
 // tunnel 啟用且未帶 --password:自動產生 32 字元亂數並寫檔
 if (tunnelEnabled && !authPassword) {
   authPassword = generateTunnelPassword();
@@ -484,9 +509,20 @@ if (tunnelEnabled && host === "0.0.0.0") {
     "warning: --tunnel with --listen 0.0.0.0:* exposes LAN and public concurrently.\n",
   );
 }
-if (tunnelEnabled && !sandboxEnabled) {
+// security gate:--tunnel 對外曝露時 *必須* 配 --sandbox,否則任何人拿到 URL + 密碼
+// 都能透過 read/write/edit/bash 操作整個 host。要繞請顯式 --allow-unsafe-tunnel 表態。
+const allowUnsafeTunnel = !!args.allowUnsafeTunnel || process.env.PI_WEBUI_ALLOW_UNSAFE_TUNNEL === "1";
+if (tunnelEnabled && !sandboxEnabled && !allowUnsafeTunnel) {
   process.stderr.write(
-    "warning: tunnel exposed without sandbox; tools have full host access. add --sandbox to restrict.\n",
+    "error: --tunnel exposes the webui to the public internet.\n" +
+    "       running without --sandbox lets remote users execute tools with full host access.\n" +
+    "       add --sandbox (recommended) or pass --allow-unsafe-tunnel to bypass this check.\n",
+  );
+  process.exit(2);
+}
+if (tunnelEnabled && !sandboxEnabled && allowUnsafeTunnel) {
+  process.stderr.write(
+    "warning: --allow-unsafe-tunnel set; tunnel exposed without sandbox, tools have full host access.\n",
   );
 }
 

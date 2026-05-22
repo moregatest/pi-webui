@@ -97,6 +97,7 @@ interface StartOptions {
 	sandboxWorkspace?: string;
 	tunnel?: boolean;
 	tunnelCloudflared?: string;
+	allowUnsafeTunnel?: boolean;
 	// When true, the spawned server is tied to this pi process (terminated on
 	// session_shutdown). When false, the server is detached and survives pi exit.
 	owned?: boolean;
@@ -130,6 +131,7 @@ function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 		if (opts.sandboxWorkspace) serverArgs.push("--sandbox-workspace", opts.sandboxWorkspace);
 		if (opts.tunnel) serverArgs.push("--tunnel");
 		if (opts.tunnelCloudflared) serverArgs.push("--tunnel-cloudflared", opts.tunnelCloudflared);
+		if (opts.allowUnsafeTunnel) serverArgs.push("--allow-unsafe-tunnel");
 		const detached = !opts.owned;
 		// 收集 child stderr，避免 spawn 後因 MODULE_NOT_FOUND 等錯誤被吞掉
 		const child = spawn("node", serverArgs, {
@@ -253,6 +255,7 @@ function parseStartFlags(tokens: string[]): StartOptions {
 		else if (t === "--tunnel") opts.tunnel = true;
 		else if (t === "--tunnel-cloudflared") opts.tunnelCloudflared = valueOf(++i, t);
 		else if (t.startsWith("--tunnel-cloudflared=")) opts.tunnelCloudflared = t.slice("--tunnel-cloudflared=".length);
+		else if (t === "--allow-unsafe-tunnel") opts.allowUnsafeTunnel = true;
 		else throw new Error(`unknown flag: ${t}`);
 	}
 	if (skills.length > 0) opts.skills = skills.join(":");
@@ -368,6 +371,12 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		default: "",
 	});
 
+	pi.registerFlag?.("webui-allow-unsafe-tunnel", {
+		description: "bypass --sandbox requirement of --tunnel (UNSAFE; full host access). Implies --webui.",
+		type: "boolean",
+		default: false,
+	});
+
 	pi.on("session_shutdown", () => {
 		const child = ownedChild;
 		if (!child) return;
@@ -438,6 +447,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		let sandboxWorkspace: string;
 		let tunnel: boolean;
 		let tunnelCloudflared: string;
+		let allowUnsafeTunnel: boolean;
 		let want: boolean;
 		try {
 			listen = String(pi.getFlag?.("webui-listen") || "").trim();
@@ -454,6 +464,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			sandboxWorkspace = String(pi.getFlag?.("webui-sandbox-workspace") || "").trim();
 			tunnel = !!pi.getFlag?.("webui-tunnel");
 			tunnelCloudflared = String(pi.getFlag?.("webui-tunnel-cloudflared") || "").trim();
+			allowUnsafeTunnel = !!pi.getFlag?.("webui-allow-unsafe-tunnel");
 			want =
 				!!pi.getFlag?.("webui") ||
 				listen.length > 0 ||
@@ -469,7 +480,8 @@ export default function webuiExtension(pi: ExtensionAPI) {
 				sandbox ||
 				sandboxWorkspace.length > 0 ||
 				tunnel ||
-				tunnelCloudflared.length > 0;
+				tunnelCloudflared.length > 0 ||
+				allowUnsafeTunnel;
 		} catch {
 			return;
 		}
@@ -495,6 +507,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			sandboxWorkspace: sandboxWorkspace || undefined,
 			tunnel: tunnel || undefined,
 			tunnelCloudflared: tunnelCloudflared || undefined,
+			allowUnsafeTunnel: allowUnsafeTunnel || undefined,
 			owned: true,
 		});
 	});
