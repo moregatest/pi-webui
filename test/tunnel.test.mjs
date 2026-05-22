@@ -189,3 +189,39 @@ test("TunnelManager: timeout 前拿到 URL 就不會觸發 error", async () => {
   assert.equal(errors.length, 0);
   assert.equal(mgr.getState().phase, "active");
 });
+
+test("TunnelManager: active 後 child 突然 exit code != 0 → state error", async () => {
+  const { spawn, children } = makeFakeSpawn();
+  const mgr = new TunnelManager({ cloudflaredBin: "cloudflared", spawn });
+  const errors = [];
+  mgr.on("error", (e) => errors.push(e));
+  mgr.start("http://127.0.0.1:4096");
+  const c = children[0];
+  c.stderr.emit(
+    "data",
+    Buffer.from("https://aaa-bbb-ccc.trycloudflare.com\n"),
+  );
+  assert.equal(mgr.getState().phase, "active");
+
+  c.emit("exit", 137, null);
+  // 給 microtask 跑
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(mgr.getState().phase, "error");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /exited unexpectedly/);
+});
+
+test("TunnelManager: starting 階段 child 直接 exit → state error", async () => {
+  const { spawn, children } = makeFakeSpawn();
+  const mgr = new TunnelManager({ cloudflaredBin: "cloudflared", spawn });
+  const errors = [];
+  mgr.on("error", (e) => errors.push(e));
+  mgr.start("http://127.0.0.1:4096");
+
+  children[0].emit("exit", 1, null);
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(mgr.getState().phase, "error");
+  assert.equal(errors.length, 1);
+});
