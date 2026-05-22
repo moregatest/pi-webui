@@ -65,6 +65,8 @@ import {
   shouldSetSecure,
 } from "./auth.js";
 import { Sandbox, GUEST_WORKSPACE } from "./sandbox.js";
+import { TunnelManager } from "./tunnel.js";
+import type { TunnelState } from "./tunnel.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -1158,6 +1160,9 @@ class NativePiSessionController {
               error: sandboxInitError,
             }
           : null,
+        tunnel: tunnelEnabled
+          ? { enabled: true, ...lastTunnelState }
+          : null,
       },
     });
     // Bootstrap is now driven by the client's `ready` message — they tell us
@@ -1784,6 +1789,19 @@ class NativePiSessionController {
   }
 }
 
+// 追蹤所有活躍的 WS controller,用於 tunnel 狀態廣播。
+const activeControllers = new Set<NativePiSessionController>();
+
+let tunnel: TunnelManager | null = null;
+let lastTunnelState: TunnelState = { phase: "idle" };
+
+function broadcastTunnelState(state: TunnelState) {
+  lastTunnelState = state;
+  for (const ctrl of activeControllers) {
+    sendJson(ctrl.ws, { type: "tunnel_state", payload: state });
+  }
+}
+
 const server = createServer(async (req, res) => {
   try {
     const handled = await handleAuth(req, res);
@@ -1824,6 +1842,7 @@ wss.on("connection", (ws, req) => {
   const remote = req?.socket?.remoteAddress || "unknown";
   logger.info("ws connect", { remote });
   const controller = new NativePiSessionController(ws);
+  activeControllers.add(controller);
 
   ws.on("message", (raw) => {
     try {
@@ -1842,11 +1861,33 @@ wss.on("connection", (ws, req) => {
 
   ws.on("close", () => {
     logger.info("ws disconnect", { remote });
+    activeControllers.delete(controller);
     void controller.close();
   });
 });
 
 const actualPort = await listenWithFallback(server, { host, port, logger });
+const actualUrl = `http://${host}:${actualPort}`;
+
+if (tunnelEnabled) {
+  tunnel = new TunnelManager({
+    cloudflaredBin: tunnelCloudflared,
+    logger,
+  });
+  tunnel.on("state", (s: TunnelState) => broadcastTunnelState(s));
+  tunnel.on("url", (url: string) => {
+    process.stdout.write(`  tunnel:   ${url}\n`);
+  });
+  tunnel.on("error", (e: Error) => {
+    logger.error("tunnel error", { error: e.message });
+    process.stderr.write(`  tunnel:   error - ${e.message}\n`);
+  });
+  tunnel.start(actualUrl);
+  // 廣播初始 starting 狀態(spawn 同步觸發了 state event,但
+  // activeControllers 此時為空,所以這裡顯式設一次 lastTunnelState)
+  lastTunnelState = tunnel.getState();
+}
+
 const url = `http://${host}:${actualPort}`;
 logger.info("listening", {
   url,
