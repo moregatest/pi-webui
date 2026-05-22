@@ -319,7 +319,10 @@ const tunnelCloudflared =
 let authPassword = (args.password ?? process.env.PI_WEBUI_PASSWORD ?? "") || "";
 let tunnelPasswordPath: string | null = null;
 let tunnelPasswordGenerated = false;
-const trustProxy = !!args.trustProxy || process.env.PI_WEBUI_TRUST_PROXY === "1";
+let trustProxy = !!args.trustProxy || process.env.PI_WEBUI_TRUST_PROXY === "1";
+if (tunnelEnabled && !trustProxy) {
+  trustProxy = true;
+}
 // authEnabled / authStore 在 agentDir 確定後才算(tunnel 可能自動產生密碼)
 // ↓ 見下方 agentDir 之後的 block
 const LOGIN_PATH = "/login";
@@ -472,6 +475,17 @@ if (tunnelEnabled && !isCloudflaredAvailable(tunnelCloudflared)) {
       "  cargo:  cargo install cloudflared\n",
   );
   process.exit(2);
+}
+
+if (tunnelEnabled && host === "0.0.0.0") {
+  process.stderr.write(
+    "warning: --tunnel with --listen 0.0.0.0:* exposes LAN and public concurrently.\n",
+  );
+}
+if (tunnelEnabled && !sandboxEnabled) {
+  process.stderr.write(
+    "warning: tunnel exposed without sandbox; tools have full host access. add --sandbox to restrict.\n",
+  );
 }
 
 // 讀 session jsonl 的第一行 header,拿 cwd 欄位。sandbox guard 用來判斷
