@@ -170,6 +170,49 @@ input:focus {
   color: var(--error);
 }
 
+.status-tunnel {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0 0.4rem;
+  border: 1px solid var(--tool);
+  border-radius: 3px;
+  color: var(--tool);
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.status-tunnel[hidden] {
+  display: none;
+}
+
+.status-tunnel[data-phase="starting"] {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.status-tunnel[data-phase="active"] {
+  border-color: var(--success);
+  color: var(--success);
+  cursor: pointer;
+}
+
+.status-tunnel[data-phase="stopping"] {
+  border-color: var(--muted);
+  color: var(--muted);
+}
+
+.status-tunnel[data-phase="error"] {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.status-tunnel[data-phase="stopped"] {
+  border-color: var(--muted);
+  color: var(--muted);
+}
+
 .status-left,
 .status-right {
   white-space: nowrap;
