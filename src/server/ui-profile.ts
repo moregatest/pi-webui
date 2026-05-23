@@ -175,6 +175,8 @@ export function filterEvent(event: any, profile: UiProfile): FilterResult {
   }
 
   // message_update:過濾 message.content 陣列中的 thinking / tool_* block
+  // SDK 內部 block type 用 camelCase(toolCall / toolResult),早期 client 端
+  // normalize 後是 snake_case;兩種都接受,避免漏過濾
   if (event.type === "message_update") {
     if (!profile.hideThinking && !profile.hideToolCalls)
       return { kind: "event", event };
@@ -184,7 +186,10 @@ export function filterEvent(event: any, profile: UiProfile): FilterResult {
       if (!b || typeof b !== "object") return true;
       if (b.type === "thinking" && profile.hideThinking) return false;
       if (
-        (b.type === "tool_call" || b.type === "tool_result") &&
+        (b.type === "tool_call" ||
+          b.type === "tool_result" ||
+          b.type === "toolCall" ||
+          b.type === "toolResult") &&
         profile.hideToolCalls
       )
         return false;
@@ -201,26 +206,52 @@ export function filterEvent(event: any, profile: UiProfile): FilterResult {
 }
 
 // 過濾整段 message history(client 重連時的 message_history packet 用)。
-// 對每則 message 套用與 filterEvent 對 message_update 相同的 block 過濾;
+// 兩層過濾:
+//   - message-level:SDK 把 tool 結果 / bash 執行存成獨立 role(toolResult /
+//     bashExecution),hideToolCalls=true 時整則 drop,否則 client 仍會渲染
+//     "Tool result: bash" 區塊
+//   - content-level:對 user/assistant 等帶 content 陣列的 message,剝
+//     thinking / tool_* block(SDK 用 camelCase,舊路徑也可能是 snake_case)
 // hide flag 都沒開時直接回原陣列(無謂複製)。
 export function filterMessageHistory(messages: any[], profile: UiProfile): any[] {
   if (!profile.hideThinking && !profile.hideToolCalls) return messages;
   if (!Array.isArray(messages)) return messages;
-  return messages.map((msg: any) => {
-    if (!msg || !Array.isArray(msg.content)) return msg;
+  const out: any[] = [];
+  for (const msg of messages) {
+    if (!msg) {
+      out.push(msg);
+      continue;
+    }
+    if (
+      profile.hideToolCalls &&
+      (msg.role === "toolResult" || msg.role === "bashExecution")
+    ) {
+      continue;
+    }
+    if (!Array.isArray(msg.content)) {
+      out.push(msg);
+      continue;
+    }
     const filtered = msg.content.filter((b: any) => {
       if (!b || typeof b !== "object") return true;
       if (b.type === "thinking" && profile.hideThinking) return false;
       if (
-        (b.type === "tool_call" || b.type === "tool_result") &&
+        (b.type === "tool_call" ||
+          b.type === "tool_result" ||
+          b.type === "toolCall" ||
+          b.type === "toolResult") &&
         profile.hideToolCalls
       )
         return false;
       return true;
     });
-    if (filtered.length === msg.content.length) return msg;
-    return { ...msg, content: filtered };
-  });
+    if (filtered.length === msg.content.length) {
+      out.push(msg);
+    } else {
+      out.push({ ...msg, content: filtered });
+    }
+  }
+  return out;
 }
 
 export interface SafeErrorLogger {

@@ -299,6 +299,22 @@ test("filterEvent: hideToolCalls 啟用,tool_call / tool_result block 從 messag
   assert.deepEqual(r.event.message.content, [{ type: "text", text: "visible" }]);
 });
 
+test("filterEvent: hideToolCalls 啟用,toolCall / toolResult (SDK camelCase) block 從 message_update 剝掉", () => {
+  const p = parseUiProfile({ hideToolCalls: true }, {});
+  const e = {
+    type: "message_update",
+    message: {
+      content: [
+        { type: "text", text: "visible" },
+        { type: "toolCall", id: "x", name: "bash" },
+        { type: "toolResult", toolName: "bash", content: "out" },
+      ],
+    },
+  };
+  const r = filterEvent(e, p);
+  assert.deepEqual(r.event.message.content, [{ type: "text", text: "visible" }]);
+});
+
 test("filterEvent: hide flag 沒命中任何 block → pass-through 原 event reference", () => {
   const p = parseUiProfile({ hideThinking: true }, {});
   const e = {
@@ -361,6 +377,73 @@ test("filterMessageHistory: hideThinking 過濾每則 message 的 thinking block
 test("filterMessageHistory: 非陣列輸入 → 原樣回", () => {
   const p = parseUiProfile({ hideThinking: true }, {});
   assert.equal(filterMessageHistory(null, p), null);
+});
+
+test("filterMessageHistory: hideToolCalls 啟用,SDK camelCase toolCall / toolResult content block 剝掉", () => {
+  const p = parseUiProfile({ hideToolCalls: true }, {});
+  const msgs = [
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "before" },
+        { type: "toolCall", id: "tc-1", name: "bash", arguments: {} },
+      ],
+    },
+  ];
+  const out = filterMessageHistory(msgs, p);
+  assert.deepEqual(out[0].content, [{ type: "text", text: "before" }]);
+});
+
+test("filterMessageHistory: hideToolCalls 啟用,role='toolResult' / 'bashExecution' 整則 message drop", () => {
+  const p = parseUiProfile({ hideToolCalls: true }, {});
+  const msgs = [
+    { role: "user", content: [{ type: "text", text: "hi" }] },
+    { role: "assistant", content: [{ type: "text", text: "running" }] },
+    { role: "toolResult", toolName: "bash", content: "result-body" },
+    { role: "bashExecution", command: "ls", output: "a\nb", exitCode: 0 },
+    { role: "assistant", content: [{ type: "text", text: "done" }] },
+  ];
+  const out = filterMessageHistory(msgs, p);
+  assert.equal(out.length, 3, "tool result + bash execution message should be removed");
+  assert.equal(out[0].role, "user");
+  assert.equal(out[1].role, "assistant");
+  assert.equal(out[2].role, "assistant");
+  assert.equal(out[2].content[0].text, "done");
+});
+
+test("filterMessageHistory: 只啟 hideThinking,role='toolResult' 不該被 drop", () => {
+  const p = parseUiProfile({ hideThinking: true }, {});
+  const msgs = [
+    { role: "user", content: [{ type: "text", text: "hi" }] },
+    { role: "toolResult", toolName: "bash", content: "result-body" },
+  ];
+  const out = filterMessageHistory(msgs, p);
+  assert.equal(out.length, 2);
+  assert.equal(out[1].role, "toolResult");
+});
+
+test("filterMessageHistory: customer preset 下,SDK 混合 fixture 整段過濾後乾淨", () => {
+  const p = parseUiProfile({ uiProfile: "customer" }, {});
+  const msgs = [
+    { role: "user", content: [{ type: "text", text: "請列出檔案" }] },
+    {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "我該叫 bash" },
+        { type: "text", text: "好" },
+        { type: "toolCall", id: "tc-1", name: "bash", arguments: { cmd: "ls" } },
+      ],
+    },
+    { role: "toolResult", toolName: "bash", content: "file1\nfile2" },
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "這裡是檔案" }],
+    },
+  ];
+  const out = filterMessageHistory(msgs, p);
+  assert.equal(out.length, 3, "tool result message removed");
+  // assistant 第一則只剩 text,thinking + toolCall 被剝掉
+  assert.deepEqual(out[1].content, [{ type: "text", text: "好" }]);
 });
 
 //

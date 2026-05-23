@@ -2,6 +2,22 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-05-23 (customer-ui-profile fix)
+
+### 修正
+
+- `filterMessageHistory` / `filterEvent` 漏過濾 SDK 真實 shape 的 tool result:
+  - SDK content block type 是 camelCase(`toolCall` / `toolResult`),原本只比對 snake_case → reload / external refresh 後 `Tool result: <name>` 區塊仍會出現
+  - SDK 把 tool 結果 / bash 執行存成獨立 `role: "toolResult"` / `role: "bashExecution"` 的 top-level message,原本完全沒做 message-level filter
+  - `filterMessageHistory` 改成兩層過濾:`hideToolCalls=true` 時 role 為 `toolResult` / `bashExecution` 整則 drop;content block 同時 match camelCase + snake_case
+  - `filterEvent` 對 `message_update` 的 content filter 也同步加 camelCase
+- 瀏覽器實測複現:`/tmp/pi-webui-test-customer/` spawn `--ui-profile customer` server → 送觸發 bash tool 的 prompt → reload → 確認 `.message.tool` DOM 完全消失
+
+### 測試
+
+- `test/ui-profile.test.mjs` 加 5 個 case(camelCase content / role-level drop / 只啟 hideThinking 不該動 toolResult / customer preset 混合 fixture)
+- 共 299 tests / 296 pass / 3 skipped(原 294 + 5 新)
+
 ## 2026-05-22 (customer-ui-profile)
 
 ### 新增
