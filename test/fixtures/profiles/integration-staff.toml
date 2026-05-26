@@ -1,0 +1,9 @@
+[ui]
+hide_thinking      = true
+hide_tool_calls    = true
+show_tool_progress = true
+hide_model         = true
+
+[brand]
+name   = "Integration Staff"
+accent = "#0066cc"
