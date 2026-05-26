@@ -199,8 +199,7 @@ test("profile [skills].allow 與 .pi/skills-allow.txt 同存 → 印 override �
   );
   const { child, getStderr } = await startServer(cwd, ["--profile", "staff"]);
   try {
-    // warn log 在 server listening 之前產生,startServer resolve 時已在 stderr 中
-    await new Promise((r) => setTimeout(r, 500));
+    // warn 早於 listening url= log,startServer resolve 時 stderr 已含此行
     assert.match(getStderr(), /profile \[skills\]\.allow override/);
   } finally {
     await stopServer(child);

@@ -386,7 +386,7 @@ let cliSkillAllow = computeSkillAllow(
 // profile [skills].allow 直接 override CLI/env/檔案;若有 skills-allow.txt 同存,印警告
 if (profileFile?.skills?.allow) {
   if (effectiveSkillAllowFile) {
-    logger.warn("profile [skills].allow override", { file: effectiveSkillAllowFile });
+    logger.warn("profile [skills].allow override", { profile: profileName, file: effectiveSkillAllowFile });
   }
   cliSkillAllow = [...profileFile.skills.allow];
 }
@@ -408,7 +408,7 @@ let cliCommandAllow = computeCommandAllow(
 // profile [commands].allow 直接 override CLI/env/檔案;若有 command-allow 檔同存,印警告
 if (profileFile?.commands?.allow) {
   if (effectiveCommandAllowFile) {
-    logger.warn("profile [commands].allow override", { file: effectiveCommandAllowFile });
+    logger.warn("profile [commands].allow override", { profile: profileName, file: effectiveCommandAllowFile });
   }
   cliCommandAllow = [...profileFile.commands.allow];
 }
