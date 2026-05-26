@@ -48,6 +48,7 @@ description = "nine9 工程支援(內部員工接口)"
 
 [ui]
 show_tool_progress = true
+hide_model = true   # 內部員工亦保密 model 名稱
 
 [brand]
 name = "nine9 工程支援"

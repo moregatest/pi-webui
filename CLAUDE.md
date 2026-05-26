@@ -71,6 +71,22 @@ client 透過單一 WebSocket 與 server 來回,packet 型別在 server `sendJso
 - `/skill:<name> args` 由 server 直接丟給 `session.prompt()`,由 pi 內建 `_expandSkillCommand` 展開
 - `/webui start` 在 extension 端做了 shell-like tokenize + flag parse,把同樣的 server 旗標 inline forward 給 spawn 的 server
 
+## 對外場景必須隱藏 model 名稱
+
+**只要該場景會被「非開發人員」看到(內部員工、客戶、demo、截圖、GIF、外發影片),都必須隱藏 model 名稱。**
+
+模型選擇是商業資訊,洩漏會影響成本結構與供應商談判,內部員工跟客戶都一視同仁。
+
+實作方式(三選一,profile / CLI / env 任一個 truthy 就生效):
+
+- profile toml `[ui] hide_model = true`
+- CLI `--hide-model`
+- env `PI_WEBUI_HIDE_MODEL=1`
+
+**內建 customer fallback 已預設 `hide_model = true`**;新寫的 staff / brand / demo / 任何客製 profile,只要會被外人看到,toml 必須含 `hide_model = true`。
+
+**寫 doc / 錄 screencast / 截圖前先檢查**:status bar 右下角不可出現 `openrouter/...`、`anthropic/...` 之類字串。若已錄製含 model 的 GIF,必須重錄不可上版。
+
 ## 測試 pi 對 Claude Code skill 的相容性
 
 升級 pi-coding-agent dist / 換 model / 改 server runtime / 反饋說「pi 跟 Claude Code 跑同一 skill 不一樣」,**必須**跑這套 regression。
