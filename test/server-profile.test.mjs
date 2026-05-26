@@ -187,3 +187,81 @@ test("個別 CLI flag override profile", async (t) => {
     await stopServer(child);
   }
 });
+
+test("profile [skills].allow 與 .pi/skills-allow.txt 同存 → 印 override 警告", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(cwd, ".pi", "profiles"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, ".pi", "skills-allow.txt"), "old-skill\n");
+  fs.writeFileSync(
+    path.join(cwd, ".pi", "profiles", "staff.toml"),
+    `[skills]\nallow = ["new-skill"]\n`,
+  );
+  const { child, getStderr } = await startServer(cwd, ["--profile", "staff"]);
+  try {
+    // warn log 在 server listening 之前產生,startServer resolve 時已在 stderr 中
+    await new Promise((r) => setTimeout(r, 500));
+    assert.match(getStderr(), /profile \[skills\]\.allow override/);
+  } finally {
+    await stopServer(child);
+  }
+});
+
+test("profile [defaults].model 啟動套用,但 --model CLI 勝", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(cwd, ".pi", "profiles"), { recursive: true });
+  fs.writeFileSync(
+    path.join(cwd, ".pi", "profiles", "staff.toml"),
+    `[defaults]\nmodel = "anthropic/claude-opus-4-7"\n`,
+  );
+
+  // case 1: profile 套用 → cliModelPattern = "anthropic/claude-opus-4-7"
+  // 驗證方法:model 若不在 registry 會印 "model not found in registry: <pattern>"
+  // 此警告出現表示 profile 的 model 確實被套用為 cliModelPattern。
+  {
+    const { child, url, getStderr } = await startServer(cwd, ["--profile", "staff"]);
+    try {
+      await getConnected(url);
+      // resolveCliModel 在 createRuntime 時執行,session 建立後才跑
+      await new Promise((r) => setTimeout(r, 1500));
+      // 若 model 在 registry 中存在,session bound 的 model 欄位會帶正確值;
+      // 若不在 registry,會印 "model not found in registry: anthropic/claude-opus-4-7"。
+      // 兩種情況都可驗證 cliModelPattern 被正確設定。
+      const stderr = getStderr();
+      const modelFromProfile = "anthropic/claude-opus-4-7";
+      const modelApplied =
+        // 不在 registry → 印警告
+        stderr.includes(`model not found in registry: ${modelFromProfile}`) ||
+        // 在 registry → session bound 帶 model 值
+        /session bound.*model=anthropic\/claude-opus-4-7/.test(stderr);
+      assert.ok(modelApplied, `profile model 應被套用,但 stderr 未見預期輸出:\n${stderr}`);
+    } finally {
+      await stopServer(child);
+    }
+  }
+
+  // case 2: CLI --model 優先於 profile → cliModelPattern = "anthropic/claude-haiku-4-5"
+  {
+    const { child, url, getStderr } = await startServer(
+      cwd,
+      ["--profile", "staff", "--model", "anthropic/claude-haiku-4-5"],
+    );
+    try {
+      await getConnected(url);
+      await new Promise((r) => setTimeout(r, 1500));
+      const stderr = getStderr();
+      const cliModel = "anthropic/claude-haiku-4-5";
+      const profileModel = "anthropic/claude-opus-4-7";
+      // cliModelPattern 應為 CLI 指定的 haiku,而非 profile 的 opus
+      const cliModelApplied =
+        stderr.includes(`model not found in registry: ${cliModel}`) ||
+        new RegExp(`session bound.*model=anthropic/claude-haiku-4-5`).test(stderr);
+      const profileModelNotUsed = !stderr.includes(`model not found in registry: ${profileModel}`);
+      assert.ok(cliModelApplied, `CLI model 應被套用,但 stderr 未見預期輸出:\n${stderr}`);
+      assert.ok(profileModelNotUsed, `profile model 不應出現在 cliModelPattern:\n${stderr}`);
+    } finally {
+      await stopServer(child);
+    }
+  }
+});

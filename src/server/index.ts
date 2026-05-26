@@ -302,8 +302,27 @@ const port = listenFromArg?.port ?? Number(process.env.PI_WEBUI_PORT || DEFAULT_
 const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "public");
 const appCwd = resolve(process.env.PI_PROJECT_CWD || process.cwd());
 
-// 模型 pattern 來自 CLI 或環境變數,啟動後解析成 Model 物件
-const cliModelPattern = (args.model || process.env.PI_WEBUI_MODEL || "").trim() || null;
+// 載入 profile 檔（--profile 或 PI_WEBUI_PROFILE 環境變數）
+// 必須在 cliModelPattern / skill allow / command allow 計算前完成,
+// 因為 profile 會作為 fallback 或 override 參與這些計算。
+let profileFile: ProfileFile | undefined;
+const profileName = args.profile || process.env.PI_WEBUI_PROFILE;
+if (profileName) {
+  try {
+    profileFile = loadProfile(profileName, appCwd);
+  } catch (e) {
+    process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
+    process.exit(1);
+  }
+}
+
+// 模型 pattern 優先順序:CLI > env > profile [defaults].model
+const cliModelPattern = (
+  args.model ||
+  process.env.PI_WEBUI_MODEL ||
+  profileFile?.defaults?.model ||
+  ""
+).trim() || null;
 
 // 收集所有技能路徑:--skill (可重複) 加上 PI_WEBUI_SKILLS (`:` 或 `,` 分隔)。
 // 解析為絕對路徑,沿用 appCwd 與 ~ 展開,確保切換 cwd 後仍指向同一處。
@@ -360,10 +379,17 @@ const effectiveSkillAllowFile = resolveSkillAllowFile(
   process.env.PI_WEBUI_SKILL_ALLOW_FILE,
   appCwd,
 );
-const cliSkillAllow = computeSkillAllow(
+let cliSkillAllow = computeSkillAllow(
   args.skillAllow || process.env.PI_WEBUI_SKILL_ALLOW || "",
   effectiveSkillAllowFile,
 );
+// profile [skills].allow 直接 override CLI/env/檔案;若有 skills-allow.txt 同存,印警告
+if (profileFile?.skills?.allow) {
+  if (effectiveSkillAllowFile) {
+    logger.warn("profile [skills].allow override", { file: effectiveSkillAllowFile });
+  }
+  cliSkillAllow = [...profileFile.skills.allow];
+}
 
 // slash command 白名單。對稱 skills-allow 機制,但比對 collectSlashCommands()
 // 出口的指令 name(builtin/webui/template/extension 純名;skill 為 "skill:<name>")。
@@ -373,28 +399,23 @@ const effectiveCommandAllowFile = resolveCommandAllowFile(
   process.env.PI_WEBUI_COMMAND_ALLOW_FILE,
   appCwd,
 );
-const cliCommandAllow = computeCommandAllow(
+let cliCommandAllow = computeCommandAllow(
   args.commandAllow || process.env.PI_WEBUI_COMMAND_ALLOW || "",
   effectiveCommandAllowFile,
   appCwd,
   process.env.HOME || "",
 );
-const cliCommandAllowSet = cliCommandAllow ? new Set(cliCommandAllow) : null;
+// profile [commands].allow 直接 override CLI/env/檔案;若有 command-allow 檔同存,印警告
+if (profileFile?.commands?.allow) {
+  if (effectiveCommandAllowFile) {
+    logger.warn("profile [commands].allow override", { file: effectiveCommandAllowFile });
+  }
+  cliCommandAllow = [...profileFile.commands.allow];
+}
+let cliCommandAllowSet = cliCommandAllow ? new Set(cliCommandAllow) : null;
 
 // 客戶導向 UI profile:整合 hide-* / show-* / brand-* / --ui-profile preset。
 // 失敗(brand-logo 不存在 / brand-color 不合法 / unknown preset)直接 fail-fast。
-
-// 載入 profile 檔（--profile 或 PI_WEBUI_PROFILE 環境變數）
-let profileFile: ProfileFile | undefined;
-const profileName = args.profile || process.env.PI_WEBUI_PROFILE;
-if (profileName) {
-  try {
-    profileFile = loadProfile(profileName, appCwd);
-  } catch (e) {
-    process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
-    process.exit(1);
-  }
-}
 
 let effectiveUiProfile: UiProfile;
 try {
