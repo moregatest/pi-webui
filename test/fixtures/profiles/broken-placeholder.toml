@@ -1,0 +1,3 @@
+[tool_labels.read]
+start = "正在 {wat} 處理"
+end   = "完成"

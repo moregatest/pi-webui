@@ -119,6 +119,34 @@ function validateUnknown(parsed: Record<string, unknown>): void {
   }
 }
 
+const PLACEHOLDER_RE = /\{([^}]+)\}/g;
+const ALLOWED_PLACEHOLDERS = new Set(["file_basename", "url_host", "progress_count"]);
+
+function validatePlaceholders(toolLabels: ProfileFile["tool_labels"]): void {
+  if (!toolLabels) return;
+  for (const [toolName, entry] of Object.entries(toolLabels)) {
+    for (const phase of ["start", "progress", "end"] as const) {
+      const tpl = entry[phase];
+      if (typeof tpl !== "string") continue;
+      let m;
+      const re = new RegExp(PLACEHOLDER_RE);
+      while ((m = re.exec(tpl)) !== null) {
+        const ph = m[1];
+        if (ph.startsWith("tool_arg.")) {
+          const key = ph.slice("tool_arg.".length);
+          if (key.length === 0) {
+            throw new Error(`tool_labels.${toolName}.${phase}: 無效 placeholder {tool_arg.}(key 為空)`);
+          }
+          continue;
+        }
+        if (!ALLOWED_PLACEHOLDERS.has(ph)) {
+          throw new Error(`tool_labels.${toolName}.${phase}: 未知 placeholder {${ph}}`);
+        }
+      }
+    }
+  }
+}
+
 const CUSTOMER_FALLBACK: ProfileFile = Object.freeze({
   meta: Object.freeze({ description: "built-in customer preset fallback" }),
   ui: Object.freeze({
@@ -149,5 +177,6 @@ export function loadProfile(name: string, cwd: string): ProfileFile {
   validateUnknown(parsed as Record<string, unknown>);
   const profile = parsed as ProfileFile;
   validateBrand(profile.brand, cwd);
+  validatePlaceholders(profile.tool_labels);
   return profile;
 }

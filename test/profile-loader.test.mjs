@@ -203,3 +203,40 @@ test("loadProfile 未知 [ui] 欄位 → throw(catch typo)", (t) => {
   );
   assert.throws(() => loadProfile("x", tmp), /unknown.*ui.*hide_thiking/);
 });
+
+test("loadProfile tool_labels 未知 placeholder → throw 並指明 tool/phase", (t) => {
+  const cwd = makeCwdWithProfile("p", "broken-placeholder.toml");
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  assert.throws(
+    () => loadProfile("p", cwd),
+    /tool_labels\.read\.start.*\{wat\}/,
+  );
+});
+
+test("loadProfile tool_labels 合法 placeholder OK", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "a.toml"),
+    `[tool_labels.read]\nstart = "正在讀取 {file_basename}"\n` +
+    `[tool_labels.WebFetch]\nstart = "正在抓取 {url_host}"\n` +
+    `[tool_labels.bash]\nprogress = "處理中 {progress_count} 項"\n` +
+    `[tool_labels.x]\nstart = "x = {tool_arg.x}"\n`,
+  );
+  const profile = loadProfile("a", tmp);
+  assert.equal(profile.tool_labels?.read?.start, "正在讀取 {file_basename}");
+});
+
+test("loadProfile tool_labels 空 placeholder key → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "a.toml"),
+    `[tool_labels.read]\nstart = "x = {tool_arg.}"\n`,
+  );
+  assert.throws(() => loadProfile("a", tmp), /tool_labels\.read\.start.*tool_arg\./);
+});
