@@ -141,6 +141,7 @@ test("loadProfile [brand].color 自動 alias 到 accent", (t) => {
   );
   const profile = loadProfile("a", tmp);
   assert.equal(profile.brand?.accent, "#06c");
+  assert.equal(profile.brand?.color, undefined);   // 確認 alias 是 move 不是 copy
 });
 
 test("loadProfile [brand].color + accent 同時設 → throw", (t) => {
@@ -153,4 +154,28 @@ test("loadProfile [brand].color + accent 同時設 → throw", (t) => {
     `[brand]\ncolor = "#06c"\naccent = "#fff"\n`,
   );
   assert.throws(() => loadProfile("a", tmp), /color.*accent|accent.*color/);
+});
+
+test("loadProfile [brand].logo 絕對路徑逃出 cwd → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[brand]\nlogo = "/etc/hosts"\n`,
+  );
+  assert.throws(() => loadProfile("x", tmp), /路徑必須在 cwd 內/);
+});
+
+test("loadProfile [brand].css ../ 逃出 cwd → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[brand]\ncss = "../../../etc/passwd"\n`,
+  );
+  assert.throws(() => loadProfile("x", tmp), /路徑必須在 cwd 內/);
 });

@@ -73,6 +73,10 @@ function validateBrand(brand: BrandConfig | undefined, cwd: string): void {
     const rel = brand[field];
     if (rel !== undefined) {
       const abs = path.resolve(cwd, rel);
+      const cwdWithSep = cwd.endsWith(path.sep) ? cwd : cwd + path.sep;
+      if (!abs.startsWith(cwdWithSep)) {
+        throw new Error(`[brand].${field}: 路徑必須在 cwd 內(不可絕對路徑或 .. 逃出): ${rel}`);
+      }
       if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
         throw new Error(`[brand].${field}: 路徑不存在或非檔案: ${rel}`);
       }
