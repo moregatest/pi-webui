@@ -232,6 +232,39 @@ test("connected packet 帶 brand.tokens / brand.mode / brand.css 且 /brand/them
   }
 });
 
+test("profile 帶 [tool_labels] 啟動成功,connected uiProfile boolean 正確", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(cwd, ".pi", "profiles"), { recursive: true });
+  fs.writeFileSync(
+    path.join(cwd, ".pi", "profiles", "staff.toml"),
+    [
+      `[ui]`,
+      `hide_tool_calls    = true`,
+      `show_tool_progress = true`,
+      ``,
+      `[tool_labels.read]`,
+      `start = "讀 nine9 客戶資料 {file_basename}"`,
+      `end   = "完成"`,
+      ``,
+      `[tool_labels._default]`,
+      `start = "正在處理..."`,
+      `end   = ""`,
+      ``,
+    ].join("\n"),
+  );
+  const { child, url } = await startServer(cwd, ["--profile", "staff"]);
+  try {
+    const payload = await getConnected(url);
+    // toolLabels 屬於 server 端內部過濾用,不會 echo 到 client;
+    // 冒煙測試只確認 toml 解析 + load 不 crash,且 ui 旗標仍正常套用。
+    assert.equal(payload.uiProfile.hideToolCalls, true);
+    assert.equal(payload.uiProfile.showToolProgress, true);
+  } finally {
+    await stopServer(child);
+  }
+});
+
 test("profile [defaults].model 啟動套用,但 --model CLI 勝", async (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
