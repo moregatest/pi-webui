@@ -84,6 +84,41 @@ function validateBrand(brand: BrandConfig | undefined, cwd: string): void {
   }
 }
 
+const ALLOWED_TOP = new Set(["meta", "ui", "brand", "skills", "commands", "defaults", "tool_labels"]);
+const ALLOWED_UI = new Set([
+  "hide_thinking", "hide_tool_calls", "show_tool_progress",
+  "hide_status_chips", "hide_session_picker", "hide_model",
+  "safe_errors", "expose_tool_args",
+]);
+const ALLOWED_BRAND = new Set([
+  "name", "logo", "mode", "bg", "panel", "text",
+  "accent", "border", "muted", "css", "color",
+]);
+
+function validateUnknown(parsed: Record<string, unknown>): void {
+  for (const key of Object.keys(parsed)) {
+    if (!ALLOWED_TOP.has(key)) {
+      throw new Error(`unknown top-level table: [${key}]`);
+    }
+  }
+  const ui = parsed.ui as Record<string, unknown> | undefined;
+  if (ui) {
+    for (const key of Object.keys(ui)) {
+      if (!ALLOWED_UI.has(key)) {
+        throw new Error(`unknown field [ui].${key}`);
+      }
+    }
+  }
+  const brand = parsed.brand as Record<string, unknown> | undefined;
+  if (brand) {
+    for (const key of Object.keys(brand)) {
+      if (!ALLOWED_BRAND.has(key)) {
+        throw new Error(`unknown field [brand].${key}`);
+      }
+    }
+  }
+}
+
 const CUSTOMER_FALLBACK: ProfileFile = Object.freeze({
   meta: Object.freeze({ description: "built-in customer preset fallback" }),
   ui: Object.freeze({
@@ -111,6 +146,7 @@ export function loadProfile(name: string, cwd: string): ProfileFile {
   } catch (e) {
     throw new Error(`profile syntax error: ${e.message}`);
   }
+  validateUnknown(parsed as Record<string, unknown>);
   const profile = parsed as ProfileFile;
   validateBrand(profile.brand, cwd);
   return profile;

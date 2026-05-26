@@ -179,3 +179,27 @@ test("loadProfile [brand].css ../ 逃出 cwd → throw", (t) => {
   );
   assert.throws(() => loadProfile("x", tmp), /路徑必須在 cwd 內/);
 });
+
+test("loadProfile 未知 top-level table → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[wat]\nfoo = 1\n`,
+  );
+  assert.throws(() => loadProfile("x", tmp), /unknown.*\[wat\]/);
+});
+
+test("loadProfile 未知 [ui] 欄位 → throw(catch typo)", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[ui]\nhide_thiking = true\n`,
+  );
+  assert.throws(() => loadProfile("x", tmp), /unknown.*ui.*hide_thiking/);
+});
