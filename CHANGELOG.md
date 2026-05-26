@@ -2,6 +2,38 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-05-26 (profile-system)
+
+### 新增
+
+- `--profile <name>` / `PI_WEBUI_PROFILE` / `--webui-profile <name>`(pi extension forward):讀 `.pi/profiles/<name>.toml` 載入完整接口模板
+- `.pi/profiles/<name>.toml` schema:`[meta]` / `[ui]` / `[brand]` / `[skills]` / `[commands]` / `[defaults]` / `[tool_labels.<tool>]`
+- `[brand]` 擴充:`mode`(dark/light)、`bg` / `panel` / `text` / `accent` / `border` / `muted` 6 個 design token、`css` overlay(最多 100KB)
+- `tool_labels` 三階段(start/progress/end)+ placeholder 白名單(`{file_basename}` / `{url_host}` / `{progress_count}` / `{tool_arg.<key>}`)
+- `expose_tool_args` 旗標:允不允許 `{tool_arg.*}` 帶入 args 內容(預設 false 防 leak)
+- `GET /brand/theme.css` route:供 client 載入 css overlay
+
+### 改動
+
+- `parseUiProfile` 接 `profileFile` 第三參數,merge 順序:CLI > env > profile > 內建 fallback
+- `tool_progress` packet `phase` 從 2 階段(start/end)擴成 3 階段(+ progress 預留)
+- `connected` packet `brand` 結構加 `mode` / `tokens` / `css` 三欄
+- `--ui-profile customer` 視為 `--profile customer` 的別名(向後相容)
+- `public/styles.css` 修兩處寫死 hex 改 var
+- `{file_basename}` 候選 args key 對齊 SDK 實際 schema(`file_path` / `path` / `file`)
+
+### 測試
+
+- `test/profile-loader.test.mjs`、`test/tool-label.test.mjs`、`test/brand-overlay.test.mjs` 新增
+- `test/server-profile.test.mjs` 加 profile / brand css / tool_labels 整合 case
+- 整體 341 pass / 3 skip
+
+### 文件
+
+- README `## customer profile` 改寫為 `## profiles` 完整章節(schema / placeholder / fail-fast / backward compat)
+- ROADMAP done +1
+- `docs/superpowers/specs/2026-05-22-customer-ui-profile-design.md` 標 superseded
+
 ## 2026-05-23 (customer-ui-profile fix)
 
 ### 修正
