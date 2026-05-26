@@ -27,8 +27,9 @@ function makeCwdWithProfile(name, fixtureFile) {
   return tmp;
 }
 
-test("loadProfile 讀 staff fixture 並解析欄位", () => {
+test("loadProfile 讀 staff fixture 並解析欄位", (t) => {
   const cwd = makeCwdWithProfile("staff", "staff.toml");
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const profile = loadProfile("staff", cwd);
 
   assert.equal(profile.meta?.description, "fixture staff profile");

@@ -16,6 +16,7 @@ export interface BrandConfig {
   panel?: string;
   text?: string;
   accent?: string;
+  color?: string;     // accent 的 alias(向後相容);驗證時 normalize 成 accent
   border?: string;
   muted?: string;
   css?: string;
