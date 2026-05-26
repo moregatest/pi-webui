@@ -65,3 +65,92 @@ test("loadProfile 讀 staff fixture 並解析欄位", (t) => {
   assert.deepEqual(profile.commands?.allow, ["new", "quit", "help"]);
   assert.equal(profile.defaults?.model, "anthropic/claude-opus-4-7");
 });
+
+test("loadProfile [brand].mode 非 dark/light → throw", (t) => {
+  const cwd = makeCwdWithProfile("broken", "broken-mode.toml");
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  assert.throws(
+    () => loadProfile("broken", cwd),
+    /\[brand\]\.mode/,
+  );
+});
+
+test("loadProfile [brand].bg 不是 hex → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[brand]\nbg = "not-hex"\n`,
+  );
+  assert.throws(() => loadProfile("x", tmp), /\[brand\]\.bg/);
+});
+
+test("loadProfile [brand].bg 合法 hex 短長兩種", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "a.toml"),
+    `[brand]\nbg = "#fafafa"\naccent = "#06c"\n`,
+  );
+  const profile = loadProfile("a", tmp);
+  assert.equal(profile.brand?.bg, "#fafafa");
+  assert.equal(profile.brand?.accent, "#06c");
+});
+
+test("loadProfile [brand].logo 路徑不存在 → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[brand]\nlogo = "./nope.svg"\n`,
+  );
+  assert.throws(() => loadProfile("x", tmp), /\[brand\]\.logo/);
+});
+
+test("loadProfile [brand].logo 路徑存在 OK", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.copyFileSync(
+    path.join(FIXTURES, "..", "brand", "logo.svg"),
+    path.join(tmp, "logo.svg"),
+  );
+  fs.writeFileSync(
+    path.join(profilesDir, "a.toml"),
+    `[brand]\nlogo = "./logo.svg"\n`,
+  );
+  const profile = loadProfile("a", tmp);
+  assert.equal(profile.brand?.logo, "./logo.svg");
+});
+
+test("loadProfile [brand].color 自動 alias 到 accent", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "a.toml"),
+    `[brand]\ncolor = "#06c"\n`,
+  );
+  const profile = loadProfile("a", tmp);
+  assert.equal(profile.brand?.accent, "#06c");
+});
+
+test("loadProfile [brand].color + accent 同時設 → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "a.toml"),
+    `[brand]\ncolor = "#06c"\naccent = "#fff"\n`,
+  );
+  assert.throws(() => loadProfile("a", tmp), /color.*accent|accent.*color/);
+});

@@ -43,6 +43,43 @@ export interface ProfileFile {
   tool_labels?: Record<string, ToolLabelEntry>;
 }
 
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/;
+const HEX_FIELDS: (keyof BrandConfig)[] = ["bg", "panel", "text", "accent", "border", "muted"];
+
+function validateBrand(brand: BrandConfig | undefined, cwd: string): void {
+  if (!brand) return;
+
+  // color → accent alias
+  if (brand.color !== undefined) {
+    if (brand.accent !== undefined) {
+      throw new Error(`[brand]: 不可同時設 color 與 accent(color 是 accent 的 alias)`);
+    }
+    brand.accent = brand.color;
+    delete brand.color;
+  }
+
+  if (brand.mode !== undefined && brand.mode !== "dark" && brand.mode !== "light") {
+    throw new Error(`[brand].mode: 必須是 "dark" 或 "light",收到 "${brand.mode}"`);
+  }
+
+  for (const field of HEX_FIELDS) {
+    const value = brand[field];
+    if (value !== undefined && !HEX_COLOR_RE.test(value as string)) {
+      throw new Error(`[brand].${field}: 不是合法 hex(#rgb / #rrggbb),收到 "${value}"`);
+    }
+  }
+
+  for (const field of ["logo", "css"] as const) {
+    const rel = brand[field];
+    if (rel !== undefined) {
+      const abs = path.resolve(cwd, rel);
+      if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+        throw new Error(`[brand].${field}: 路徑不存在或非檔案: ${rel}`);
+      }
+    }
+  }
+}
+
 const CUSTOMER_FALLBACK: ProfileFile = Object.freeze({
   meta: Object.freeze({ description: "built-in customer preset fallback" }),
   ui: Object.freeze({
@@ -70,5 +107,7 @@ export function loadProfile(name: string, cwd: string): ProfileFile {
   } catch (e) {
     throw new Error(`profile syntax error: ${e.message}`);
   }
-  return parsed as ProfileFile;
+  const profile = parsed as ProfileFile;
+  validateBrand(profile.brand, cwd);
+  return profile;
 }
