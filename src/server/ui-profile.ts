@@ -16,12 +16,6 @@ import { existsSync, statSync } from "node:fs";
 import { toolLabel } from "./tool-labels.js";
 export { toolLabel } from "./tool-labels.js";
 
-export interface UiProfileBrand {
-  name: string | null;
-  logoPath: string | null;
-  color: string | null;
-}
-
 export interface UiProfile {
   hideThinking: boolean;
   hideToolCalls: boolean;
@@ -30,11 +24,25 @@ export interface UiProfile {
   hideSessionPicker: boolean;
   hideModel: boolean;
   safeErrors: boolean;
-  brand: UiProfileBrand;
+  exposeToolArgs: boolean;
+  brand: {
+    name: string | null;
+    logoPath: string | null;
+    mode: "dark" | "light" | null;
+    tokens: {
+      bg?: string;
+      panel?: string;
+      text?: string;
+      accent?: string;
+      border?: string;
+      muted?: string;
+    };
+    cssPath: string | null;
+  };
 }
 
 // preset 名 → 展開後的 boolean 預設(brand 維持 null)。
-const PRESETS: Record<string, Partial<Omit<UiProfile, "brand">>> = {
+const PRESETS: Record<string, Partial<Omit<UiProfile, "brand" | "exposeToolArgs">>> = {
   customer: {
     hideThinking: true,
     hideToolCalls: true,
@@ -56,6 +64,7 @@ export interface ParseUiProfileInput {
   hideSessionPicker?: boolean;
   hideModel?: boolean;
   safeErrors?: boolean;
+  exposeToolArgs?: boolean;
   uiProfile?: string;
   brandName?: string;
   brandLogo?: string;
@@ -78,7 +87,14 @@ export function parseUiProfile(
     hideSessionPicker: false,
     hideModel: false,
     safeErrors: false,
-    brand: { name: null, logoPath: null, color: null },
+    exposeToolArgs: false,
+    brand: {
+      name: null,
+      logoPath: null,
+      mode: null,
+      tokens: {},
+      cssPath: null,
+    },
   };
 
   // preset 展開(CLI > env)。個別 flag 後面再覆蓋(只能往「啟用」方向推,
@@ -109,6 +125,8 @@ export function parseUiProfile(
     profile.hideModel = true;
   if (cli.safeErrors || envBool(env, "PI_WEBUI_SAFE_ERRORS"))
     profile.safeErrors = true;
+  if (cli.exposeToolArgs || envBool(env, "PI_WEBUI_EXPOSE_TOOL_ARGS"))
+    profile.exposeToolArgs = true;
 
   // brand string-value 旗標:CLI > env;空字串視同未設定。
   const name = cli.brandName ?? env.PI_WEBUI_BRAND_NAME ?? null;
@@ -119,7 +137,7 @@ export function parseUiProfile(
     if (!COLOR_RE.test(color)) {
       throw new Error(`brand-color: must be #rgb or #rrggbb, got: ${color}`);
     }
-    profile.brand.color = color;
+    profile.brand.tokens.accent = color;
   }
 
   const logo = cli.brandLogo ?? env.PI_WEBUI_BRAND_LOGO ?? null;

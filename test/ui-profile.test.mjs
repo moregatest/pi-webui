@@ -48,7 +48,12 @@ test("parseUiProfile: 全部空 → 全 false + brand 全 null", () => {
   assert.equal(p.hideSessionPicker, false);
   assert.equal(p.hideModel, false);
   assert.equal(p.safeErrors, false);
-  assert.deepEqual(p.brand, { name: null, logoPath: null, color: null });
+  assert.equal(p.exposeToolArgs, false);
+  assert.equal(p.brand.name, null);
+  assert.equal(p.brand.logoPath, null);
+  assert.equal(p.brand.mode, null);
+  assert.deepEqual(p.brand.tokens, {});
+  assert.equal(p.brand.cssPath, null);
 });
 
 test("parseUiProfile: --ui-profile customer 展開 7 個 boolean", () => {
@@ -127,12 +132,12 @@ test("parseUiProfile: 空白 brand-name 視同未設定", () => {
 
 test("parseUiProfile: --brand-color #rgb 合法", () => {
   const p = parseUiProfile({ brandColor: "#06c" }, {});
-  assert.equal(p.brand.color, "#06c");
+  assert.equal(p.brand.tokens.accent, "#06c");
 });
 
 test("parseUiProfile: --brand-color #rrggbb 合法", () => {
   const p = parseUiProfile({ brandColor: "#0066cc" }, {});
-  assert.equal(p.brand.color, "#0066cc");
+  assert.equal(p.brand.tokens.accent, "#0066cc");
 });
 
 test("parseUiProfile: --brand-color 非法字串 → throw", () => {

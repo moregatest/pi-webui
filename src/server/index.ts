@@ -400,7 +400,7 @@ function serializeUiProfile(profile: UiProfile) {
     brand: {
       name: profile.brand.name,
       logoUrl: profile.brand.logoPath ? "/brand/logo" : null,
-      color: profile.brand.color,
+      color: profile.brand.tokens.accent ?? null,
     },
   };
 }
