@@ -644,7 +644,8 @@ function handleSessionEvent(event) {
 }
 
 // tool_progress packet 對應 UI:start 時把帶 spinner 的 block 插到 log 末尾,
-// end 時拿掉。client 不嘗試在 chat-state 內維護它(它不參與 message 結構);
+// progress 更新同一個 block 內的 label text,end 時拿掉。
+// client 不嘗試在 chat-state 內維護它(它不參與 message 結構);
 // 純粹是 ephemeral 提示,server reset / 切 session 時整批清掉。
 function handleToolProgress(payload) {
   if (!payload || typeof payload !== "object") return;
@@ -659,6 +660,12 @@ function handleToolProgress(payload) {
     log.appendChild(el);
     toolProgressNodes.set(id, el);
     scrollLogToBottom();
+  } else if (payload.phase === "progress") {
+    // 已存在 block 才更新;沒有對應 start 的 progress 直接 ignore(不主動建)
+    const el = toolProgressNodes.get(id);
+    if (!el) return;
+    const labelEl = el.querySelector(".tool-progress-label");
+    if (labelEl) labelEl.textContent = String(payload.label ?? "");
   } else if (payload.phase === "end") {
     const el = toolProgressNodes.get(id);
     if (el) {
@@ -843,7 +850,7 @@ function connect() {
         return;
       case "tool_progress":
         // server 在 hideToolCalls + showToolProgress 時轉 tool_execution_* 為 progress packet。
-        // start:插入帶 spinner 的 progress block;end:移掉對應 block。
+        // start:插入帶 spinner 的 progress block;progress:更新 label;end:移掉對應 block。
         handleToolProgress(packet.payload);
         return;
       case "list_dir_result":
