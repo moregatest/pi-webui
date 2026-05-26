@@ -1,0 +1,24 @@
+[meta]
+description = "fixture staff profile"
+
+[ui]
+hide_thinking       = true
+hide_tool_calls     = true
+show_tool_progress  = true
+hide_status_chips   = false
+hide_session_picker = false
+hide_model          = true
+safe_errors         = true
+expose_tool_args    = false
+
+[brand]
+name = "Fixture Staff"
+
+[skills]
+allow = ["brainstorming"]
+
+[commands]
+allow = ["new", "quit", "help"]
+
+[defaults]
+model = "anthropic/claude-opus-4-7"
