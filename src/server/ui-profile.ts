@@ -42,7 +42,7 @@ export interface UiProfile {
 }
 
 // preset 名 → 展開後的 boolean 預設(brand 維持 null)。
-const PRESETS: Record<string, Partial<Omit<UiProfile, "brand" | "exposeToolArgs">>> = {
+const PRESETS: Record<string, Partial<Omit<UiProfile, "brand">>> = {
   customer: {
     hideThinking: true,
     hideToolCalls: true,
