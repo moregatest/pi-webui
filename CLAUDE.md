@@ -71,6 +71,14 @@ client 透過單一 WebSocket 與 server 來回,packet 型別在 server `sendJso
 - `/skill:<name> args` 由 server 直接丟給 `session.prompt()`,由 pi 內建 `_expandSkillCommand` 展開
 - `/webui start` 在 extension 端做了 shell-like tokenize + flag parse,把同樣的 server 旗標 inline forward 給 spawn 的 server
 
+## 測試 pi 對 Claude Code skill 的相容性
+
+升級 pi-coding-agent dist / 換 model / 改 server runtime / 反饋說「pi 跟 Claude Code 跑同一 skill 不一樣」,**必須**跑這套 regression。
+
+完整流程、prerequisites、對照表格式、已知退化點(Chrome MCP、`pi --print` 互動)都寫在 `.claude/skills/pi-skill-compat-test/SKILL.md`。讀那份 skill 再開跑,不要憑印象重新發明流程。
+
+歷史驗證紀錄存在 `docs/superpowers/specs/<date>-pi-skill-compat-validation*.md`。
+
 ## 不要
 
 - 不要把 server `index.ts` 拆成 strict TS,或移除 `@ts-nocheck` — pi SDK 對 type 很寬鬆,會拖累節奏
