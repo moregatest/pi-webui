@@ -62,7 +62,7 @@ function startServer(cwd, args = []) {
     setTimeout(() => {
       if (!resolved) {
         try { child.kill("SIGKILL"); } catch {}
-        reject(new Error(`server start timeout\nstderr: ${stderr.slice(-500)}`));
+        reject(new Error(`server start timeout\nstderr: ${stderr.slice(-500)}\nstdout: ${stdout.slice(-500)}`));
       }
     }, 15000);
   });
@@ -89,6 +89,7 @@ function getConnected(url) {
       reject(new Error("connected packet timeout"));
     }, 8000);
     ws.on("open", () => {
+      // server 須收到 ready packet 才會送 connected;此為必要握手步驟
       ws.send(JSON.stringify({ type: "ready", lastSeq: null, sessionFile: null }));
     });
     ws.on("message", (data) => {
@@ -164,6 +165,8 @@ test("--profile staff 套用 fixture 內容", async (t) => {
   try {
     const payload = await getConnected(url);
     assert.equal(payload.uiProfile.hideThinking, true);
+    assert.equal(payload.uiProfile.hideToolCalls, true);
+    assert.equal(payload.uiProfile.showToolProgress, true);
     assert.equal(payload.uiProfile.hideModel, true);
     assert.equal(payload.uiProfile.brand.name, "Integration Staff");
     // serializeUiProfile 把 tokens.accent 轉為 brand.color
