@@ -61,7 +61,7 @@ let uiProfile = {
   hideSessionPicker: false,
   hideModel: false,
   safeErrors: false,
-  brand: { name: null, logoUrl: null, color: null },
+  brand: { name: null, logoUrl: null, color: null, tokens: {}, mode: null, css: false },
 };
 // tool_progress packet 對應的 DOM 區塊。Map<id, HTMLElement>。
 const toolProgressNodes = new Map();
@@ -670,11 +670,47 @@ function handleToolProgress(payload) {
 
 // 把 server 告知的 brand 套到頁面:CSS var、header DOM、document.title。
 // brand.name / brand.logoUrl / brand.color 任一為 null/空 都當「未設定」處理。
+// Task 2.4:額外支援 brand.tokens(多個 CSS var)、brand.mode(colorScheme)、brand.css(動態 link)。
 function applyBranding(brand) {
   if (!brand) return;
-  if (brand.color) {
+
+  // brand.tokens:把 profile 傳來的 token map 全寫進 :root CSS var
+  // 格式: { accent: "#ff0000", ... } → --accent: #ff0000
+  if (brand.tokens && typeof brand.tokens === "object") {
+    const root = document.documentElement;
+    for (const [k, v] of Object.entries(brand.tokens)) {
+      root.style.setProperty(`--${k}`, v);
+    }
+    // tokens.accent 同時對應舊欄位 --brand-color,讓既有 CSS 樣式不需改動
+    if (brand.tokens.accent) {
+      root.style.setProperty("--brand-color", brand.tokens.accent);
+    }
+  }
+
+  // brand.color:backward-compat shim(server 仍會送 tokens.accent ?? null)
+  // 若 tokens.accent 已寫入就跳過,避免重複 setProperty
+  if (brand.color && !(brand.tokens && brand.tokens.accent)) {
     document.documentElement.style.setProperty("--brand-color", brand.color);
   }
+
+  // brand.mode:套用 colorScheme("light" | "dark" | null)
+  if (brand.mode) {
+    document.documentElement.style.colorScheme = brand.mode;
+  }
+
+  // brand.css:動態載入 /brand/theme.css 覆蓋層
+  // 避免重複插入:先確認 head 裡是否已有相同 href
+  if (brand.css === true) {
+    const existing = document.head.querySelector('link[href="/brand/theme.css"]');
+    if (!existing) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "/brand/theme.css";
+      document.head.appendChild(link);
+    }
+  }
+
+  // 以下為既有 DOM 邏輯:brandHeader 可見性、brandName/brandLogo 顯示
   const hasName = !!brand.name;
   const hasLogo = !!brand.logoUrl;
   if (hasName || hasLogo) {
