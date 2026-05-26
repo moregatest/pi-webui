@@ -460,7 +460,8 @@ function serializeUiProfile(profile: UiProfile) {
     brand: {
       name: profile.brand.name,
       logoUrl: profile.brand.logoPath ? "/brand/logo" : null,
-      color: profile.brand.tokens.accent ?? null,  // backward-compat:既有 client 端可能用到
+      // backward-compat shim:Task 2.4 client 切換到 brand.tokens 後可移除
+      color: profile.brand.tokens.accent ?? null,
       mode: profile.brand.mode,
       tokens: profile.brand.tokens,
       css: brandCssBuffer !== null,
