@@ -13,9 +13,8 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 
-import { toolLabel } from "./tool-labels.js";
-export { toolLabel } from "./tool-labels.js";
 import type { ProfileFile, ToolLabelEntry } from "./profile-loader.js";
+import { resolveLabel } from "./tool-label.js";
 
 export interface UiProfile {
   hideThinking: boolean;
@@ -224,8 +223,11 @@ export type FilterResult =
   | { kind: "event"; event: any }
   | {
       kind: "tool_progress";
-      payload: { id: string; label: string; phase: "start" | "end" };
+      payload: { id: string; label: string; phase: "start" | "progress" | "end" };
     };
+
+// 預設靜默 logger,讓 filterEvent 在測試環境不噴警告
+const silentLogger = { warn: (_msg: string, _ctx?: unknown) => {} };
 
 export function filterEvent(event: any, profile: UiProfile): FilterResult {
   if (!event || typeof event !== "object") return { kind: "event", event };
@@ -244,7 +246,13 @@ export function filterEvent(event: any, profile: UiProfile): FilterResult {
       kind: "tool_progress",
       payload: {
         id: String(event.toolCallId ?? ""),
-        label: toolLabel(String(event.toolName ?? "")),
+        label: resolveLabel(
+          profile,
+          String(event.toolName ?? ""),
+          event.type === "tool_execution_start" ? "start" : "end",
+          event.args ?? {},
+          silentLogger,
+        ),
         phase: event.type === "tool_execution_start" ? "start" : "end",
       },
     };

@@ -8,32 +8,11 @@ import {
   filterEvent,
   filterMessageHistory,
   safeError,
-  toolLabel,
 } from "../dist/server/ui-profile.js";
 
 function makeTmp() {
   return mkdtempSync(join(tmpdir(), "pi-webui-ui-profile-"));
 }
-
-//
-// toolLabel
-//
-
-test("toolLabel: 內建工具對應正確", () => {
-  assert.equal(toolLabel("read"), "正在讀取檔案...");
-  assert.equal(toolLabel("write"), "正在寫入檔案...");
-  assert.equal(toolLabel("edit"), "正在修改檔案...");
-  assert.equal(toolLabel("bash"), "正在執行指令...");
-  assert.equal(toolLabel("WebSearch"), "正在搜尋網路...");
-  assert.equal(toolLabel("WebFetch"), "正在抓取網頁...");
-  assert.equal(toolLabel("Task"), "正在思考...");
-  assert.equal(toolLabel("Skill"), "正在準備工具...");
-});
-
-test("toolLabel: 未知工具 fallback 為「正在處理...」", () => {
-  assert.equal(toolLabel("unknown-tool"), "正在處理...");
-  assert.equal(toolLabel(""), "正在處理...");
-});
 
 //
 // parseUiProfile - boolean flag
@@ -226,24 +205,25 @@ test("filterEvent: hideToolCalls 啟用,tool_execution_update → drop", () => {
   assert.equal(filterEvent(e, p), null);
 });
 
-test("filterEvent: hideToolCalls + showToolProgress + start → 轉 progress packet", () => {
+test("filterEvent: hideToolCalls + showToolProgress + start → 轉 progress packet(無 profile.toolLabels 用 fallback)", () => {
   const p = parseUiProfile({ hideToolCalls: true, showToolProgress: true }, {});
   const e = { type: "tool_execution_start", toolCallId: "tc-1", toolName: "read", args: {} };
   const r = filterEvent(e, p);
   assert.deepEqual(r, {
     kind: "tool_progress",
-    payload: { id: "tc-1", label: "正在讀取檔案...", phase: "start" },
+    payload: { id: "tc-1", label: "正在處理...", phase: "start" },
   });
 });
 
-test("filterEvent: hideToolCalls + showToolProgress + end → 轉 progress end", () => {
+test("filterEvent: hideToolCalls + showToolProgress + end → 轉 progress end(無 profile.toolLabels 用 fallback 空字串)", () => {
   const p = parseUiProfile({ hideToolCalls: true, showToolProgress: true }, {});
   const e = { type: "tool_execution_end", toolCallId: "tc-1", toolName: "bash", result: "x", isError: false };
   const r = filterEvent(e, p);
-  assert.deepEqual(r, {
-    kind: "tool_progress",
-    payload: { id: "tc-1", label: "正在執行指令...", phase: "end" },
-  });
+  assert.equal(r.kind, "tool_progress");
+  assert.equal(r.payload.phase, "end");
+  assert.equal(r.payload.id, "tc-1");
+  // 無 toolLabels 時 end phase BUILTIN_DEFAULTS.end = "",resolveLabel 回空字串
+  assert.equal(r.payload.label, "");
 });
 
 test("filterEvent: hideToolCalls + showToolProgress + update → 仍 drop(不發 progress)", () => {
@@ -554,4 +534,42 @@ test("parseUiProfile profileFile.tool_labels 對應到 UiProfile.toolLabels", ()
 test("parseUiProfile 無 profileFile → toolLabels 為 {}", () => {
   const profile = parseUiProfile({}, {}, undefined);
   assert.deepEqual(profile.toolLabels, {});
+});
+
+//
+// filterEvent - resolveLabel 串接驗證
+//
+
+test("filterEvent hideToolCalls+showToolProgress tool_execution_start → 走 resolveLabel", () => {
+  const profile = parseUiProfile({}, {}, {
+    ui: { hide_tool_calls: true, show_tool_progress: true },
+    tool_labels: { read: { start: "正在讀檔" } },
+  });
+  const event = {
+    type: "tool_execution_start",
+    toolCallId: "tc-1",
+    toolName: "read",
+    args: {},
+  };
+  const result = filterEvent(event, profile);
+  assert.equal(result?.kind, "tool_progress");
+  assert.equal(result?.payload?.phase, "start");
+  assert.equal(result?.payload?.label, "正在讀檔");
+  assert.equal(result?.payload?.id, "tc-1");
+});
+
+test("filterEvent tool_execution_end phase=end 走 resolveLabel", () => {
+  const profile = parseUiProfile({}, {}, {
+    ui: { hide_tool_calls: true, show_tool_progress: true },
+    tool_labels: { read: { end: "讀檔完成" } },
+  });
+  const event = {
+    type: "tool_execution_end",
+    toolCallId: "tc-1",
+    toolName: "read",
+    args: {},
+  };
+  const result = filterEvent(event, profile);
+  assert.equal(result?.payload?.phase, "end");
+  assert.equal(result?.payload?.label, "讀檔完成");
 });
