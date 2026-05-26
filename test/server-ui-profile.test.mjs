@@ -131,7 +131,14 @@ test("沒帶任何旗標 → connected payload 的 uiProfile 全 false + brand �
     assert.equal(payload.uiProfile.hideSessionPicker, false);
     assert.equal(payload.uiProfile.hideModel, false);
     assert.equal(payload.uiProfile.safeErrors, false);
-    assert.deepEqual(payload.uiProfile.brand, { name: null, logoUrl: null, color: null });
+    assert.deepEqual(payload.uiProfile.brand, {
+      name: null,
+      logoUrl: null,
+      color: null,
+      mode: null,
+      tokens: {},
+      css: false,
+    });
   } finally {
     await stopServer(child);
   }
@@ -149,7 +156,14 @@ test("--ui-profile customer → 7 個 boolean 全 true + brand 全 null", async 
     assert.equal(p.hideSessionPicker, true);
     assert.equal(p.hideModel, true);
     assert.equal(p.safeErrors, true);
-    assert.deepEqual(p.brand, { name: null, logoUrl: null, color: null });
+    assert.deepEqual(p.brand, {
+      name: null,
+      logoUrl: null,
+      color: null,
+      mode: null,
+      tokens: {},
+      css: false,
+    });
   } finally {
     await stopServer(child);
   }
