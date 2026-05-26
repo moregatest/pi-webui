@@ -3,7 +3,7 @@
 import { createServer } from "node:http";
 import { execSync } from "node:child_process";
 import { createReadStream, chmodSync, existsSync, readdirSync, readFileSync, statSync, watch as fsWatch, writeFileSync } from "node:fs";
-import { extname, dirname, isAbsolute, join, resolve } from "node:path";
+import { extname, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
@@ -425,11 +425,18 @@ try {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exit(2);
 }
-// 載入 brand css overlay 檔案(若 profile 有指定);失敗 fail-fast
+// 載入 brand css overlay 檔案(若 profile 有指定);失敗 fail-fast。
+// cssPath 來自 profile-loader.validateBrand,已驗過 cwd containment;
+// 這裡再 assert 一次防未來新增 CLI/env 入口時繞過 — defense in depth。
+// 注意:server 啟動時固定,目前無熱重載機制,改 css 須重啟。
 let brandCssBuffer: Buffer | null = null;
 if (effectiveUiProfile.brand.cssPath) {
   try {
     const abs = resolve(appCwd, effectiveUiProfile.brand.cssPath);
+    const cwdPrefix = appCwd.endsWith(sep) ? appCwd : appCwd + sep;
+    if (!abs.startsWith(cwdPrefix)) {
+      throw new Error(`brand.css: path escapes cwd: ${effectiveUiProfile.brand.cssPath}`);
+    }
     brandCssBuffer = loadBrandCss(abs);
   } catch (e) {
     process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
