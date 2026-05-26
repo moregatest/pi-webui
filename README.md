@@ -112,6 +112,7 @@ environment variables:
 | `PI_WEBUI_BRAND_COLOR` | (unset) | accent color hex (same as `--brand-color`) |
 | `PI_WEBUI_BRAND_LOGO` | (unset) | logo file path served at `/brand/logo` (same as `--brand-logo`) |
 | `PI_WEBUI_UI_PROFILE` | (unset) | preset name (`customer`); same as `--ui-profile` |
+| `PI_WEBUI_PROFILE` | (unset) | profile name (loads `.pi/profiles/<name>.toml`); same as `--profile` |
 | `PI_PROJECT_CWD` | `process.cwd()` | project directory used for sessions |
 | `PI_AGENT_DIR` | pi default (`~/.pi/agent`) | pi agent config directory |
 | `PI_SESSION_DIR` | pi default | session storage directory |
@@ -138,7 +139,7 @@ when launched via the pi extension, equivalent pi flags are available:
 `--webui-show-tool-progress`, `--webui-hide-status-chips`,
 `--webui-hide-session-picker`, `--webui-safe-errors`,
 `--webui-brand-name`, `--webui-brand-color`, `--webui-brand-logo`,
-`--webui-ui-profile`.
+`--webui-ui-profile`, `--webui-profile`.
 
 to lock down the slash command menu for a deployment, drop a
 `.pi/commands-allow.txt` in the project root with one command name per line
@@ -291,81 +292,136 @@ click the chip (active state) to copy the public URL to the clipboard.
 Real-tunnel integration tests are opt-in (`make test-tunnel`) so the
 default `make test` does not require a network connection or cloudflared.
 
-## customer profile
+## profiles
 
-pi-webui can be reskinned and stripped down for non-engineer customers.
-the goal is a calm chat surface — no thinking blocks, no raw tool output,
-no model names, no internal status chips — while keeping the agent fully
-functional underneath.
+pi-webui supports a `.pi/profiles/<name>.toml` template system that packages
+UI flags, branding, skill/command allowlists, and tool progress labels into
+named startup interfaces. typical use case: engineer writes the toml files
+once per project, then customer/back-office staff can launch the right
+interface with a single `--profile <name>` flag.
 
-three concerns, three sets of flags:
+### startup
 
-**1. what content reaches the browser.** filtering happens server-side
-(`src/server/ui-profile.ts`), so devtools cannot recover what was hidden.
+```bash
+pi-webui                                     # engineer use — bare default
+pi-webui --profile staff                     # back-office interface
+pi-webui --profile customer --tunnel \
+  --password "$(cat .secret)"                # customer interface, public URL
+```
 
-- `--hide-thinking` drops `thinking` blocks.
-- `--hide-tool-calls` drops `tool_call` / `tool_result` blocks.
-- `--show-tool-progress` (only effective with `--hide-tool-calls`) converts
-  tool execution events into compact "doing X…" progress lines so the user
-  is not staring at silence while the agent works.
-- `--hide-status-chips` hides the cwd / sandbox / tunnel / context bar.
-- `--hide-session-picker` disables the session picker entirely.
-- `--hide-model` hides the model name.
-- `--safe-errors` wraps `server_error` payloads as a generic
-  "發生錯誤,請聯繫支援 (ticket: <6-hex>)" message and writes the raw
-  cause to the server log keyed by the same ticket — so support can
-  look it up without exposing internals to the user.
+### `.pi/profiles/<name>.toml` schema
 
-**2. preset.** `--ui-profile customer` expands to all seven flags above.
-the preset name lives next to `customer` in case future deployments need
-a different bundle. individual flags layer on top — they only flip in
-the "hide more" direction, there are no `--no-hide-*` reverses.
+```toml
+[meta]
+description = "..."                # human-readable; server ignores
 
-**3. branding.**
+[ui]
+hide_thinking       = true         # drop thinking blocks
+hide_tool_calls     = true         # drop tool_call / tool_result blocks
+show_tool_progress  = true         # send tool_progress spinner instead
+hide_status_chips   = true         # hide cwd/sandbox/tunnel/model chips
+hide_session_picker = true         # disable session picker
+hide_model          = true         # hide model name
+safe_errors         = true         # wrap server_error as generic + ticket
+expose_tool_args    = false        # allow {tool_arg.*} placeholders (UNSAFE)
 
-- `--brand-name "Acme Bot"` rewrites `<title>` and a header row.
-- `--brand-color "#0066cc"` sets the `--brand-color` CSS variable; the
-  default is the existing anthropic orange. styles built on the `--accent`
-  token pick it up automatically.
-- `--brand-logo /path/to/logo.svg` registers a `GET /brand/logo` route
-  that serves the file (svg / png / jpg / gif / webp). when no logo is
-  set, `/brand/logo` 302s to `/favicon.svg` so the client `<img>` never
-  shows a broken icon. invalid path → boot fails fast.
+[brand]
+name   = "Acme Bot"
+logo   = "./assets/logo.svg"       # path relative to cwd
+mode   = "light"                   # dark | light
+bg     = "#fafafa"                 # CSS --bg
+panel  = "#ffffff"                 # CSS --panel
+text   = "#1a1a1a"                 # CSS --text
+accent = "#0066cc"                 # CSS --accent / --brand-color
+border = "#e0e0e0"                 # CSS --border
+muted  = "#707070"                 # CSS --muted
+css    = "./assets/theme.css"      # optional CSS overlay (max 100KB)
 
-invalid input is rejected at startup, not at request time:
-`--brand-color` must match `#rgb` / `#rrggbb`; `--brand-logo` must point
-to an existing file; `--ui-profile <name>` must be a known preset.
+[skills]
+allow = ["brainstorming"]          # overrides .pi/skills-allow.txt
 
-typical customer-facing deployment (sandbox + tunnel + password + brand):
+[commands]
+allow = ["new", "quit", "help"]    # overrides .pi/commands-allow.txt
+
+[defaults]
+model = "anthropic/claude-opus-4-7"
+
+[tool_labels.read]
+start = "正在讀取 {file_basename}"
+end   = "讀取完成"
+
+[tool_labels.WebFetch]
+start = "正在抓取 {url_host} 的網頁..."
+end   = "網頁抓取完成"
+
+[tool_labels._default]
+start = "正在處理..."
+end   = ""                          # empty = clear spinner only
+```
+
+### resolution priority
+
+individual CLI flags > individual env vars > profile file > built-in customer
+fallback (only when `--profile customer` and no file present) > defaults.
+
+### placeholders (tool_labels only)
+
+| placeholder | source | safety |
+|---|---|---|
+| `{file_basename}` | `path.basename(args.file_path \|\| args.path \|\| args.file)` | filename only, safe |
+| `{url_host}` | `new URL(args.url).hostname` | host only, safe |
+| `{progress_count}` | SDK progress callback | server-controlled |
+| `{tool_arg.<key>}` | full arg value | requires `expose_tool_args = true` |
+
+### fail-fast at startup
+
+- profile file not found (and name !== `customer`)
+- toml syntax error
+- `[brand].mode` not `dark` / `light`
+- `[brand].bg/panel/text/accent/border/muted` invalid hex
+- `[brand].logo` or `[brand].css` path missing
+- `[brand].css` > 100KB
+- `[tool_labels.<name>].<phase>` contains unknown placeholder
+- unknown toml field (strict mode catches typos like `hide_thiking`)
+
+### backwards compatibility
+
+- `--ui-profile customer` still works as alias for `--profile customer`
+- if `.pi/profiles/customer.toml` exists, it overrides the built-in fallback
+- if both `[skills].allow` (profile) and `.pi/skills-allow.txt` exist, profile
+  wins and server prints a startup warning
+- same for `[commands].allow` and `.pi/commands-allow.txt`
+
+### customer deployment example
 
 ```bash
 pi-webui \
-  --ui-profile customer \
-  --brand-name "Acme Bot" \
-  --brand-color "#0066cc" \
-  --brand-logo ./acme-logo.svg \
+  --profile customer \
   --sandbox \
   --tunnel \
   --password "$(cat .password)" \
   --trust-proxy
 ```
 
-via env vars (for systemd / docker):
+### individual flags (no profile file)
 
-```bash
-PI_WEBUI_UI_PROFILE=customer \
-PI_WEBUI_BRAND_NAME="Acme Bot" \
-PI_WEBUI_BRAND_COLOR="#0066cc" \
-PI_WEBUI_BRAND_LOGO=/etc/pi-webui/logo.svg \
-PI_WEBUI_SANDBOX=1 \
-PI_WEBUI_TUNNEL=1 \
-PI_WEBUI_PASSWORD=hunter2 \
-PI_WEBUI_TRUST_PROXY=1 \
-pi-webui
-```
+if you don't want to maintain a toml file, the legacy individual flags
+still work and can be combined freely:
 
-pair this with `.pi/commands-allow.txt` to also trim the slash menu down
-to what a customer should be able to do.
+- `--hide-thinking`, `--hide-tool-calls`, `--show-tool-progress`,
+  `--hide-status-chips`, `--hide-session-picker`, `--hide-model`,
+  `--safe-errors`
+- `--brand-name`, `--brand-color`, `--brand-logo`
+- `--ui-profile customer` (preset shortcut, expands the seven hide/show flags)
+
+filtering happens server-side (`src/server/ui-profile.ts`), so devtools
+cannot recover what was hidden. invalid input rejects at startup, not
+request time: `--brand-color` must match `#rgb` / `#rrggbb`; `--brand-logo`
+must point to an existing file; `--profile <name>` and `--ui-profile <name>`
+must resolve.
+
+pair this with `.pi/commands-allow.txt` (or `[commands].allow` in the
+profile) to also trim the slash menu.
 
 ## attachments
 
