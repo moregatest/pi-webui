@@ -74,6 +74,8 @@ import {
   safeError,
 } from "./ui-profile.js";
 import type { UiProfile } from "./ui-profile.js";
+import { loadProfile } from "./profile-loader.js";
+import type { ProfileFile } from "./profile-loader.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -163,6 +165,8 @@ function printHelp() {
     "                              alias: PI_WEBUI_BRAND_LOGO env var.",
     "  --brand-color <hex>         #rgb or #rrggbb; sets CSS --brand-color custom property.",
     "                              alias: PI_WEBUI_BRAND_COLOR env var.",
+    "  --profile <name>            load .pi/profiles/<name>.toml (name=customer with no file uses builtin fallback).",
+    "                              alias: PI_WEBUI_PROFILE env var.",
     "  --ui-profile <name>         apply a preset bundle. supported: customer (= hide-thinking",
     "                              + hide-tool-calls + show-tool-progress + hide-status-chips",
     "                              + hide-session-picker + hide-model + safe-errors).",
@@ -204,6 +208,7 @@ function printHelp() {
     "  PI_WEBUI_BRAND_NAME        override webui title / header label",
     "  PI_WEBUI_BRAND_LOGO        path to a file served at /brand/logo",
     "  PI_WEBUI_BRAND_COLOR       brand accent color (#rgb or #rrggbb)",
+    "  PI_WEBUI_PROFILE           profile name(same as --profile)",
     "  PI_WEBUI_UI_PROFILE        preset name (currently: customer)",
     "  PI_WEBUI_SANDBOX           '1' to enable the Gondolin VM sandbox (same as --sandbox)",
     "  PI_WEBUI_SANDBOX_WORKSPACE host directory used as the VM workspace mount",
@@ -250,6 +255,8 @@ function parseArgs(argv) {
     else if (a === "--safe-errors") out.safeErrors = true;
     else if (a === "--ui-profile") out.uiProfile = argv[++i];
     else if (a.startsWith("--ui-profile=")) out.uiProfile = a.slice("--ui-profile=".length);
+    else if (a === "--profile") out.profile = argv[++i];
+    else if (a.startsWith("--profile=")) out.profile = a.slice("--profile=".length);
     else if (a === "--brand-name") out.brandName = argv[++i];
     else if (a.startsWith("--brand-name=")) out.brandName = a.slice("--brand-name=".length);
     else if (a === "--brand-logo") out.brandLogo = argv[++i];
@@ -376,9 +383,22 @@ const cliCommandAllowSet = cliCommandAllow ? new Set(cliCommandAllow) : null;
 
 // 客戶導向 UI profile:整合 hide-* / show-* / brand-* / --ui-profile preset。
 // 失敗(brand-logo 不存在 / brand-color 不合法 / unknown preset)直接 fail-fast。
+
+// 載入 profile 檔（--profile 或 PI_WEBUI_PROFILE 環境變數）
+let profileFile: ProfileFile | undefined;
+const profileName = args.profile || process.env.PI_WEBUI_PROFILE;
+if (profileName) {
+  try {
+    profileFile = loadProfile(profileName, appCwd);
+  } catch (e) {
+    process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
+    process.exit(1);
+  }
+}
+
 let effectiveUiProfile: UiProfile;
 try {
-  effectiveUiProfile = parseUiProfile(args, process.env);
+  effectiveUiProfile = parseUiProfile(args, process.env, profileFile);
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exit(2);
