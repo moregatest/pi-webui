@@ -493,3 +493,49 @@ test("safeError: 無 logger 也不崩", () => {
   const out = safeError(p, "x");
   assert.match(out, /ticket:/);
 });
+
+//
+// parseUiProfile - profileFile 第三參數
+//
+
+test("parseUiProfile 接 profileFile 套用 ui 旗標", (t) => {
+  const profile = parseUiProfile({}, {}, {
+    ui: {
+      hide_thinking: true,
+      hide_tool_calls: true,
+      show_tool_progress: true,
+    },
+  });
+  assert.equal(profile.hideThinking, true);
+  assert.equal(profile.hideToolCalls, true);
+  assert.equal(profile.showToolProgress, true);
+  assert.equal(profile.hideStatusChips, false);
+});
+
+test("parseUiProfile 個別 CLI flag override profileFile", (t) => {
+  const profile = parseUiProfile(
+    { hideThinking: false },
+    {},
+    { ui: { hide_thinking: true } },
+  );
+  assert.equal(profile.hideThinking, false);
+});
+
+test("parseUiProfile profileFile.brand 對應到 UiProfile.brand 結構", (t) => {
+  const profile = parseUiProfile({}, {}, {
+    brand: {
+      name: "X",
+      logo: "./logo.svg",
+      mode: "light",
+      bg: "#fafafa",
+      accent: "#06c",
+      css: "./theme.css",
+    },
+  });
+  assert.equal(profile.brand.name, "X");
+  assert.equal(profile.brand.mode, "light");
+  assert.equal(profile.brand.tokens.bg, "#fafafa");
+  assert.equal(profile.brand.tokens.accent, "#06c");
+  assert.equal(profile.brand.logoPath, "./logo.svg");
+  assert.equal(profile.brand.cssPath, "./theme.css");
+});

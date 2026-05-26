@@ -15,6 +15,7 @@ import { existsSync, statSync } from "node:fs";
 
 import { toolLabel } from "./tool-labels.js";
 export { toolLabel } from "./tool-labels.js";
+import type { ProfileFile } from "./profile-loader.js";
 
 export interface UiProfile {
   hideThinking: boolean;
@@ -78,6 +79,7 @@ function envBool(env: NodeJS.ProcessEnv, key: string): boolean {
 export function parseUiProfile(
   cli: ParseUiProfileInput,
   env: NodeJS.ProcessEnv,
+  profileFile?: ProfileFile,
 ): UiProfile {
   const profile: UiProfile = {
     hideThinking: false,
@@ -97,8 +99,32 @@ export function parseUiProfile(
     },
   };
 
-  // preset 展開(CLI > env)。個別 flag 後面再覆蓋(只能往「啟用」方向推,
-  // 沒有 --no-hide-* 反向旗標,沿用既有 boolean flag 慣例)。
+  // profileFile 套用(precedence 在 default 之上、preset / CLI / env 之下)
+  if (profileFile?.ui) {
+    const ui = profileFile.ui;
+    if (ui.hide_thinking !== undefined) profile.hideThinking = ui.hide_thinking;
+    if (ui.hide_tool_calls !== undefined) profile.hideToolCalls = ui.hide_tool_calls;
+    if (ui.show_tool_progress !== undefined) profile.showToolProgress = ui.show_tool_progress;
+    if (ui.hide_status_chips !== undefined) profile.hideStatusChips = ui.hide_status_chips;
+    if (ui.hide_session_picker !== undefined) profile.hideSessionPicker = ui.hide_session_picker;
+    if (ui.hide_model !== undefined) profile.hideModel = ui.hide_model;
+    if (ui.safe_errors !== undefined) profile.safeErrors = ui.safe_errors;
+    if (ui.expose_tool_args !== undefined) profile.exposeToolArgs = ui.expose_tool_args;
+  }
+
+  if (profileFile?.brand) {
+    const b = profileFile.brand;
+    if (b.name !== undefined) profile.brand.name = b.name;
+    if (b.logo !== undefined) profile.brand.logoPath = b.logo;
+    if (b.mode !== undefined) profile.brand.mode = b.mode;
+    if (b.css !== undefined) profile.brand.cssPath = b.css;
+    for (const k of ["bg", "panel", "text", "accent", "border", "muted"] as const) {
+      const v = b[k];
+      if (v !== undefined) profile.brand.tokens[k] = v;
+    }
+  }
+
+  // preset 展開(CLI > env)。個別 flag 後面再覆蓋。
   const presetName = cli.uiProfile ?? env.PI_WEBUI_UI_PROFILE;
   if (presetName) {
     const preset = PRESETS[presetName];
@@ -111,22 +137,46 @@ export function parseUiProfile(
     Object.assign(profile, preset);
   }
 
-  if (cli.hideThinking || envBool(env, "PI_WEBUI_HIDE_THINKING"))
+  if (cli.hideThinking !== undefined) {
+    profile.hideThinking = !!cli.hideThinking;
+  } else if (envBool(env, "PI_WEBUI_HIDE_THINKING")) {
     profile.hideThinking = true;
-  if (cli.hideToolCalls || envBool(env, "PI_WEBUI_HIDE_TOOL_CALLS"))
+  }
+  if (cli.hideToolCalls !== undefined) {
+    profile.hideToolCalls = !!cli.hideToolCalls;
+  } else if (envBool(env, "PI_WEBUI_HIDE_TOOL_CALLS")) {
     profile.hideToolCalls = true;
-  if (cli.showToolProgress || envBool(env, "PI_WEBUI_SHOW_TOOL_PROGRESS"))
+  }
+  if (cli.showToolProgress !== undefined) {
+    profile.showToolProgress = !!cli.showToolProgress;
+  } else if (envBool(env, "PI_WEBUI_SHOW_TOOL_PROGRESS")) {
     profile.showToolProgress = true;
-  if (cli.hideStatusChips || envBool(env, "PI_WEBUI_HIDE_STATUS_CHIPS"))
+  }
+  if (cli.hideStatusChips !== undefined) {
+    profile.hideStatusChips = !!cli.hideStatusChips;
+  } else if (envBool(env, "PI_WEBUI_HIDE_STATUS_CHIPS")) {
     profile.hideStatusChips = true;
-  if (cli.hideSessionPicker || envBool(env, "PI_WEBUI_HIDE_SESSION_PICKER"))
+  }
+  if (cli.hideSessionPicker !== undefined) {
+    profile.hideSessionPicker = !!cli.hideSessionPicker;
+  } else if (envBool(env, "PI_WEBUI_HIDE_SESSION_PICKER")) {
     profile.hideSessionPicker = true;
-  if (cli.hideModel || envBool(env, "PI_WEBUI_HIDE_MODEL"))
+  }
+  if (cli.hideModel !== undefined) {
+    profile.hideModel = !!cli.hideModel;
+  } else if (envBool(env, "PI_WEBUI_HIDE_MODEL")) {
     profile.hideModel = true;
-  if (cli.safeErrors || envBool(env, "PI_WEBUI_SAFE_ERRORS"))
+  }
+  if (cli.safeErrors !== undefined) {
+    profile.safeErrors = !!cli.safeErrors;
+  } else if (envBool(env, "PI_WEBUI_SAFE_ERRORS")) {
     profile.safeErrors = true;
-  if (cli.exposeToolArgs || envBool(env, "PI_WEBUI_EXPOSE_TOOL_ARGS"))
+  }
+  if (cli.exposeToolArgs !== undefined) {
+    profile.exposeToolArgs = !!cli.exposeToolArgs;
+  } else if (envBool(env, "PI_WEBUI_EXPOSE_TOOL_ARGS")) {
     profile.exposeToolArgs = true;
+  }
 
   // brand string-value 旗標:CLI > env;空字串視同未設定。
   const name = cli.brandName ?? env.PI_WEBUI_BRAND_NAME ?? null;
