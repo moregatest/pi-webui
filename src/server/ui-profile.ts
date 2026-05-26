@@ -15,7 +15,7 @@ import { existsSync, statSync } from "node:fs";
 
 import { toolLabel } from "./tool-labels.js";
 export { toolLabel } from "./tool-labels.js";
-import type { ProfileFile } from "./profile-loader.js";
+import type { ProfileFile, ToolLabelEntry } from "./profile-loader.js";
 
 export interface UiProfile {
   hideThinking: boolean;
@@ -40,6 +40,8 @@ export interface UiProfile {
     };
     cssPath: string | null;
   };
+  // profileFile.tool_labels 讀入後放置於此;resolveLabel 依此覆蓋 built-in 標籤
+  toolLabels: Record<string, ToolLabelEntry>;
 }
 
 // preset 名 → 展開後的 boolean 預設(brand 維持 null)。
@@ -97,6 +99,7 @@ export function parseUiProfile(
       tokens: {},
       cssPath: null,
     },
+    toolLabels: {},
   };
 
   // profileFile 套用(precedence 在 default 之上、preset / CLI / env 之下)
@@ -122,6 +125,11 @@ export function parseUiProfile(
       const v = b[k];
       if (v !== undefined) profile.brand.tokens[k] = v;
     }
+  }
+
+  // profileFile.tool_labels → 覆蓋 toolLabels(shallow copy)
+  if (profileFile?.tool_labels) {
+    profile.toolLabels = { ...profileFile.tool_labels };
   }
 
   // preset 展開(CLI > env)。個別 flag 後面再覆蓋。

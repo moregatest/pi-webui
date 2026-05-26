@@ -539,3 +539,19 @@ test("parseUiProfile profileFile.brand 對應到 UiProfile.brand 結構", (t) =>
   assert.equal(profile.brand.logoPath, "./logo.svg");
   assert.equal(profile.brand.cssPath, "./theme.css");
 });
+
+test("parseUiProfile profileFile.tool_labels 對應到 UiProfile.toolLabels", () => {
+  const profile = parseUiProfile({}, {}, {
+    tool_labels: {
+      read: { start: "讀 {file_basename}", end: "" },
+      _default: { start: "處理中..." },
+    },
+  });
+  assert.equal(profile.toolLabels?.read?.start, "讀 {file_basename}");
+  assert.equal(profile.toolLabels?._default?.start, "處理中...");
+});
+
+test("parseUiProfile 無 profileFile → toolLabels 為 {}", () => {
+  const profile = parseUiProfile({}, {}, undefined);
+  assert.deepEqual(profile.toolLabels, {});
+});
