@@ -218,6 +218,8 @@ export function parseUiProfile(
 //   - { kind: "event", event }:event 原樣(或 message_update.message.content 被剝)
 //   - { kind: "tool_progress", payload }:tool 細節隱藏 + showToolProgress 開啟時,
 //     轉成 progress packet 給 client 顯示 spinner
+// phase "progress" 預留給 SDK tool_execution_progress 事件;
+// 目前 SDK dist 內未送此事件,filterEvent 暫無對應分支。
 export type FilterResult =
   | null
   | { kind: "event"; event: any }
@@ -226,7 +228,10 @@ export type FilterResult =
       payload: { id: string; label: string; phase: "start" | "progress" | "end" };
     };
 
-// 預設靜默 logger,讓 filterEvent 在測試環境不噴警告
+// 刻意靜默:placeholder schema 在 profile-loader 階段已驗過白名單,
+// runtime 進到 resolveLabel 只可能因 SDK args 沒帶到指定 key(例如
+// {file_basename} 但 args.file 不存在);這在每個 tool call 都會踩,
+// console.warn 會 spam log。要追蹤時改注入有 throttle 的 logger。
 const silentLogger = { warn: (_msg: string, _ctx?: unknown) => {} };
 
 export function filterEvent(event: any, profile: UiProfile): FilterResult {
