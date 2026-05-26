@@ -4,6 +4,9 @@ a simple, standalone webui for [pi.dev](https://pi.dev)
 
 ![screencast](docs/screencast.gif)
 
+> Profile 角色介面三段 GIF 截圖 → [docs/screencast/profiles/](docs/screencast/profiles/README.md)
+> (對照 customer 內建 fallback、staff 自訂、brand 完整接口模板)
+
 ## getting started
 
 prerequisites:
