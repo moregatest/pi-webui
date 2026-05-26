@@ -43,9 +43,24 @@ export interface ProfileFile {
   tool_labels?: Record<string, ToolLabelEntry>;
 }
 
+const CUSTOMER_FALLBACK: ProfileFile = {
+  meta: { description: "built-in customer preset fallback" },
+  ui: {
+    hide_thinking: true,
+    hide_tool_calls: true,
+    show_tool_progress: true,
+    hide_status_chips: true,
+    hide_session_picker: true,
+    hide_model: true,
+    safe_errors: true,
+    expose_tool_args: false,
+  },
+};
+
 export function loadProfile(name: string, cwd: string): ProfileFile {
   const filePath = path.join(cwd, ".pi", "profiles", `${name}.toml`);
   if (!fs.existsSync(filePath)) {
+    if (name === "customer") return CUSTOMER_FALLBACK;
     throw new Error(`profile not found: ${filePath}`);
   }
   const raw = fs.readFileSync(filePath, "utf8");

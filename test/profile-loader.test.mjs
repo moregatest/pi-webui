@@ -27,6 +27,30 @@ function makeCwdWithProfile(name, fixtureFile) {
   return tmp;
 }
 
+test("loadProfile name=customer 檔不存在回內建 fallback", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profile = loadProfile("customer", tmp);
+
+  // 內建 fallback 對齊既有 --ui-profile customer 解析結果
+  assert.equal(profile.ui?.hide_thinking, true);
+  assert.equal(profile.ui?.hide_tool_calls, true);
+  assert.equal(profile.ui?.show_tool_progress, true);
+  assert.equal(profile.ui?.hide_status_chips, true);
+  assert.equal(profile.ui?.hide_session_picker, true);
+  assert.equal(profile.ui?.hide_model, true);
+  assert.equal(profile.ui?.safe_errors, true);
+});
+
+test("loadProfile name=staff 檔不存在 throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  assert.throws(
+    () => loadProfile("staff", tmp),
+    /profile not found/,
+  );
+});
+
 test("loadProfile 讀 staff fixture 並解析欄位", (t) => {
   const cwd = makeCwdWithProfile("staff", "staff.toml");
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
