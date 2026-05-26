@@ -6,7 +6,7 @@
   --border: #242424;
   --text: #e0dccf;
   --muted: #807a70;
-  /* --brand-color 由 --brand-color CLI 設定;未設定時 fallback 為原本的 anthropic orange */
+  /* --brand-color 由 --brand-color CLI 旗標或 .pi/profiles/<name>.toml 內 [brand].accent 設定 */
   --brand-color: #d97757;
   --accent: var(--brand-color);
   --user: #b8b09c;       /* warm taupe */
@@ -524,7 +524,7 @@ body.drag-active .composer-wrapper {
 }
 
 .message.assistant > .message-body {
-  color: #ece4d8;
+  color: var(--text);
 }
 
 .message-body > p:first-child {
@@ -620,7 +620,7 @@ body.drag-active .composer-wrapper {
   border-left: 1px solid var(--thinking);
   padding: 0 0.75rem;
   margin: 0.5rem 0;
-  color: #6e6a60;
+  color: var(--thinking);
   font-style: italic;
   font-size: 12px;
   opacity: 0.85;
