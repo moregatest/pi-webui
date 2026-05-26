@@ -76,6 +76,7 @@ import {
 import type { UiProfile } from "./ui-profile.js";
 import { loadProfile } from "./profile-loader.js";
 import type { ProfileFile } from "./profile-loader.js";
+import { loadBrandCss } from "./brand-overlay.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -423,6 +424,17 @@ try {
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exit(2);
+}
+// 載入 brand css overlay 檔案(若 profile 有指定);失敗 fail-fast
+let brandCssBuffer: Buffer | null = null;
+if (effectiveUiProfile.brand.cssPath) {
+  try {
+    const abs = resolve(appCwd, effectiveUiProfile.brand.cssPath);
+    brandCssBuffer = loadBrandCss(abs);
+  } catch (e) {
+    process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
+    process.exit(2);
+  }
 }
 // hideModel 沿用既有變數名避免大改;effectiveUiProfile.hideModel 是 single source of truth。
 const hideModel = effectiveUiProfile.hideModel;
@@ -852,6 +864,7 @@ function isAuthPublic(pathname, method) {
   if (pathname === "/favicon.svg" && method === "GET") return true;
   // brand logo 要在 login 頁面也能顯示
   if (pathname === "/brand/logo" && method === "GET") return true;
+  if (pathname === "/brand/theme.css" && method === "GET") return true;
   return false;
 }
 
@@ -941,6 +954,19 @@ function serveStatic(req, res) {
   let pathname = url.pathname;
   if (pathname === "/brand/logo") {
     serveBrandLogo(req, res);
+    return;
+  }
+  if (pathname === "/brand/theme.css") {
+    if (brandCssBuffer) {
+      res.writeHead(200, {
+        "content-type": "text/css; charset=utf-8",
+        "content-length": String(brandCssBuffer.length),
+        "cache-control": "no-store",
+      });
+      res.end(brandCssBuffer);
+    } else {
+      res.writeHead(404).end();
+    }
     return;
   }
   if (pathname === "/") pathname = "/index.html";
