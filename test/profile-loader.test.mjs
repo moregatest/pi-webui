@@ -40,6 +40,7 @@ test("loadProfile name=customer 檔不存在回內建 fallback", (t) => {
   assert.equal(profile.ui?.hide_session_picker, true);
   assert.equal(profile.ui?.hide_model, true);
   assert.equal(profile.ui?.safe_errors, true);
+  assert.equal(profile.ui?.expose_tool_args, false);
 });
 
 test("loadProfile name=staff 檔不存在 throw", (t) => {

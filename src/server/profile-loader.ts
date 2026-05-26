@@ -43,9 +43,9 @@ export interface ProfileFile {
   tool_labels?: Record<string, ToolLabelEntry>;
 }
 
-const CUSTOMER_FALLBACK: ProfileFile = {
-  meta: { description: "built-in customer preset fallback" },
-  ui: {
+const CUSTOMER_FALLBACK: ProfileFile = Object.freeze({
+  meta: Object.freeze({ description: "built-in customer preset fallback" }),
+  ui: Object.freeze({
     hide_thinking: true,
     hide_tool_calls: true,
     show_tool_progress: true,
@@ -54,8 +54,8 @@ const CUSTOMER_FALLBACK: ProfileFile = {
     hide_model: true,
     safe_errors: true,
     expose_tool_args: false,
-  },
-};
+  }),
+}) as ProfileFile;
 
 export function loadProfile(name: string, cwd: string): ProfileFile {
   const filePath = path.join(cwd, ".pi", "profiles", `${name}.toml`);
