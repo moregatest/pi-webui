@@ -206,6 +206,32 @@ test("profile [skills].allow 與 .pi/skills-allow.txt 同存 → 印 override �
   }
 });
 
+test("connected packet 帶 brand.tokens / brand.mode / brand.css 且 /brand/theme.css 可拿", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(cwd, ".pi", "profiles"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "theme.css"), `:root { --accent: red; }`);
+  fs.writeFileSync(
+    path.join(cwd, ".pi", "profiles", "staff.toml"),
+    `[brand]\nmode = "light"\nbg = "#fafafa"\naccent = "#0066cc"\ncss = "./theme.css"\n`,
+  );
+  const { child, url } = await startServer(cwd, ["--profile", "staff"]);
+  try {
+    const payload = await getConnected(url);
+    assert.equal(payload.uiProfile.brand.mode, "light");
+    assert.equal(payload.uiProfile.brand.tokens.bg, "#fafafa");
+    assert.equal(payload.uiProfile.brand.tokens.accent, "#0066cc");
+    assert.equal(payload.uiProfile.brand.css, true);
+
+    const res = await fetch(`${url}/brand/theme.css`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type"), /text\/css/);
+    assert.match(await res.text(), /--accent: red/);
+  } finally {
+    await stopServer(child);
+  }
+});
+
 test("profile [defaults].model 啟動套用,但 --model CLI 勝", async (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
