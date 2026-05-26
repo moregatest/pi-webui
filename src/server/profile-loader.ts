@@ -137,6 +137,9 @@ function validatePlaceholders(toolLabels: ProfileFile["tool_labels"]): void {
           if (key.length === 0) {
             throw new Error(`tool_labels.${toolName}.${phase}: 無效 placeholder {tool_arg.}(key 為空)`);
           }
+          if (!/^[a-zA-Z0-9_]+$/.test(key) || key.startsWith("__")) {
+            throw new Error(`tool_labels.${toolName}.${phase}: tool_arg key 只允許 [a-zA-Z0-9_] 且不可以 __ 開頭: "${key}"`);
+          }
           continue;
         }
         if (!ALLOWED_PLACEHOLDERS.has(ph)) {

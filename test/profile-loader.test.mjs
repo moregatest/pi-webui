@@ -240,3 +240,15 @@ test("loadProfile tool_labels 空 placeholder key → throw", (t) => {
   );
   assert.throws(() => loadProfile("a", tmp), /tool_labels\.read\.start.*tool_arg\./);
 });
+
+test("loadProfile tool_labels tool_arg.__proto__ → throw 含 tool_arg key 字元白名單訊息", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "a.toml"),
+    `[tool_labels.read]\nstart = "x = {tool_arg.__proto__}"\n`,
+  );
+  assert.throws(() => loadProfile("a", tmp), /tool_arg key.*__proto__|tool_arg key/);
+});
