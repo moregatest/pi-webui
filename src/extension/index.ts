@@ -108,6 +108,7 @@ interface StartOptions {
 	brandName?: string;
 	brandLogo?: string;
 	brandColor?: string;
+	profile?: string;
 	uiProfile?: string;
 	// When true, the spawned server is tied to this pi process (terminated on
 	// session_shutdown). When false, the server is detached and survives pi exit.
@@ -152,6 +153,7 @@ function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 		if (opts.brandName) serverArgs.push("--brand-name", opts.brandName);
 		if (opts.brandLogo) serverArgs.push("--brand-logo", opts.brandLogo);
 		if (opts.brandColor) serverArgs.push("--brand-color", opts.brandColor);
+		if (opts.profile) serverArgs.push("--profile", opts.profile);
 		if (opts.uiProfile) serverArgs.push("--ui-profile", opts.uiProfile);
 		const detached = !opts.owned;
 		// 收集 child stderr，避免 spawn 後因 MODULE_NOT_FOUND 等錯誤被吞掉
@@ -289,6 +291,8 @@ function parseStartFlags(tokens: string[]): StartOptions {
 		else if (t.startsWith("--brand-logo=")) opts.brandLogo = t.slice("--brand-logo=".length);
 		else if (t === "--brand-color") opts.brandColor = valueOf(++i, t);
 		else if (t.startsWith("--brand-color=")) opts.brandColor = t.slice("--brand-color=".length);
+		else if (t === "--profile") opts.profile = valueOf(++i, t);
+		else if (t.startsWith("--profile=")) opts.profile = t.slice("--profile=".length);
 		else if (t === "--ui-profile") opts.uiProfile = valueOf(++i, t);
 		else if (t.startsWith("--ui-profile=")) opts.uiProfile = t.slice("--ui-profile=".length);
 		else throw new Error(`unknown flag: ${t}`);
@@ -466,6 +470,12 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		default: "",
 	});
 
+	pi.registerFlag?.("webui-profile", {
+		description: "pi-webui profile name (loads .pi/profiles/<name>.toml). Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
 	pi.registerFlag?.("webui-ui-profile", {
 		description: "pi-webui UI profile preset (e.g. 'customer'). Implies --webui.",
 		type: "string",
@@ -552,6 +562,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		let brandName: string;
 		let brandLogo: string;
 		let brandColor: string;
+		let profile: string;
 		let uiProfile: string;
 		let want: boolean;
 		try {
@@ -579,6 +590,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			brandName = String(pi.getFlag?.("webui-brand-name") || "").trim();
 			brandLogo = String(pi.getFlag?.("webui-brand-logo") || "").trim();
 			brandColor = String(pi.getFlag?.("webui-brand-color") || "").trim();
+			profile = String(pi.getFlag?.("webui-profile") || "").trim();
 			uiProfile = String(pi.getFlag?.("webui-ui-profile") || "").trim();
 			want =
 				!!pi.getFlag?.("webui") ||
@@ -606,6 +618,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 				brandName.length > 0 ||
 				brandLogo.length > 0 ||
 				brandColor.length > 0 ||
+				profile.length > 0 ||
 				uiProfile.length > 0;
 		} catch {
 			return;
@@ -642,6 +655,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			brandName: brandName || undefined,
 			brandLogo: brandLogo || undefined,
 			brandColor: brandColor || undefined,
+			profile: profile || undefined,
 			uiProfile: uiProfile || undefined,
 			owned: true,
 		});
