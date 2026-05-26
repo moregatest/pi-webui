@@ -1,7 +1,7 @@
 # pi-webui — 客戶導向 UI profile
 
 日期 2026-05-22
-狀態 approved (由 session goal 授權)
+狀態 superseded by `2026-05-26-profile-system-design.md`(2026-05-26;profile system 把這份的所有 hide-* / brand-* / safe-errors 旗標重新組合進 `.pi/profiles/<name>.toml` 模板,本份保留為歷史紀錄)
 
 ## 動機
 
