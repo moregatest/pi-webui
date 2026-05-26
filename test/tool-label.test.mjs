@@ -55,13 +55,33 @@ test("resolveLabel profile 未列 + 無 _default → built-in", () => {
   );
 });
 
-test("resolveLabel {file_basename} 解出 basename", () => {
+test("resolveLabel {file_basename} 解出 basename (args.file 兼容)", () => {
   const profile = makeProfile({
     toolLabels: { read: { start: "正在讀 {file_basename}" } },
   });
   assert.equal(
     resolveLabel(profile, "read", "start", { file: "/path/to/foo.txt" }, FAKE_LOGGER),
     "正在讀 foo.txt",
+  );
+});
+
+test("resolveLabel {file_basename} 對齊 SDK read tool args.file_path", () => {
+  const profile = makeProfile({
+    toolLabels: { read: { start: "正在讀 {file_basename}" } },
+  });
+  assert.equal(
+    resolveLabel(profile, "read", "start", { file_path: "/abs/AGENTS.md" }, FAKE_LOGGER),
+    "正在讀 AGENTS.md",
+  );
+});
+
+test("resolveLabel {file_basename} 對齊 SDK read tool args.path", () => {
+  const profile = makeProfile({
+    toolLabels: { read: { start: "讀 {file_basename}" } },
+  });
+  assert.equal(
+    resolveLabel(profile, "read", "start", { path: "/abs/README.md" }, FAKE_LOGGER),
+    "讀 README.md",
   );
 });
 

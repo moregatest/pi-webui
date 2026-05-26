@@ -50,9 +50,12 @@ function resolvePlaceholder(
   log: Logger,
 ): string {
   if (ph === "file_basename") {
-    const file = args.file;
+    // SDK read/edit/write tool 的 path key 不統一,canonical schema 是 "path"
+    // 但實際 dispatch 接受 file_path 也接受 path(read.js line 34)。
+    // 候選順序:file_path → path → file(file 是早期 placeholder 設計,保留兼容)
+    const file = args.file_path ?? args.path ?? args.file;
     if (typeof file !== "string") {
-      log.warn(`tool-label: {file_basename} args.file missing for ${toolName}.${phase}`);
+      log.warn(`tool-label: {file_basename} args.{file_path,path,file} missing for ${toolName}.${phase}`);
       return "";
     }
     return path.basename(file);
