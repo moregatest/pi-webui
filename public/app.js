@@ -669,7 +669,7 @@ function handleToolProgress(payload) {
 }
 
 // 把 server 告知的 brand 套到頁面:CSS var、header DOM、document.title。
-// brand.name / brand.logoUrl / brand.color 任一為 null/空 都當「未設定」處理。
+// brand.color 為 backward-compat shim,新版以 brand.tokens.accent 為準。其他欄位(name / logoUrl)任一為 null/空 都當「未設定」處理。
 // Task 2.4:額外支援 brand.tokens(多個 CSS var)、brand.mode(colorScheme)、brand.css(動態 link)。
 function applyBranding(brand) {
   if (!brand) return;
@@ -694,9 +694,8 @@ function applyBranding(brand) {
   }
 
   // brand.mode:套用 colorScheme("light" | "dark" | null)
-  if (brand.mode) {
-    document.documentElement.style.colorScheme = brand.mode;
-  }
+  // 空字串讓瀏覽器回到 auto,確保熱重載移除 mode 時能正確重置
+  document.documentElement.style.colorScheme = brand.mode || "";
 
   // brand.css:動態載入 /brand/theme.css 覆蓋層
   // 避免重複插入:先確認 head 裡是否已有相同 href
