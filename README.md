@@ -272,6 +272,32 @@ pi-webui --sandbox \
 - 優先級:`--sandbox-image` (CLI) > `PI_WEBUI_SANDBOX_IMAGE` (env) > profile `[sandbox].image`。
   env 則為 merge:profile 為基底,CLI `--sandbox-env` 蓋寫個別 key。
 
+### sandbox 身份提示(自動注入)
+
+sandbox 啟用時,pi-webui 會在 model system prompt 末段 append 一段身份提示:
+
+- 「你在 pi-webui Gondolin micro-VM,不是 Fly.io / Docker / 遠端 SSH」
+- cwd `/workspace` 對映到 host 端的具體路徑
+- host 路徑(`/Users/*` / `/home/*` / `/root/*`)在 VM 內不存在
+- 沒 `flyctl` / host SSH / `~/.ssh/` / `~/.readyai/` / `~/.claude/`
+- 若 doc 提到 host-only 工作流要繞道、請 operator 在 host 端跑
+
+目的:LLM 在 sandbox 內看不到「自己在哪」,容易誤判 cwd 是 Fly.io 容器、套上 host-only 工作流跑出
+`command not found`。這段提示提供 mental model 錨點。
+
+要追加 image-specific 提示(例如「本 image 預裝哪些 CLI」)可在 profile toml 寫:
+
+```toml
+[sandbox]
+image = "readyai-sandbox:0.1.0-3.23.0-bba981"
+system_prompt = """
+本 image 預裝 readyai-* 11 個 CLI(readyai-db、readyai-menu、readyai-uploadpage 等)。
+完整清單見 image 內 /opt/readyai/README.md。
+"""
+```
+
+`[sandbox].system_prompt` 上限 16KB,append 在 built-in 提示之後。
+
 ## tunnel
 
 `--tunnel` (or `PI_WEBUI_TUNNEL=1`) spawns a [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/)

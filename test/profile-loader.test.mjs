@@ -337,3 +337,41 @@ test("loadProfile [sandbox] 沒設 image 也合法(env-only)", (t) => {
   assert.equal(profile.sandbox?.image, undefined);
   assert.deepEqual(profile.sandbox?.env, { FOO: "bar" });
 });
+
+test("loadProfile [sandbox].system_prompt 字串 OK", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[sandbox]\nsystem_prompt = "本 image 預裝 readyai-db。"\n`,
+  );
+  const profile = loadProfile("x", tmp);
+  assert.equal(profile.sandbox?.system_prompt, "本 image 預裝 readyai-db。");
+});
+
+test("loadProfile [sandbox].system_prompt 非字串 → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[sandbox]\nsystem_prompt = 42\n`,
+  );
+  assert.throws(() => loadProfile("x", tmp), /\[sandbox\]\.system_prompt/);
+});
+
+test("loadProfile [sandbox].system_prompt 超過 16KB → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  const huge = "x".repeat(17 * 1024);
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[sandbox]\nsystem_prompt = "${huge}"\n`,
+  );
+  assert.throws(() => loadProfile("x", tmp), /system_prompt.*16384|16384.*system_prompt|上限/);
+});

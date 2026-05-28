@@ -36,6 +36,9 @@ export interface UiFlags {
 export interface SandboxConfig {
   image?: string;
   env?: Record<string, string>;
+  // 客製身份提示;append 到 pi-webui built-in sandbox system prompt 之後。
+  // 通常用於提示 image-specific 的 CLI 與限制(例如「本 image 預裝 readyai-db 等 N 個 CLI」)。
+  system_prompt?: string;
 }
 
 export interface ProfileFile {
@@ -125,7 +128,10 @@ function validateUnknown(parsed: Record<string, unknown>): void {
   }
 }
 
-const ALLOWED_SANDBOX = new Set(["image", "env"]);
+const ALLOWED_SANDBOX = new Set(["image", "env", "system_prompt"]);
+// system_prompt 上限:預防誤把整本 doc 塞進去,讓 LLM context 爆炸。
+// 16KB 對「幾段 markdown 提示」綽綽有餘,真要大於這個 size 表示在亂塞。
+const MAX_SANDBOX_SYSTEM_PROMPT_BYTES = 16 * 1024;
 // gondolin image selector 語法寬鬆:repo[/name][:tag] 或 buildId(uuid-like)。
 // 只 reject 明顯壞掉的(空白、控制字元),其他交給 gondolin runtime 驗。
 const IMAGE_RE = /^[A-Za-z0-9._:/@-]+$/;
@@ -157,6 +163,18 @@ function validateSandbox(sandbox: SandboxConfig | undefined): void {
       if (typeof v !== "string") {
         throw new Error(`[sandbox.env].${k}: 必須是字串,收到 ${typeof v}`);
       }
+    }
+  }
+  if (sandbox.system_prompt !== undefined) {
+    if (typeof sandbox.system_prompt !== "string") {
+      throw new Error(`[sandbox].system_prompt: 必須是字串,收到 ${typeof sandbox.system_prompt}`);
+    }
+    const bytes = Buffer.byteLength(sandbox.system_prompt, "utf8");
+    if (bytes > MAX_SANDBOX_SYSTEM_PROMPT_BYTES) {
+      throw new Error(
+        `[sandbox].system_prompt: 上限 ${MAX_SANDBOX_SYSTEM_PROMPT_BYTES} bytes(目前 ${bytes});`
+        + ` 大段內容請放在 image 內的 doc 並由 LLM 主動讀取,不要塞進 system prompt。`,
+      );
     }
   }
 }

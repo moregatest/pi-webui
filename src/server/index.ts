@@ -65,6 +65,7 @@ import {
   shouldSetSecure,
 } from "./auth.js";
 import { Sandbox, GUEST_WORKSPACE } from "./sandbox.js";
+import { buildSandboxSystemPrompt } from "./sandbox-prompt.js";
 import { TunnelManager } from "./tunnel.js";
 import type { TunnelState } from "./tunnel.js";
 import {
@@ -810,12 +811,29 @@ function buildSandboxCustomTools(cwd) {
 }
 
 const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
+  // sandbox 啟用時把身份提示注入 system prompt:LLM 在 VM 內看不到「自己在哪」,
+  // 沒這段會把 cwd=/workspace 誤認 Fly.io / Docker。
+  const sandboxAppend: string[] = [];
+  if (sandbox) {
+    sandboxAppend.push(
+      buildSandboxSystemPrompt({
+        workspaceRoot: sandbox.workspaceRoot,
+        image:
+          args.sandboxImage ||
+          process.env.PI_WEBUI_SANDBOX_IMAGE ||
+          profileFile?.sandbox?.image ||
+          undefined,
+        extra: profileFile?.sandbox?.system_prompt,
+      }),
+    );
+  }
   const services = await createAgentSessionServices({
     cwd,
     agentDir,
     resourceLoaderOptions: {
       additionalSkillPaths: cliSkillPaths.length > 0 ? cliSkillPaths : undefined,
       skillsOverride: buildSkillsOverride(cliSkillAllow),
+      appendSystemPrompt: sandboxAppend.length > 0 ? sandboxAppend : undefined,
     },
   });
   const scopedModels = resolveScopedModelsFromSettings(services);

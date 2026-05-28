@@ -17,11 +17,16 @@
 - `SandboxOptions` 介面加 `image?` / `env?`,`defaultVmFactory` 把它們塞進 `VM.create({ sandbox: { imagePath }, env, vfs })`
 - 啟動序列優先級:CLI > env > profile;env 為 merge,個別 key 由 CLI 蓋寫
 
+- sandbox 啟用時自動 append 身份提示到 model system prompt:解決 LLM 把 `cwd=/workspace` 誤判 Fly.io / Docker 的認知障礙
+  - 內建段:Gondolin micro-VM、path 對映、host 路徑不可用、`flyctl`/`~/.readyai/`/`~/.ssh/`/`~/.claude/` 不可用、host-only 工作流要繞道
+  - profile toml `[sandbox] system_prompt = "..."` 可 append image-specific 額外提示(上限 16KB)
+
 ### 測試
 
 - `test/sandbox.test.mjs` 加 2 個 case:`vmFactory` 拿到 image/env、預設 undefined
-- `test/profile-loader.test.mjs` 加 7 個 case:`[sandbox]` schema(正向 + 5 種錯誤情境 + env-only)
-- 整體 353 pass / 3 skip(opt-in 整合)
+- `test/profile-loader.test.mjs` 加 10 個 case:`[sandbox]` schema(image/env + 5 種錯誤 + env-only + system_prompt 正向/錯型別/超 size)
+- `test/sandbox-prompt.test.mjs` 新增 8 個 case:身份提示文字內容錨點(Gondolin / 非 Fly.io / path 對映 / image / extra)
+- 整體 364 pass / 3 skip(opt-in 整合)
 
 ## 2026-05-26 (profile-system)
 
