@@ -95,6 +95,7 @@ interface StartOptions {
 	trustProxy?: boolean;
 	sandbox?: boolean;
 	sandboxWorkspace?: string;
+	sandboxImage?: string;
 	tunnel?: boolean;
 	tunnelCloudflared?: string;
 	allowUnsafeTunnel?: boolean;
@@ -141,6 +142,7 @@ function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 		if (opts.trustProxy) serverArgs.push("--trust-proxy");
 		if (opts.sandbox) serverArgs.push("--sandbox");
 		if (opts.sandboxWorkspace) serverArgs.push("--sandbox-workspace", opts.sandboxWorkspace);
+		if (opts.sandboxImage) serverArgs.push("--sandbox-image", opts.sandboxImage);
 		if (opts.tunnel) serverArgs.push("--tunnel");
 		if (opts.tunnelCloudflared) serverArgs.push("--tunnel-cloudflared", opts.tunnelCloudflared);
 		if (opts.allowUnsafeTunnel) serverArgs.push("--allow-unsafe-tunnel");
@@ -275,6 +277,8 @@ function parseStartFlags(tokens: string[]): StartOptions {
 		else if (t === "--sandbox") opts.sandbox = true;
 		else if (t === "--sandbox-workspace") opts.sandboxWorkspace = valueOf(++i, t);
 		else if (t.startsWith("--sandbox-workspace=")) opts.sandboxWorkspace = t.slice("--sandbox-workspace=".length);
+		else if (t === "--sandbox-image") opts.sandboxImage = valueOf(++i, t);
+		else if (t.startsWith("--sandbox-image=")) opts.sandboxImage = t.slice("--sandbox-image=".length);
 		else if (t === "--tunnel") opts.tunnel = true;
 		else if (t === "--tunnel-cloudflared") opts.tunnelCloudflared = valueOf(++i, t);
 		else if (t.startsWith("--tunnel-cloudflared=")) opts.tunnelCloudflared = t.slice("--tunnel-cloudflared=".length);
@@ -394,6 +398,12 @@ export default function webuiExtension(pi: ExtensionAPI) {
 
 	pi.registerFlag?.("webui-sandbox-workspace", {
 		description: "host directory mounted as /workspace inside the sandbox VM. Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
+	pi.registerFlag?.("webui-sandbox-image", {
+		description: "gondolin image selector (name:tag or buildId) for the sandbox VM. Implies --webui.",
 		type: "string",
 		default: "",
 	});
@@ -550,6 +560,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		let trustProxy: boolean;
 		let sandbox: boolean;
 		let sandboxWorkspace: string;
+		let sandboxImage: string;
 		let tunnel: boolean;
 		let tunnelCloudflared: string;
 		let allowUnsafeTunnel: boolean;
@@ -578,6 +589,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			trustProxy = !!pi.getFlag?.("webui-trust-proxy");
 			sandbox = !!pi.getFlag?.("webui-sandbox");
 			sandboxWorkspace = String(pi.getFlag?.("webui-sandbox-workspace") || "").trim();
+			sandboxImage = String(pi.getFlag?.("webui-sandbox-image") || "").trim();
 			tunnel = !!pi.getFlag?.("webui-tunnel");
 			tunnelCloudflared = String(pi.getFlag?.("webui-tunnel-cloudflared") || "").trim();
 			allowUnsafeTunnel = !!pi.getFlag?.("webui-allow-unsafe-tunnel");
@@ -606,6 +618,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 				trustProxy ||
 				sandbox ||
 				sandboxWorkspace.length > 0 ||
+				sandboxImage.length > 0 ||
 				tunnel ||
 				tunnelCloudflared.length > 0 ||
 				allowUnsafeTunnel ||
@@ -643,6 +656,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			trustProxy: trustProxy || undefined,
 			sandbox: sandbox || undefined,
 			sandboxWorkspace: sandboxWorkspace || undefined,
+			sandboxImage: sandboxImage || undefined,
 			tunnel: tunnel || undefined,
 			tunnelCloudflared: tunnelCloudflared || undefined,
 			allowUnsafeTunnel: allowUnsafeTunnel || undefined,
