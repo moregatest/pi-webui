@@ -2,6 +2,27 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-05-28 (sandbox image profile)
+
+### 新增
+
+- `--sandbox-image <ref>` / `PI_WEBUI_SANDBOX_IMAGE`:指定 gondolin image selector(`name:tag` 或 buildId)。預設 `(gondolin builtin alpine-base:latest)`
+- `--sandbox-env KEY=VAL`(repeatable):注入 VM-wide 預設 env,所有 `vm.exec` 都看得到
+- profile toml `[sandbox] { image, env }` 區塊:supply chain 友善的宣告路徑,跟著專案 git 走
+- pi extension forward `--webui-sandbox-image`(env 走 toml profile,避免字串切割)
+- 對齊 readyai-sandbox image 0.1.0-3.23.0-bba981 接入後勤客戶情境
+
+### 改動
+
+- `SandboxOptions` 介面加 `image?` / `env?`,`defaultVmFactory` 把它們塞進 `VM.create({ sandbox: { imagePath }, env, vfs })`
+- 啟動序列優先級:CLI > env > profile;env 為 merge,個別 key 由 CLI 蓋寫
+
+### 測試
+
+- `test/sandbox.test.mjs` 加 2 個 case:`vmFactory` 拿到 image/env、預設 undefined
+- `test/profile-loader.test.mjs` 加 7 個 case:`[sandbox]` schema(正向 + 5 種錯誤情境 + env-only)
+- 整體 353 pass / 3 skip(opt-in 整合)
+
 ## 2026-05-26 (profile-system)
 
 ### 新增

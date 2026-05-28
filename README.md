@@ -76,6 +76,8 @@ command-line flags:
 | `--trust-proxy` | honor `X-Forwarded-Proto` when deciding cookie `Secure` flag; useful behind cloudflare tunnel / reverse proxy. alias: `PI_WEBUI_TRUST_PROXY=1`. |
 | `--sandbox` | run `read` / `write` / `edit` / `bash` inside a [Gondolin](https://github.com/earendil-works/gondolin) micro-VM. workspace path is locked to the launch cwd (or `--sandbox-workspace`); `/cwd` is disabled. requires QEMU. alias: `PI_WEBUI_SANDBOX=1`. |
 | `--sandbox-workspace <path>` | host directory mounted as `/workspace` inside the VM. defaults to the launch cwd. alias: `PI_WEBUI_SANDBOX_WORKSPACE`. |
+| `--sandbox-image <ref>` | gondolin image selector(`name:tag` 或 buildId)。e.g. `readyai-sandbox:0.1.0-3.23.0-bba981`。alias: `PI_WEBUI_SANDBOX_IMAGE`;profile `[sandbox].image` 為 fallback。 |
+| `--sandbox-env KEY=VAL` | 注入 VM-wide env(可重複)。與 profile `[sandbox.env]` merge,CLI 優先。 |
 | `--hide-model` | hide the model name shown in the status bar. |
 | `--hide-thinking` | drop `thinking` blocks before they reach the browser (server-side filter, not just css). |
 | `--hide-tool-calls` | drop `tool_call` / `tool_result` blocks before they reach the browser. |
@@ -104,6 +106,7 @@ environment variables:
 | `PI_WEBUI_TRUST_PROXY` | `0` | `1` to honor `X-Forwarded-Proto` for cookie `Secure` flag |
 | `PI_WEBUI_SANDBOX` | `0` | `1` to run tools inside a Gondolin micro-VM (same as `--sandbox`) |
 | `PI_WEBUI_SANDBOX_WORKSPACE` | (launch cwd) | host directory mounted as `/workspace` (same as `--sandbox-workspace`) |
+| `PI_WEBUI_SANDBOX_IMAGE` | (unset) | gondolin image selector(same as `--sandbox-image`) |
 | `PI_WEBUI_HIDE_MODEL` | `0` | `1` hides the model name in the status bar |
 | `PI_WEBUI_HIDE_THINKING` | `0` | `1` drops thinking blocks server-side (same as `--hide-thinking`) |
 | `PI_WEBUI_HIDE_TOOL_CALLS` | `0` | `1` drops tool_call / tool_result blocks server-side (same as `--hide-tool-calls`) |
@@ -233,6 +236,41 @@ pi-webui --sandbox --sandbox-workspace /srv/projects/demo --listen 0.0.0.0:3000
 
 Real-VM integration tests are opt-in (`make test-sandbox`) so the
 default `make test` does not require QEMU.
+
+### custom image profile
+
+要在 sandbox 內預裝特定 CLI / 套件,可以走「自製 gondolin image + profile toml」:
+
+1. 用 `gondolin` build 一個 OCI image(rootfs 含你的 CLI 與依賴)
+2. `gondolin image import <dir> --tag <name>:<tag>` 註冊到本機(`gondolin image ls` 確認)
+3. 在 `.pi/profiles/<name>.toml` 宣告:
+
+```toml
+[sandbox]
+image = "readyai-sandbox:0.1.0-3.23.0-bba981"
+
+[sandbox.env]
+READYAI_SANDBOX_MODE = "1"
+```
+
+4. 啟動:`pi-webui --sandbox --profile <name>`
+
+或不走 profile,直接 CLI:
+
+```bash
+pi-webui --sandbox \
+  --sandbox-image readyai-sandbox:0.1.0-3.23.0-bba981 \
+  --sandbox-env READYAI_SANDBOX_MODE=1
+```
+
+注意事項:
+
+- image 必須是 host 本機 `gondolin image ls` 已註冊的;pi-webui **不會**自動下載/build。
+- image 內若有 `/etc/profile.d/*.sh`(常見做法注入 `PATH=/usr/local/bin:...`),
+  bash 工具走 `bash -lc`(login shell)會自動 source。
+- `--sandbox-env KEY=VAL` 是 VM-wide 預設 env(所有 `vm.exec` 都看得到),非單一指令層 env。
+- 優先級:`--sandbox-image` (CLI) > `PI_WEBUI_SANDBOX_IMAGE` (env) > profile `[sandbox].image`。
+  env 則為 merge:profile 為基底,CLI `--sandbox-env` 蓋寫個別 key。
 
 ## tunnel
 

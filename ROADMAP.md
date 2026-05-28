@@ -63,4 +63,5 @@
 [x] `--tunnel` / `PI_WEBUI_TUNNEL` 啟動 cloudflared quick tunnel(trycloudflare.com)
 [x] `--ui-profile customer` + `--brand-name` / `--brand-color` / `--brand-logo` + `--safe-errors` + 個別 hide-* 旗標(客戶導向 UI:thinking / tool 細節 / status chip / session picker / model 名稱可獨立隱藏;tool 細節隱藏後可用 `--show-tool-progress` 換 user-friendly 標籤;`--safe-errors` 把 server_error 包成 generic 訊息 + ticket 對應 log)
 [x] `.pi/profiles/<name>.toml` 接口模板系統(brand tokens 全套 + css overlay + tool 標籤三階段 + placeholder 白名單;`--profile <name>` 啟動;個別 CLI flag 仍可 override)
+[x] `--sandbox-image <ref>` + `--sandbox-env KEY=VAL` 與 profile `[sandbox]` 區塊:gondolin image selector 與 VM-wide env 注入(readyai-sandbox image 整合);extension forward `--webui-sandbox-image`
 ```
