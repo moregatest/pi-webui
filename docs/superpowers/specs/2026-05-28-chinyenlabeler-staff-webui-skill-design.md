@@ -200,11 +200,12 @@ end   = ""
 
 | 場景 | 指令 |
 | --- | --- |
-| 員工本機 demo(LAN) | `pi-webui --profile readyai --listen 0.0.0.0:4096 --password <rand>` |
-| 員工本機 demo(tunnel) | `pi-webui --profile readyai --tunnel` |
+| 員工本機 demo(LAN) | `pi-webui --profile readyai --sandbox --listen 0.0.0.0:4096 --password <rand>` |
+| 員工本機 demo(tunnel) | `pi-webui --profile readyai --sandbox --tunnel` |
 | 員工 + 自訂 model | 上述任一加 `--model openrouter/<...>` |
 
-`--profile readyai` 已含 sandbox image 注入,不需另加 `--sandbox`(profile.sandbox 自動觸發)。
+**注意**:`profile.sandbox.image` 只是「sandbox image 的 fallback」,sandbox 本身要顯式 `--sandbox` 才啟用(`src/server/index.ts:656`)。這份 skill 設計上預設啟用 sandbox(demo 主訴求),所以 spawn 指令必含 `--sandbox`。
+未來若 pi-webui server 改成「profile.sandbox 設了就自動啟 sandbox」,skill 內 `--sandbox` 可省。
 
 ## 測試 / 驗收
 
