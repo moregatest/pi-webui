@@ -33,6 +33,11 @@ export interface UiFlags {
   expose_tool_args?: boolean;
 }
 
+export interface SandboxConfig {
+  image?: string;
+  env?: Record<string, string>;
+}
+
 export interface ProfileFile {
   meta?: { description?: string };
   ui?: UiFlags;
@@ -41,6 +46,7 @@ export interface ProfileFile {
   commands?: { allow?: string[] };
   defaults?: { model?: string };
   tool_labels?: Record<string, ToolLabelEntry>;
+  sandbox?: SandboxConfig;
 }
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/;
@@ -84,7 +90,7 @@ function validateBrand(brand: BrandConfig | undefined, cwd: string): void {
   }
 }
 
-const ALLOWED_TOP = new Set(["meta", "ui", "brand", "skills", "commands", "defaults", "tool_labels"]);
+const ALLOWED_TOP = new Set(["meta", "ui", "brand", "skills", "commands", "defaults", "tool_labels", "sandbox"]);
 const ALLOWED_UI = new Set([
   "hide_thinking", "hide_tool_calls", "show_tool_progress",
   "hide_status_chips", "hide_session_picker", "hide_model",
@@ -114,6 +120,42 @@ function validateUnknown(parsed: Record<string, unknown>): void {
     for (const key of Object.keys(brand)) {
       if (!ALLOWED_BRAND.has(key)) {
         throw new Error(`unknown field [brand].${key}`);
+      }
+    }
+  }
+}
+
+const ALLOWED_SANDBOX = new Set(["image", "env"]);
+// gondolin image selector 語法寬鬆:repo[/name][:tag] 或 buildId(uuid-like)。
+// 只 reject 明顯壞掉的(空白、控制字元),其他交給 gondolin runtime 驗。
+const IMAGE_RE = /^[A-Za-z0-9._:/@-]+$/;
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function validateSandbox(sandbox: SandboxConfig | undefined): void {
+  if (!sandbox) return;
+  for (const key of Object.keys(sandbox)) {
+    if (!ALLOWED_SANDBOX.has(key)) {
+      throw new Error(`unknown field [sandbox].${key}`);
+    }
+  }
+  if (sandbox.image !== undefined) {
+    if (typeof sandbox.image !== "string") {
+      throw new Error(`[sandbox].image: 必須是字串,收到 ${typeof sandbox.image}`);
+    }
+    if (!IMAGE_RE.test(sandbox.image)) {
+      throw new Error(`[sandbox].image: 不是合法 image selector(只允許 [A-Za-z0-9._:/@-]),收到 "${sandbox.image}"`);
+    }
+  }
+  if (sandbox.env !== undefined) {
+    if (sandbox.env === null || typeof sandbox.env !== "object" || Array.isArray(sandbox.env)) {
+      throw new Error(`[sandbox.env]: 必須是 table(key=value),收到 ${Array.isArray(sandbox.env) ? "array" : typeof sandbox.env}`);
+    }
+    for (const [k, v] of Object.entries(sandbox.env)) {
+      if (!ENV_KEY_RE.test(k)) {
+        throw new Error(`[sandbox.env]: env key 必須符合 [A-Za-z_][A-Za-z0-9_]*,收到 "${k}"`);
+      }
+      if (typeof v !== "string") {
+        throw new Error(`[sandbox.env].${k}: 必須是字串,收到 ${typeof v}`);
       }
     }
   }
@@ -181,5 +223,6 @@ export function loadProfile(name: string, cwd: string): ProfileFile {
   const profile = parsed as ProfileFile;
   validateBrand(profile.brand, cwd);
   validatePlaceholders(profile.tool_labels);
+  validateSandbox(profile.sandbox);
   return profile;
 }

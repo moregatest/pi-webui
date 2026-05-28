@@ -252,3 +252,88 @@ test("loadProfile tool_labels tool_arg.__proto__ → throw 含 tool_arg key 字�
   );
   assert.throws(() => loadProfile("a", tmp), /tool_arg key.*__proto__|tool_arg key/);
 });
+
+test("loadProfile 解析 [sandbox] image + env", (t) => {
+  const cwd = makeCwdWithProfile("sandbox-readyai", "sandbox-readyai.toml");
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const profile = loadProfile("sandbox-readyai", cwd);
+  assert.equal(profile.sandbox?.image, "readyai-sandbox:0.1.0-3.23.0-bba981");
+  assert.deepEqual(profile.sandbox?.env, {
+    READYAI_SANDBOX_MODE: "1",
+    LOG_LEVEL: "info",
+  });
+});
+
+test("loadProfile [sandbox].image 非字串 → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[sandbox]\nimage = 42\n`,
+  );
+  assert.throws(() => loadProfile("x", tmp), /\[sandbox\]\.image/);
+});
+
+test("loadProfile [sandbox].image 不是 name:tag 格式 → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[sandbox]\nimage = "with space"\n`,
+  );
+  assert.throws(() => loadProfile("x", tmp), /\[sandbox\]\.image/);
+});
+
+test("loadProfile [sandbox.env] value 非字串 → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[sandbox.env]\nFOO = 1\n`,
+  );
+  assert.throws(() => loadProfile("x", tmp), /\[sandbox\.env\]\.FOO/);
+});
+
+test("loadProfile [sandbox.env] key 不合法 → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[sandbox.env]\n"bad key" = "v"\n`,
+  );
+  assert.throws(() => loadProfile("x", tmp), /\[sandbox\.env\]/);
+});
+
+test("loadProfile [sandbox] 內未知欄位 → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[sandbox]\nimage = "x:y"\nmemory = "2G"\n`,
+  );
+  assert.throws(() => loadProfile("x", tmp), /\[sandbox\]\.memory/);
+});
+
+test("loadProfile [sandbox] 沒設 image 也合法(env-only)", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[sandbox.env]\nFOO = "bar"\n`,
+  );
+  const profile = loadProfile("x", tmp);
+  assert.equal(profile.sandbox?.image, undefined);
+  assert.deepEqual(profile.sandbox?.env, { FOO: "bar" });
+});

@@ -1,0 +1,9 @@
+[meta]
+description = "fixture for sandbox image/env"
+
+[sandbox]
+image = "readyai-sandbox:0.1.0-3.23.0-bba981"
+
+[sandbox.env]
+READYAI_SANDBOX_MODE = "1"
+LOG_LEVEL = "info"
