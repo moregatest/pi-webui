@@ -176,6 +176,10 @@ function printHelp() {
     "                              requires qemu; alias: PI_WEBUI_SANDBOX=1.",
     "  --sandbox-workspace <path>  host directory mounted as /workspace in the VM.",
     "                              defaults to the project cwd. /cwd is disabled in sandbox mode.",
+    "  --sandbox-image <ref>       gondolin image selector (e.g. readyai-sandbox:0.1.0-3.23.0-bba981).",
+    "                              alias: PI_WEBUI_SANDBOX_IMAGE; profile [sandbox] image 為 fallback.",
+    "  --sandbox-env KEY=VAL       inject VM-wide env (repeatable); merge 進 profile [sandbox.env],",
+    "                              CLI 覆寫個別 key.",
     "  --tunnel                    expose the webui via a cloudflared quick tunnel (trycloudflare.com).",
     "                              forces --password (auto-generated if not given) and --trust-proxy.",
     "                              REQUIRES --sandbox unless --allow-unsafe-tunnel is also set.",
@@ -213,6 +217,7 @@ function printHelp() {
     "  PI_WEBUI_UI_PROFILE        preset name (currently: customer)",
     "  PI_WEBUI_SANDBOX           '1' to enable the Gondolin VM sandbox (same as --sandbox)",
     "  PI_WEBUI_SANDBOX_WORKSPACE host directory used as the VM workspace mount",
+    "  PI_WEBUI_SANDBOX_IMAGE     gondolin image selector (same as --sandbox-image)",
     "  PI_WEBUI_TUNNEL            '1' to expose the webui via a cloudflared quick tunnel",
     "  PI_WEBUI_CLOUDFLARED       cloudflared binary path",
     "  PI_WEBUI_ALLOW_UNSAFE_TUNNEL '1' to skip the --sandbox requirement of --tunnel (UNSAFE)",
@@ -270,6 +275,36 @@ function parseArgs(argv) {
     else if (a === "--sandbox") out.sandbox = true;
     else if (a === "--sandbox-workspace") out.sandboxWorkspace = argv[++i];
     else if (a.startsWith("--sandbox-workspace=")) out.sandboxWorkspace = a.slice("--sandbox-workspace=".length);
+    else if (a === "--sandbox-image") out.sandboxImage = argv[++i];
+    else if (a.startsWith("--sandbox-image=")) out.sandboxImage = a.slice("--sandbox-image=".length);
+    else if (a === "--sandbox-env") {
+      const kv = argv[++i];
+      if (typeof kv !== "string" || !kv.includes("=")) {
+        throw new Error(`--sandbox-env 需要 KEY=VAL 格式`);
+      }
+      const eq = kv.indexOf("=");
+      const k = kv.slice(0, eq);
+      const v = kv.slice(eq + 1);
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) {
+        throw new Error(`--sandbox-env: env key 不合法: "${k}"`);
+      }
+      out.sandboxEnv ??= {};
+      out.sandboxEnv[k] = v;
+    }
+    else if (a.startsWith("--sandbox-env=")) {
+      const kv = a.slice("--sandbox-env=".length);
+      if (!kv.includes("=")) {
+        throw new Error(`--sandbox-env 需要 KEY=VAL 格式`);
+      }
+      const eq = kv.indexOf("=");
+      const k = kv.slice(0, eq);
+      const v = kv.slice(eq + 1);
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) {
+        throw new Error(`--sandbox-env: env key 不合法: "${k}"`);
+      }
+      out.sandboxEnv ??= {};
+      out.sandboxEnv[k] = v;
+    }
     else if (a === "--tunnel") out.tunnel = true;
     else if (a === "--tunnel-cloudflared") out.tunnelCloudflared = argv[++i];
     else if (a.startsWith("--tunnel-cloudflared=")) out.tunnelCloudflared = a.slice("--tunnel-cloudflared=".length);
@@ -628,10 +663,28 @@ if (sandboxEnabled) {
   try {
     Sandbox.ensureQemuInstalled();
     const workspace = resolve(appCwd, expandHome(sandboxWorkspaceRaw));
-    sandbox = new Sandbox({ workspaceRoot: workspace, logger });
+    // image 優先級:CLI > env > profile
+    const sandboxImage =
+      args.sandboxImage ||
+      process.env.PI_WEBUI_SANDBOX_IMAGE ||
+      profileFile?.sandbox?.image ||
+      undefined;
+    // env merge:profile 為基底,CLI 覆寫個別 key
+    const sandboxEnv = {
+      ...(profileFile?.sandbox?.env ?? {}),
+      ...(args.sandboxEnv ?? {}),
+    };
+    sandbox = new Sandbox({
+      workspaceRoot: workspace,
+      image: sandboxImage,
+      env: Object.keys(sandboxEnv).length > 0 ? sandboxEnv : undefined,
+      logger,
+    });
     logger.info("sandbox enabled", {
       workspace: sandbox.workspaceRoot,
       guestPath: GUEST_WORKSPACE,
+      image: sandboxImage ?? "(gondolin default)",
+      env: Object.keys(sandboxEnv),
     });
   } catch (error) {
     sandboxInitError = error instanceof Error ? error.message : String(error);
