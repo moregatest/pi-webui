@@ -59,9 +59,14 @@ export interface SandboxLogger {
 export interface SandboxOptions {
   // host 端要 mount 進 guest /workspace 的目錄。會經 realpathSync canonical。
   workspaceRoot: string;
+  // 指定 gondolin image selector(`name:tag` 或 buildId)。
+  // 沒設 → 走 gondolin 預設 alpine-base:latest。
+  image?: string;
+  // VM 啟動時注入的預設環境變數,所有 vm.exec 都看得到。
+  env?: Record<string, string>;
   logger?: SandboxLogger;
   // 給測試用的 hook;production 走 dynamic import gondolin。
-  vmFactory?: () => Promise<GondolinVM>;
+  vmFactory?: (options: { image?: string; env?: Record<string, string> }) => Promise<GondolinVM>;
 }
 
 // 對應 pi SDK 的 ReadOperations
@@ -105,7 +110,9 @@ function toPosixRelative(rel: string): string {
 export class Sandbox {
   readonly workspaceRoot: string;
   private readonly logger: SandboxLogger;
-  private readonly vmFactory: () => Promise<GondolinVM>;
+  private readonly vmFactory: (options: { image?: string; env?: Record<string, string> }) => Promise<GondolinVM>;
+  private readonly image: string | undefined;
+  private readonly env: Record<string, string> | undefined;
   private vm: GondolinVM | undefined;
   private starting: Promise<GondolinVM> | undefined;
   private closed = false;
@@ -121,6 +128,8 @@ export class Sandbox {
     // canonical 一次,後續所有邊界檢查都基於這個路徑。
     this.workspaceRoot = realpathSync(absolute);
     this.logger = options.logger ?? log;
+    this.image = options.image;
+    this.env = options.env;
     this.vmFactory = options.vmFactory ?? defaultVmFactory(this.workspaceRoot);
   }
 
@@ -150,8 +159,11 @@ export class Sandbox {
     }
     this.starting = (async () => {
       const t0 = Date.now();
-      this.logger.info("sandbox: booting", { workspace: this.workspaceRoot });
-      const vm = await this.vmFactory();
+      this.logger.info("sandbox: booting", {
+        workspace: this.workspaceRoot,
+        image: this.image,
+      });
+      const vm = await this.vmFactory({ image: this.image, env: this.env });
       this.vm = vm;
       this.logger.info("sandbox: ready", { id: vm.id, elapsedMs: Date.now() - t0 });
       return vm;
@@ -364,24 +376,35 @@ export class Sandbox {
 
 // 預設 vmFactory:dynamic import gondolin,以 host workspaceRoot mount 到 /workspace。
 // 把這段抽出成 factory 是為了讓測試可以注入 stub VM,免去 QEMU 依賴。
-function defaultVmFactory(workspaceRoot: string): () => Promise<GondolinVM> {
-  return async () => {
+function defaultVmFactory(
+  workspaceRoot: string,
+): (options: { image?: string; env?: Record<string, string> }) => Promise<GondolinVM> {
+  return async ({ image, env }) => {
     const mod = await import("@earendil-works/gondolin");
     const { VM, RealFSProvider } = mod as unknown as {
       VM: { create(options: object): Promise<GondolinVM> };
       RealFSProvider: new (root: string) => unknown;
     };
-    const vm = await VM.create({
+    const createOptions: Record<string, unknown> = {
       sessionLabel: `pi-webui ${path.basename(workspaceRoot)}`,
       vfs: {
         mounts: {
           [GUEST_WORKSPACE]: new RealFSProvider(workspaceRoot),
         },
       },
-    });
+    };
+    if (image) {
+      createOptions.sandbox = { imagePath: image };
+    }
+    if (env && Object.keys(env).length > 0) {
+      createOptions.env = env;
+    }
+    const vm = await VM.create(createOptions);
     // Alpine 預設沒有 bash,且 SDK 的 bash tool 直接呼叫 /bin/bash;
     // 沒有 bash 時 ash 也能跑大多數指令,但 SDK 明確要求 /bin/bash。
     // 這裡盡力安裝,失敗也不阻擋 (跑 ash-friendly 指令還是會通)。
+    // 客製 image(如 readyai-sandbox)若已預裝 bash,`command -v` 為 true,
+    // `apk add` 不會跑(image 內可能根本沒 apk,設計即如此)。
     try {
       await vm.exec(
         "command -v bash > /dev/null 2>&1 || apk add --no-cache bash > /dev/null 2>&1 || true",

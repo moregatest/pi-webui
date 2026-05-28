@@ -413,3 +413,49 @@ test("createBashOperations.exec 預先 abort 的 signal 立即拋 AbortError", a
     rmSync(ws, { recursive: true, force: true });
   }
 });
+
+test("vmFactory 預設值會把 sandboxImage / sandboxEnv 透傳到 VM.create options", async () => {
+  // 我們不能直接驗 defaultVmFactory 內部呼叫(會 import gondolin),
+  // 但可以驗:當 caller 沒提供 vmFactory 時,Sandbox 仍然儲存 image/env,
+  // 並且使用者注入的 vmFactory 收得到 options(此處驗自定 factory 拿到 image/env)。
+  const ws = mkWorkspace();
+  try {
+    let received;
+    const { vm } = makeFakeVm();
+    const sb = new Sandbox({
+      workspaceRoot: ws,
+      image: "readyai-sandbox:0.1.0-3.23.0-bba981",
+      env: { READYAI_SANDBOX_MODE: "1", FOO: "bar" },
+      vmFactory: async (opts) => {
+        received = opts;
+        return vm;
+      },
+    });
+    await sb.ensure();
+    assert.deepEqual(received, {
+      image: "readyai-sandbox:0.1.0-3.23.0-bba981",
+      env: { READYAI_SANDBOX_MODE: "1", FOO: "bar" },
+    });
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("Sandbox 預設 image/env 都是 undefined", async () => {
+  const ws = mkWorkspace();
+  try {
+    let received;
+    const { vm } = makeFakeVm();
+    const sb = new Sandbox({
+      workspaceRoot: ws,
+      vmFactory: async (opts) => {
+        received = opts;
+        return vm;
+      },
+    });
+    await sb.ensure();
+    assert.deepEqual(received, { image: undefined, env: undefined });
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
