@@ -2,6 +2,47 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-05-29 (uploads)
+
+### 新增
+
+- 一般檔案上傳:composer 加 + 附件按鈕,支援 paste / drag-drop / 檔案選取
+- 圖片(png/jpeg/gif/webp)維持 in-band base64 走 `ImageContent`,讓 LLM 直接看見
+- 其他副檔名透過 `PUT /api/upload?name=<filename>` 寫到 `<cwd>/uploads/<subdir>/<檔名-時間戳>`,sandbox 啟用時 LLM 看到 `/workspace/uploads/<subdir>/...`;檔名加 timestamp 後綴防覆蓋
+- prompt handler 自動 append `[Attached files]` 區塊把附件路徑帶進 message,LLM 用 Read/Bash 工具自取
+- 預設副檔名白名單 15 個:jpg, jpeg, png, gif, svg, pdf, rar, zip, flv, txt, doc, docx, xls, xlsx, dwg
+- profile toml `[uploads]`:`allowed_extensions` / `extensions_add` / `subdir` / `max_bytes` / `max_files`
+- CLI / env 三條入口:
+  - `--upload-ext <list>` / `PI_WEBUI_UPLOAD_EXT`(取代預設)
+  - `--upload-ext-add <list>` / `PI_WEBUI_UPLOAD_EXT_ADD`(加增)
+  - `--upload-subdir <name>` / `PI_WEBUI_UPLOAD_SUBDIR`(子目錄;預設取 `--profile` 名,沒設時為 `default`)
+  - `--upload-max-bytes <n>` / `PI_WEBUI_UPLOAD_MAX_BYTES`(預設 50 MiB)
+  - `--upload-max-files <n>` / `PI_WEBUI_UPLOAD_MAX_FILES`(預設 20)
+- pi extension forward `--webui-upload-ext` / `--webui-upload-ext-add` / `--webui-upload-subdir` / `--webui-upload-max-bytes` / `--webui-upload-max-files`
+- client 附件 chip 通用化:圖片走縮圖、非圖片走「副檔名 badge + 檔名 + ×」
+
+### 改動
+
+- composer 排版改 `auto 1fr auto` 三欄(attach / textarea / send)
+- `.composer textarea` 加 `min-width: 0`、`.main` 加 `grid-template-columns: minmax(0, 1fr)`:防 textarea 與 log 內長 code block 撐爆 grid column,確保窄視窗(手機 390 / iPad portrait / 桌面 narrow window)send 按鈕不被推出 viewport
+- composer 在 `@media (max-width: 480px)`:隱藏 `>` prompt 提示符、`padding-left` 縮到 0.5rem,把空間留給 attach 按鈕
+- attachment chip 支援兩種型態:圖片用 56×56 縮圖、檔案用 `.attachment-chip.file` 帶 badge / 檔名 / 上傳中 / 失敗狀態
+- `connected` packet payload 加 `uploads: { allowedExtensions, maxBytes, maxFiles, subdir }`,client 預先檢查副檔名 / 大小,並把白名單寫進 `<input type="file" accept>`
+- Enter 行為全站一致:textarea 內 Enter 永遠斷行,送出唯一入口是 send 按鈕(跟 Slack / ChatGPT mobile 慣例一致)。slash menu 顯示時 Enter 跟 Tab 一致(填入 `/cmd ` + 關 menu),不送出
+- Hotkeys modal 提示文案配合更新
+
+### 測試
+
+- `test/upload-config.test.mjs` 新增 19 個 case:預設清單 / profile-CLI-env 合併 / subdir fallback / 副檔名 normalize / 大小驗證 / extractExtension / buildStoredFilename / sanitizeFilename
+- `test/profile-loader.test.mjs` 新增 5 個 case:`[uploads]` schema(全欄位、未知欄位、subdir 非法、max_bytes 非正整數)
+- 整體 389 pass / 3 skip
+
+### 文件
+
+- README 加 5 個 `--upload-*` 旗標表 + 5 個 env var
+- ROADMAP done 區塊加一筆
+- `.gitignore` 加 `uploads/`
+
 ## 2026-05-28 (sandbox image profile)
 
 ### 新增

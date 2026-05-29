@@ -145,6 +145,10 @@ input:focus {
   display: grid;
   /* brand-header(可隱藏)+ log + composer-wrapper;display:none 的 brand-header 不會佔位 */
   grid-template-rows: auto 1fr auto;
+  /* implicit column 預設取 max-content,長 code block / table 會把整列撐爆 viewport,
+     連帶 composer 也跟著超寬讓 send 按鈕被推出邊界。明設 minmax(0, 1fr) 強制 column
+     不被內容撐大,長內容由 .log 自己 overflow-x: auto 處理。 */
+  grid-template-columns: minmax(0, 1fr);
   height: var(--app-height, 100vh);
   min-height: 0;
   min-width: 0;
@@ -304,6 +308,39 @@ input:focus {
   object-fit: cover;
 }
 
+/* 非圖片附件:用檔名 + 副檔名 badge 表示;固定寬度避免過長 chip 撐版面 */
+.attachment-chip.file {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 1.5rem 0.35rem 0.5rem;
+  min-width: 0;
+  max-width: 220px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.attachment-chip.file .file-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--accent);
+  color: var(--bg);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+
+.attachment-chip.file .file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-chip.file.pending {
+  opacity: 0.6;
+}
+
 .attachment-remove {
   position: absolute;
   top: 2px;
@@ -331,11 +368,25 @@ body.drag-active .composer-wrapper {
   outline-offset: -4px;
 }
 
+/* 窄寬度(手機直立)優化:
+   - 加 attach 按鈕後,左側 28px padding 跟 attach 36px 並排已經佔掉 prompt 區,
+     `composer::before` 的 `>` 提示變成視覺重複;在窄寬度直接藏掉。
+   - 縮 .composer 左 padding 讓 attach 按鈕更貼齊邊緣,textarea 拿到更多寬度。
+   - bash-mode 的 `!` 提示用同條規則處理。 */
+@media (max-width: 480px) {
+  .composer {
+    padding-left: 0.5rem;
+  }
+  .composer::before {
+    display: none;
+  }
+}
+
 .composer {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: auto 1fr auto;
   align-items: end;
-  gap: 0;
+  gap: 0.25rem;
   padding: 0.5rem 0.5rem 0.5rem 1.75rem;
   position: relative;
 }
@@ -367,6 +418,10 @@ body.drag-active .composer-wrapper {
   height: 36px;
   min-height: 36px;
   max-height: 240px;
+  /* 不設 min-width 時 textarea 的 intrinsic min-content 會撐 grid 1fr,
+     在窄螢幕(手機 390/320)把 send button 推出 viewport;明設 min-width: 0
+     讓 grid 可以 shrink。 */
+  min-width: 0;
   padding: 0.5rem 0.6rem;
   resize: none;
   overflow-y: auto;

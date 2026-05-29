@@ -78,6 +78,13 @@ import type { UiProfile } from "./ui-profile.js";
 import { loadProfile } from "./profile-loader.js";
 import type { ProfileFile } from "./profile-loader.js";
 import { loadBrandCss } from "./brand-overlay.js";
+import {
+  resolveUploadConfig,
+  extractExtension,
+  buildStoredFilename,
+} from "./upload-config.js";
+import type { EffectiveUploadConfig } from "./upload-config.js";
+import { mkdirSync, createWriteStream, unlinkSync } from "node:fs";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -103,6 +110,45 @@ function sanitizePromptImages(raw) {
     out.push({ type: "image", data, mimeType });
   }
   return out;
+}
+
+// 一般檔案附件 prompt payload 的條目:client 上傳完拿到的 {originalName, attachPath}。
+// attachPath 必須是 server 端 /api/upload 回給 client 的字串(/workspace/uploads/...
+// 或 host 絕對路徑),不接受 client 自編路徑。為了避免被偽造路徑誤導 LLM 讀取
+// 任意檔案,這裡只做形式檢查:必須符合「 <uploadRootHost> 之下」或「 GUEST_WORKSPACE
+// 之下」其中之一。對應 effectiveUploadConfig.subdir。
+function sanitizePromptFiles(raw): Array<{ name: string; path: string }> {
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ name: string; path: string }> = [];
+  const guestPrefix = `${GUEST_WORKSPACE}/uploads/${effectiveUploadConfig.subdir}/`;
+  const hostRoot = getUploadRootHost();
+  const hostPrefix = hostRoot.endsWith(sep) ? hostRoot : hostRoot + sep;
+  for (const item of raw) {
+    if (out.length >= effectiveUploadConfig.maxFiles) break;
+    if (!item || typeof item !== "object") continue;
+    const name = String(item.originalName || item.name || "").trim();
+    const p = String(item.attachPath || item.path || "").trim();
+    if (!name || !p) continue;
+    if (!p.startsWith(guestPrefix) && !p.startsWith(hostPrefix)) continue;
+    // 拒絕 .. 段防 path traversal
+    if (p.includes("/../") || p.endsWith("/..")) continue;
+    out.push({ name, path: p });
+  }
+  return out;
+}
+
+// 把附件清單附加到 prompt 文字尾端,讓 LLM 看見對應路徑。
+// 沒有附件時 pass-through;有附件時格式:
+//   <原訊息>
+//
+//   [Attached files]
+//   - <originalName> -> <attachPath>
+function appendAttachmentNotice(message: string, files: Array<{ name: string; path: string }>): string {
+  if (files.length === 0) return message;
+  const lines = files.map((f) => `- ${f.name} -> ${f.path}`);
+  const block = `[Attached files]\n${lines.join("\n")}`;
+  if (!message) return block;
+  return `${message}\n\n${block}`;
 }
 
 // parses "host:port", ":port", or "port"; ipv6 hosts must be bracketed: "[::1]:4096"
@@ -191,6 +237,20 @@ function printHelp() {
     "                              tools will run with full host access; only set this if you",
     "                              fully trust everyone who can reach the tunnel URL.",
     "                              alias: PI_WEBUI_ALLOW_UNSAFE_TUNNEL=1.",
+    "  --upload-ext <list>         comma-separated file extension whitelist for the upload",
+    "                              endpoint (replaces the default list). without dots, e.g.",
+    "                              'jpg,pdf,docx'. alias: PI_WEBUI_UPLOAD_EXT.",
+    "                              profile [uploads].allowed_extensions is the fallback.",
+    "  --upload-ext-add <list>     comma-separated extensions added on top of the current",
+    "                              list (default + profile + --upload-ext). alias:",
+    "                              PI_WEBUI_UPLOAD_EXT_ADD.",
+    "  --upload-subdir <name>      subdir under <cwd>/uploads/ for stored files. defaults to",
+    "                              the --profile name (or 'default' if none). alias:",
+    "                              PI_WEBUI_UPLOAD_SUBDIR; profile [uploads].subdir fallback.",
+    "  --upload-max-bytes <n>      per-file size limit (bytes); default 52428800 (50 MiB).",
+    "                              alias: PI_WEBUI_UPLOAD_MAX_BYTES.",
+    "  --upload-max-files <n>      max files per prompt; default 20.",
+    "                              alias: PI_WEBUI_UPLOAD_MAX_FILES.",
     "  -h, --help                  show this help and exit",
     "",
     "environment variables:",
@@ -222,6 +282,11 @@ function printHelp() {
     "  PI_WEBUI_TUNNEL            '1' to expose the webui via a cloudflared quick tunnel",
     "  PI_WEBUI_CLOUDFLARED       cloudflared binary path",
     "  PI_WEBUI_ALLOW_UNSAFE_TUNNEL '1' to skip the --sandbox requirement of --tunnel (UNSAFE)",
+    "  PI_WEBUI_UPLOAD_EXT        comma-separated extension whitelist (replaces default)",
+    "  PI_WEBUI_UPLOAD_EXT_ADD    comma-separated extensions added on top",
+    "  PI_WEBUI_UPLOAD_SUBDIR     subdir under <cwd>/uploads/ (same as --upload-subdir)",
+    "  PI_WEBUI_UPLOAD_MAX_BYTES  per-file size limit in bytes",
+    "  PI_WEBUI_UPLOAD_MAX_FILES  max files per prompt",
     "  PI_PROJECT_CWD             project directory used for sessions (default cwd)",
     "  PI_AGENT_DIR               pi agent config directory (default ~/.pi/agent)",
     "  PI_SESSION_DIR             session storage directory (default pi default)",
@@ -310,6 +375,16 @@ function parseArgs(argv) {
     else if (a === "--tunnel-cloudflared") out.tunnelCloudflared = argv[++i];
     else if (a.startsWith("--tunnel-cloudflared=")) out.tunnelCloudflared = a.slice("--tunnel-cloudflared=".length);
     else if (a === "--allow-unsafe-tunnel") out.allowUnsafeTunnel = true;
+    else if (a === "--upload-ext") out.uploadExt = argv[++i];
+    else if (a.startsWith("--upload-ext=")) out.uploadExt = a.slice("--upload-ext=".length);
+    else if (a === "--upload-ext-add") out.uploadExtAdd = argv[++i];
+    else if (a.startsWith("--upload-ext-add=")) out.uploadExtAdd = a.slice("--upload-ext-add=".length);
+    else if (a === "--upload-subdir") out.uploadSubdir = argv[++i];
+    else if (a.startsWith("--upload-subdir=")) out.uploadSubdir = a.slice("--upload-subdir=".length);
+    else if (a === "--upload-max-bytes") out.uploadMaxBytes = Number(argv[++i]);
+    else if (a.startsWith("--upload-max-bytes=")) out.uploadMaxBytes = Number(a.slice("--upload-max-bytes=".length));
+    else if (a === "--upload-max-files") out.uploadMaxFiles = Number(argv[++i]);
+    else if (a.startsWith("--upload-max-files=")) out.uploadMaxFiles = Number(a.slice("--upload-max-files=".length));
     else if (a === "--help" || a === "-h") out.help = true;
     else throw new Error(`unknown argument: ${a}`);
   }
@@ -481,6 +556,42 @@ if (effectiveUiProfile.brand.cssPath) {
 }
 // hideModel 沿用既有變數名避免大改;effectiveUiProfile.hideModel 是 single source of truth。
 const hideModel = effectiveUiProfile.hideModel;
+
+// 一般檔案上傳設定:合併 CLI / env / profile [uploads],fail-fast 不合法的條目。
+let effectiveUploadConfig: EffectiveUploadConfig;
+try {
+  effectiveUploadConfig = resolveUploadConfig({
+    cliExt: args.uploadExt,
+    cliExtAdd: args.uploadExtAdd,
+    cliSubdir: args.uploadSubdir,
+    cliMaxBytes: typeof args.uploadMaxBytes === "number" && !Number.isNaN(args.uploadMaxBytes)
+      ? args.uploadMaxBytes
+      : undefined,
+    cliMaxFiles: typeof args.uploadMaxFiles === "number" && !Number.isNaN(args.uploadMaxFiles)
+      ? args.uploadMaxFiles
+      : undefined,
+    env: process.env,
+    profile: profileFile?.uploads,
+    profileName: profileName,
+  });
+} catch (error) {
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(2);
+}
+// 上傳根目錄計算:
+//   - sandbox 啟用時 host 路徑為 <sandbox.workspaceRoot>/uploads/<subdir>/,VM 內看到 /workspace/uploads/<subdir>/
+//   - 否則 host 路徑為 <cwd>/uploads/<subdir>/,LLM 直接拿絕對路徑
+// sandbox 物件在後面才會 ready,所以這裡用函式延遲求值。
+function getUploadRootHost(): string {
+  const base = sandboxEnabled && sandbox ? sandbox.workspaceRoot : appCwd;
+  return resolve(base, "uploads", effectiveUploadConfig.subdir);
+}
+function getUploadPathForLLM(filename: string): string {
+  if (sandboxEnabled && sandbox) {
+    return `${GUEST_WORKSPACE}/uploads/${effectiveUploadConfig.subdir}/${filename}`;
+  }
+  return resolve(getUploadRootHost(), filename);
+}
 
 // connected packet / 前端 render 要的 client-friendly view:把 brand.logoPath 換成
 // 統一的 /brand/logo URL(避免洩漏 host 路徑);沒設 logo 時保 null。
@@ -1031,6 +1142,120 @@ function serveBrandLogo(req, res) {
   createReadStream(logoPath).pipe(res);
 }
 
+// 上傳路由:接 PUT /api/upload?name=<filename>,body 為 raw bytes。
+// - 認證走 handleAuth 已經保護;這裡進來的請求都是已登入。
+// - 副檔名白名單在 effectiveUploadConfig.allowedExtensions。
+// - 大小由 maxBytes 把關,超過直接 413。
+// - filename sanitize + timestamp 後綴,寫到 <uploadRootHost>/<stored>。
+// - 回 { ok, file: { originalName, storedName, hostPath, attachPath, size } }
+//   client 拿 attachPath 顯示給使用者 / 帶進 prompt;hostPath 給 debug。
+function handleUpload(req, res) {
+  if (req.method !== "PUT" && req.method !== "POST") {
+    return sendJsonHttp(res, 405, { ok: false, error: "Method not allowed" });
+  }
+  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  const rawName = url.searchParams.get("name") || "";
+  if (!rawName) {
+    return sendJsonHttp(res, 400, { ok: false, error: "missing ?name=<filename>" });
+  }
+  const ext = extractExtension(rawName);
+  if (!ext) {
+    return sendJsonHttp(res, 400, { ok: false, error: "filename has no extension" });
+  }
+  if (!effectiveUploadConfig.allowedExtensions.has(ext)) {
+    return sendJsonHttp(res, 415, {
+      ok: false,
+      error: `unsupported extension: .${ext}`,
+      allowed: [...effectiveUploadConfig.allowedExtensions].sort(),
+    });
+  }
+  const declaredSize = Number(req.headers["content-length"] || 0);
+  if (declaredSize && declaredSize > effectiveUploadConfig.maxBytes) {
+    return sendJsonHttp(res, 413, {
+      ok: false,
+      error: `file too large; max ${effectiveUploadConfig.maxBytes} bytes`,
+    });
+  }
+
+  const uploadRoot = getUploadRootHost();
+  try {
+    mkdirSync(uploadRoot, { recursive: true });
+  } catch (err) {
+    logger.error("upload mkdir failed", { uploadRoot, error: err instanceof Error ? err.message : String(err) });
+    return sendJsonHttp(res, 500, { ok: false, error: "failed to prepare upload directory" });
+  }
+
+  const storedName = buildStoredFilename(rawName);
+  const hostPath = resolve(uploadRoot, storedName);
+  // 防 path traversal 雙重保險:storedName 經過 sanitize,理論上不可能逃出;
+  // 仍 assert 落點在 uploadRoot 之內。
+  const uploadRootSep = uploadRoot.endsWith(sep) ? uploadRoot : uploadRoot + sep;
+  if (!hostPath.startsWith(uploadRootSep)) {
+    return sendJsonHttp(res, 400, { ok: false, error: "invalid filename" });
+  }
+
+  let received = 0;
+  let aborted = false;
+  const stream = createWriteStream(hostPath);
+  let streamError: Error | null = null;
+  stream.on("error", (err) => { streamError = err; });
+
+  const cleanup = (status: number, body: Record<string, unknown>) => {
+    aborted = true;
+    try { stream.destroy(); } catch { /* ignore */ }
+    try { req.destroy(); } catch { /* ignore */ }
+    try {
+      // 清掉半寫的檔,避免殘留;檔可能根本還沒被建立(沒寫進任何 bytes),
+      // unlinkSync 對 ENOENT 會 throw,所以包 try。
+      unlinkSync(hostPath);
+    } catch { /* ignore */ }
+    if (!res.headersSent) sendJsonHttp(res, status, body);
+  };
+
+  req.on("data", (chunk: Buffer) => {
+    if (aborted) return;
+    received += chunk.length;
+    if (received > effectiveUploadConfig.maxBytes) {
+      cleanup(413, { ok: false, error: `file too large; max ${effectiveUploadConfig.maxBytes} bytes` });
+      return;
+    }
+    if (!stream.write(chunk)) {
+      req.pause();
+      stream.once("drain", () => { if (!aborted) req.resume(); });
+    }
+  });
+  req.on("end", () => {
+    if (aborted) return;
+    stream.end(() => {
+      if (streamError) {
+        logger.error("upload write failed", { hostPath, error: streamError.message });
+        return sendJsonHttp(res, 500, { ok: false, error: "failed to write file" });
+      }
+      const attachPath = getUploadPathForLLM(storedName);
+      logger.info("upload accepted", {
+        original: rawName,
+        stored: storedName,
+        size: received,
+        attachPath,
+      });
+      sendJsonHttp(res, 200, {
+        ok: true,
+        file: {
+          originalName: rawName,
+          storedName,
+          hostPath,
+          attachPath,
+          size: received,
+        },
+      });
+    });
+  });
+  req.on("error", (err) => {
+    logger.error("upload request error", { error: err.message });
+    cleanup(400, { ok: false, error: "request aborted" });
+  });
+}
+
 function serveStatic(req, res) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   let pathname = url.pathname;
@@ -1466,6 +1691,12 @@ class NativePiSessionController {
         tunnel: tunnelEnabled
           ? { enabled: true, ...lastTunnelState }
           : null,
+        uploads: {
+          allowedExtensions: [...effectiveUploadConfig.allowedExtensions].sort(),
+          maxBytes: effectiveUploadConfig.maxBytes,
+          maxFiles: effectiveUploadConfig.maxFiles,
+          subdir: effectiveUploadConfig.subdir,
+        },
       },
     });
     // Bootstrap is now driven by the client's `ready` message — they tell us
@@ -1903,8 +2134,14 @@ class NativePiSessionController {
         return;
 
       case "prompt": {
-        const message = String(payload.message || "").trim();
+        const rawMessage = String(payload.message || "").trim();
         const images = sanitizePromptImages(payload.images);
+        // 一般檔案附件:client 上傳完拿到的 attachPath 與 originalName 清單。
+        // server 不存 in-memory 檔案資料,只把路徑 append 進 prompt 文字尾,讓 LLM
+        // 用 Read/Bash 工具自行讀取。重複 / 不合法的條目靜默 drop(過濾邏輯與
+        // sanitizePromptImages 對齊:UX 從寬,壞條目不擋整則 prompt)。
+        const files = sanitizePromptFiles(payload.files);
+        const message = appendAttachmentNotice(rawMessage, files);
         if (!message && images.length === 0) {
           sendJson(this.ws, {
             type: "command_result",
@@ -1917,6 +2154,7 @@ class NativePiSessionController {
         logger.info("prompt accepted", {
           length: message.length,
           images: images.length,
+          files: files.length,
           streaming: this.session.isStreaming,
           streamingBehavior,
         });
@@ -2123,6 +2361,13 @@ const server = createServer(async (req, res) => {
   try {
     const handled = await handleAuth(req, res);
     if (handled) return;
+    // upload route 走獨立 dispatcher;handleAuth 已驗過 cookie。
+    // 之所以放在 serveStatic 之前:serveStatic 把任何 /api/* 都會 404,所以必須先攔。
+    const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    if (url.pathname === "/api/upload") {
+      handleUpload(req, res);
+      return;
+    }
     serveStatic(req, res);
   } catch (err) {
     logger.error("request handler error", { error: err instanceof Error ? err.message : String(err) });

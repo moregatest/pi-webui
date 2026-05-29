@@ -375,3 +375,75 @@ test("loadProfile [sandbox].system_prompt 超過 16KB → throw", (t) => {
   );
   assert.throws(() => loadProfile("x", tmp), /system_prompt.*16384|16384.*system_prompt|上限/);
 });
+
+test("loadProfile [uploads] 全欄位 OK", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    [
+      "[uploads]",
+      `allowed_extensions = ["pdf", "docx"]`,
+      `extensions_add = ["csv"]`,
+      `subdir = "staff"`,
+      `max_bytes = 1048576`,
+      `max_files = 3`,
+    ].join("\n") + "\n",
+  );
+  const profile = loadProfile("x", tmp);
+  assert.deepEqual(profile.uploads?.allowed_extensions, ["pdf", "docx"]);
+  assert.deepEqual(profile.uploads?.extensions_add, ["csv"]);
+  assert.equal(profile.uploads?.subdir, "staff");
+  assert.equal(profile.uploads?.max_bytes, 1048576);
+  assert.equal(profile.uploads?.max_files, 3);
+});
+
+test("loadProfile [uploads] 未知欄位 → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[uploads]\nrootdir = "elsewhere"\n`,
+  );
+  assert.throws(() => loadProfile("x", tmp), /\[uploads\]\.rootdir/);
+});
+
+test("loadProfile [uploads].allowed_extensions 必須是字串陣列", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[uploads]\nallowed_extensions = "pdf"\n`,
+  );
+  assert.throws(() => loadProfile("x", tmp), /\[uploads\]\.allowed_extensions/);
+});
+
+test("loadProfile [uploads].subdir 非法字元 → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[uploads]\nsubdir = "has/slash"\n`,
+  );
+  assert.throws(() => loadProfile("x", tmp), /\[uploads\]\.subdir/);
+});
+
+test("loadProfile [uploads].max_bytes 非正整數 → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "x.toml"),
+    `[uploads]\nmax_bytes = -1\n`,
+  );
+  assert.throws(() => loadProfile("x", tmp), /\[uploads\]\.max_bytes/);
+});

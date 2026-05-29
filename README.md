@@ -89,6 +89,11 @@ command-line flags:
 | `--brand-color <#hex>` | accent color; sets the `--brand-color` CSS variable. `#rgb` or `#rrggbb`. |
 | `--brand-logo <path>` | replace `/brand/logo` route with this file (svg / png / jpg / gif / webp). path must exist or boot fails. |
 | `--ui-profile <preset>` | preset that expands to a set of the above flags. currently supported: `customer` (= `--hide-thinking --hide-tool-calls --show-tool-progress --hide-status-chips --hide-session-picker --hide-model --safe-errors`). individual flags can still be set alongside; they only ever flip in the same direction (no "un-hide"). |
+| `--upload-ext <list>` | 取代預設一般檔案上傳白名單(逗號分隔,不帶點)。預設清單:`jpg,jpeg,png,gif,svg,pdf,rar,zip,flv,txt,doc,docx,xls,xlsx,dwg`。alias: `PI_WEBUI_UPLOAD_EXT`;profile `[uploads].allowed_extensions` 為 fallback。 |
+| `--upload-ext-add <list>` | 在現有清單之上加增副檔名(預設 + profile + `--upload-ext`)。alias: `PI_WEBUI_UPLOAD_EXT_ADD`。 |
+| `--upload-subdir <name>` | 上傳檔案落地子目錄(`<cwd>/uploads/<subdir>/`)。預設取 `--profile` 名,沒設時為 `default`。只允許 `[A-Za-z0-9_-]`。alias: `PI_WEBUI_UPLOAD_SUBDIR`;profile `[uploads].subdir` 為 fallback。 |
+| `--upload-max-bytes <n>` | 單檔位元組上限。預設 `52428800`(50 MiB)。alias: `PI_WEBUI_UPLOAD_MAX_BYTES`。 |
+| `--upload-max-files <n>` | 單一 prompt 最多附幾個檔(僅限非圖片)。預設 `20`。alias: `PI_WEBUI_UPLOAD_MAX_FILES`。 |
 
 environment variables:
 
@@ -119,6 +124,11 @@ environment variables:
 | `PI_WEBUI_BRAND_LOGO` | (unset) | logo file path served at `/brand/logo` (same as `--brand-logo`) |
 | `PI_WEBUI_UI_PROFILE` | (unset) | preset name (`customer`); same as `--ui-profile` |
 | `PI_WEBUI_PROFILE` | (unset) | profile name (loads `.pi/profiles/<name>.toml`); same as `--profile` |
+| `PI_WEBUI_UPLOAD_EXT` | (unset) | 取代預設上傳副檔名白名單(逗號分隔) |
+| `PI_WEBUI_UPLOAD_EXT_ADD` | (unset) | 在現有清單上加增副檔名(逗號分隔) |
+| `PI_WEBUI_UPLOAD_SUBDIR` | (`--profile` 名 or `default`) | `<cwd>/uploads/<subdir>/` 子目錄 |
+| `PI_WEBUI_UPLOAD_MAX_BYTES` | `52428800` | 單檔位元組上限 |
+| `PI_WEBUI_UPLOAD_MAX_FILES` | `20` | 單一 prompt 最多附幾個非圖片檔 |
 | `PI_PROJECT_CWD` | `process.cwd()` | project directory used for sessions |
 | `PI_AGENT_DIR` | pi default (`~/.pi/agent`) | pi agent config directory |
 | `PI_SESSION_DIR` | pi default | session storage directory |
@@ -145,7 +155,9 @@ when launched via the pi extension, equivalent pi flags are available:
 `--webui-show-tool-progress`, `--webui-hide-status-chips`,
 `--webui-hide-session-picker`, `--webui-safe-errors`,
 `--webui-brand-name`, `--webui-brand-color`, `--webui-brand-logo`,
-`--webui-ui-profile`, `--webui-profile`.
+`--webui-ui-profile`, `--webui-profile`,
+`--webui-upload-ext`, `--webui-upload-ext-add`, `--webui-upload-subdir`,
+`--webui-upload-max-bytes`, `--webui-upload-max-files`.
 
 to lock down the slash command menu for a deployment, drop a
 `.pi/commands-allow.txt` in the project root with one command name per line

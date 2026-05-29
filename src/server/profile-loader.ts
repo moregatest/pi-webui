@@ -41,6 +41,19 @@ export interface SandboxConfig {
   system_prompt?: string;
 }
 
+export interface UploadsConfig {
+  // 完整取代預設清單;副檔名不含開頭的點,大小寫不敏感。
+  allowed_extensions?: string[];
+  // 在現有清單之上加增。
+  extensions_add?: string[];
+  // <cwd>/uploads/<subdir>/<filename>;未指定時 fallback 到 profile 名。
+  subdir?: string;
+  // 單檔位元組上限。
+  max_bytes?: number;
+  // 一次最多幾個檔。
+  max_files?: number;
+}
+
 export interface ProfileFile {
   meta?: { description?: string };
   ui?: UiFlags;
@@ -50,6 +63,7 @@ export interface ProfileFile {
   defaults?: { model?: string };
   tool_labels?: Record<string, ToolLabelEntry>;
   sandbox?: SandboxConfig;
+  uploads?: UploadsConfig;
 }
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/;
@@ -93,7 +107,7 @@ function validateBrand(brand: BrandConfig | undefined, cwd: string): void {
   }
 }
 
-const ALLOWED_TOP = new Set(["meta", "ui", "brand", "skills", "commands", "defaults", "tool_labels", "sandbox"]);
+const ALLOWED_TOP = new Set(["meta", "ui", "brand", "skills", "commands", "defaults", "tool_labels", "sandbox", "uploads"]);
 const ALLOWED_UI = new Set([
   "hide_thinking", "hide_tool_calls", "show_tool_progress",
   "hide_status_chips", "hide_session_picker", "hide_model",
@@ -129,6 +143,11 @@ function validateUnknown(parsed: Record<string, unknown>): void {
 }
 
 const ALLOWED_SANDBOX = new Set(["image", "env", "system_prompt"]);
+const ALLOWED_UPLOADS = new Set([
+  "allowed_extensions", "extensions_add", "subdir", "max_bytes", "max_files",
+]);
+// 同 upload-config 的常數;這裡只做基本字串/陣列驗證,內容由 upload-config.resolveUploadConfig 統一驗。
+const UPLOADS_SUBDIR_RE = /^[A-Za-z0-9_-]+$/;
 // system_prompt 上限:預防誤把整本 doc 塞進去,讓 LLM context 爆炸。
 // 16KB 對「幾段 markdown 提示」綽綽有餘,真要大於這個 size 表示在亂塞。
 const MAX_SANDBOX_SYSTEM_PROMPT_BYTES = 16 * 1024;
@@ -175,6 +194,42 @@ function validateSandbox(sandbox: SandboxConfig | undefined): void {
         `[sandbox].system_prompt: 上限 ${MAX_SANDBOX_SYSTEM_PROMPT_BYTES} bytes(目前 ${bytes});`
         + ` 大段內容請放在 image 內的 doc 並由 LLM 主動讀取,不要塞進 system prompt。`,
       );
+    }
+  }
+}
+
+function validateUploads(uploads: UploadsConfig | undefined): void {
+  if (!uploads) return;
+  for (const key of Object.keys(uploads)) {
+    if (!ALLOWED_UPLOADS.has(key)) {
+      throw new Error(`unknown field [uploads].${key}`);
+    }
+  }
+  for (const field of ["allowed_extensions", "extensions_add"] as const) {
+    const value = uploads[field];
+    if (value === undefined) continue;
+    if (!Array.isArray(value)) {
+      throw new Error(`[uploads].${field}: 必須是字串陣列,收到 ${typeof value}`);
+    }
+    for (const item of value) {
+      if (typeof item !== "string") {
+        throw new Error(`[uploads].${field}: 陣列項目必須是字串,收到 ${typeof item}`);
+      }
+    }
+  }
+  if (uploads.subdir !== undefined) {
+    if (typeof uploads.subdir !== "string") {
+      throw new Error(`[uploads].subdir: 必須是字串,收到 ${typeof uploads.subdir}`);
+    }
+    if (!UPLOADS_SUBDIR_RE.test(uploads.subdir)) {
+      throw new Error(`[uploads].subdir: 只允許 [A-Za-z0-9_-],收到 "${uploads.subdir}"`);
+    }
+  }
+  for (const field of ["max_bytes", "max_files"] as const) {
+    const value = uploads[field];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+      throw new Error(`[uploads].${field}: 必須是正整數,收到 ${JSON.stringify(value)}`);
     }
   }
 }
@@ -242,5 +297,6 @@ export function loadProfile(name: string, cwd: string): ProfileFile {
   validateBrand(profile.brand, cwd);
   validatePlaceholders(profile.tool_labels);
   validateSandbox(profile.sandbox);
+  validateUploads(profile.uploads);
   return profile;
 }

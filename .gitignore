@@ -4,3 +4,5 @@ build/
 *.log
 .env
 .env.*
+# server-side 上傳目錄(/api/upload 寫入點),內含使用者上傳檔不應入庫
+uploads/

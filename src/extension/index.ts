@@ -111,6 +111,11 @@ interface StartOptions {
 	brandColor?: string;
 	profile?: string;
 	uiProfile?: string;
+	uploadExt?: string;
+	uploadExtAdd?: string;
+	uploadSubdir?: string;
+	uploadMaxBytes?: string;
+	uploadMaxFiles?: string;
 	// When true, the spawned server is tied to this pi process (terminated on
 	// session_shutdown). When false, the server is detached and survives pi exit.
 	owned?: boolean;
@@ -157,6 +162,11 @@ function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 		if (opts.brandColor) serverArgs.push("--brand-color", opts.brandColor);
 		if (opts.profile) serverArgs.push("--profile", opts.profile);
 		if (opts.uiProfile) serverArgs.push("--ui-profile", opts.uiProfile);
+		if (opts.uploadExt) serverArgs.push("--upload-ext", opts.uploadExt);
+		if (opts.uploadExtAdd) serverArgs.push("--upload-ext-add", opts.uploadExtAdd);
+		if (opts.uploadSubdir) serverArgs.push("--upload-subdir", opts.uploadSubdir);
+		if (opts.uploadMaxBytes) serverArgs.push("--upload-max-bytes", opts.uploadMaxBytes);
+		if (opts.uploadMaxFiles) serverArgs.push("--upload-max-files", opts.uploadMaxFiles);
 		const detached = !opts.owned;
 		// 收集 child stderr，避免 spawn 後因 MODULE_NOT_FOUND 等錯誤被吞掉
 		const child = spawn("node", serverArgs, {
@@ -299,6 +309,16 @@ function parseStartFlags(tokens: string[]): StartOptions {
 		else if (t.startsWith("--profile=")) opts.profile = t.slice("--profile=".length);
 		else if (t === "--ui-profile") opts.uiProfile = valueOf(++i, t);
 		else if (t.startsWith("--ui-profile=")) opts.uiProfile = t.slice("--ui-profile=".length);
+		else if (t === "--upload-ext") opts.uploadExt = valueOf(++i, t);
+		else if (t.startsWith("--upload-ext=")) opts.uploadExt = t.slice("--upload-ext=".length);
+		else if (t === "--upload-ext-add") opts.uploadExtAdd = valueOf(++i, t);
+		else if (t.startsWith("--upload-ext-add=")) opts.uploadExtAdd = t.slice("--upload-ext-add=".length);
+		else if (t === "--upload-subdir") opts.uploadSubdir = valueOf(++i, t);
+		else if (t.startsWith("--upload-subdir=")) opts.uploadSubdir = t.slice("--upload-subdir=".length);
+		else if (t === "--upload-max-bytes") opts.uploadMaxBytes = valueOf(++i, t);
+		else if (t.startsWith("--upload-max-bytes=")) opts.uploadMaxBytes = t.slice("--upload-max-bytes=".length);
+		else if (t === "--upload-max-files") opts.uploadMaxFiles = valueOf(++i, t);
+		else if (t.startsWith("--upload-max-files=")) opts.uploadMaxFiles = t.slice("--upload-max-files=".length);
 		else throw new Error(`unknown flag: ${t}`);
 	}
 	if (skills.length > 0) opts.skills = skills.join(":");
@@ -492,6 +512,36 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		default: "",
 	});
 
+	pi.registerFlag?.("webui-upload-ext", {
+		description: "comma-separated file extension whitelist for pi-webui uploads (replaces default). Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
+	pi.registerFlag?.("webui-upload-ext-add", {
+		description: "comma-separated extensions added on top of the current list. Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
+	pi.registerFlag?.("webui-upload-subdir", {
+		description: "subdir under <cwd>/uploads/ for stored files. Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
+	pi.registerFlag?.("webui-upload-max-bytes", {
+		description: "per-file upload size limit in bytes (default 52428800 = 50 MiB). Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
+	pi.registerFlag?.("webui-upload-max-files", {
+		description: "max files per prompt (default 20). Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
 	pi.on("session_shutdown", () => {
 		const child = ownedChild;
 		if (!child) return;
@@ -575,6 +625,11 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		let brandColor: string;
 		let profile: string;
 		let uiProfile: string;
+		let uploadExt: string;
+		let uploadExtAdd: string;
+		let uploadSubdir: string;
+		let uploadMaxBytes: string;
+		let uploadMaxFiles: string;
 		let want: boolean;
 		try {
 			listen = String(pi.getFlag?.("webui-listen") || "").trim();
@@ -604,6 +659,11 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			brandColor = String(pi.getFlag?.("webui-brand-color") || "").trim();
 			profile = String(pi.getFlag?.("webui-profile") || "").trim();
 			uiProfile = String(pi.getFlag?.("webui-ui-profile") || "").trim();
+			uploadExt = String(pi.getFlag?.("webui-upload-ext") || "").trim();
+			uploadExtAdd = String(pi.getFlag?.("webui-upload-ext-add") || "").trim();
+			uploadSubdir = String(pi.getFlag?.("webui-upload-subdir") || "").trim();
+			uploadMaxBytes = String(pi.getFlag?.("webui-upload-max-bytes") || "").trim();
+			uploadMaxFiles = String(pi.getFlag?.("webui-upload-max-files") || "").trim();
 			want =
 				!!pi.getFlag?.("webui") ||
 				listen.length > 0 ||
@@ -632,7 +692,12 @@ export default function webuiExtension(pi: ExtensionAPI) {
 				brandLogo.length > 0 ||
 				brandColor.length > 0 ||
 				profile.length > 0 ||
-				uiProfile.length > 0;
+				uiProfile.length > 0 ||
+				uploadExt.length > 0 ||
+				uploadExtAdd.length > 0 ||
+				uploadSubdir.length > 0 ||
+				uploadMaxBytes.length > 0 ||
+				uploadMaxFiles.length > 0;
 		} catch {
 			return;
 		}
@@ -671,6 +736,11 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			brandColor: brandColor || undefined,
 			profile: profile || undefined,
 			uiProfile: uiProfile || undefined,
+			uploadExt: uploadExt || undefined,
+			uploadExtAdd: uploadExtAdd || undefined,
+			uploadSubdir: uploadSubdir || undefined,
+			uploadMaxBytes: uploadMaxBytes || undefined,
+			uploadMaxFiles: uploadMaxFiles || undefined,
 			owned: true,
 		});
 	});

@@ -110,9 +110,32 @@ const INPUT_HISTORY_LIMIT = 200;
 // matches server.mjs sanitizePromptImages — keep in sync
 const MAX_PASTED_IMAGES = 8;
 const MAX_PASTED_IMAGE_BYTES = 10 * 1024 * 1024;
+// Anthropic ImageContent 支援的 mime;命中這條的圖檔走 in-band base64 path,
+// 讓 LLM 直接「看見」內容(不必先 Read 路徑)。命中不到的圖(svg)以及所有
+// 其他副檔名,走 /api/upload + path,LLM 用 Read/Bash 自行取。
 const ALLOWED_PASTED_IMAGE_MIME = /^image\/(png|jpeg|gif|webp)$/i;
 // in-memory list of images attached to the next prompt: {data, mimeType, url}
 const pendingImages = [];
+
+
+// 一般檔案附件(上傳完成的):{id, originalName, attachPath, size, ext, status}
+// status: "uploading" | "ready" | "error"
+const pendingFiles = [];
+let nextPendingFileId = 1;
+
+// 上傳設定:從 connected packet 拿;先給 defaults 避免 connected 之前 paste
+// 觸發到 undefined。預設清單與 server 端 DEFAULT_ALLOWED_EXTENSIONS 對齊。
+const DEFAULT_UPLOAD_EXTENSIONS = [
+  "jpg", "jpeg", "png", "gif", "svg",
+  "pdf", "rar", "zip", "flv", "txt",
+  "doc", "docx", "xls", "xlsx", "dwg",
+];
+let uploadConfig = {
+  allowedExtensions: new Set(DEFAULT_UPLOAD_EXTENSIONS),
+  maxBytes: 50 * 1024 * 1024,
+  maxFiles: 20,
+  subdir: "default",
+};
 let inputHistory = loadInputHistory();
 let inputHistoryIndex = inputHistory.length;
 let inputHistoryDraft = "";
@@ -772,6 +795,24 @@ function connect() {
         if (packet.payload.uiProfile) {
           uiProfile = packet.payload.uiProfile;
         }
+        // 一般檔案上傳設定:server 沒送(舊版相容)時保留 module-level defaults。
+        if (packet.payload.uploads) {
+          const u = packet.payload.uploads;
+          uploadConfig = {
+            allowedExtensions: new Set(
+              Array.isArray(u.allowedExtensions)
+                ? u.allowedExtensions.map((s) => String(s).toLowerCase())
+                : DEFAULT_UPLOAD_EXTENSIONS,
+            ),
+            maxBytes: Number(u.maxBytes) || uploadConfig.maxBytes,
+            maxFiles: Number(u.maxFiles) || uploadConfig.maxFiles,
+            subdir: typeof u.subdir === "string" && u.subdir ? u.subdir : uploadConfig.subdir,
+          };
+          // 讓 file picker 預設只看允許的副檔名;不阻擋使用者點 "All files"
+          const accept = [...uploadConfig.allowedExtensions].map((e) => `.${e}`).join(",");
+          const picker = document.getElementById("file-picker");
+          if (picker) picker.setAttribute("accept", accept);
+        }
         // hideModel 沿用既有變數;優先取 uiProfile.hideModel,fallback 到舊欄位。
         hideModel = !!(uiProfile?.hideModel ?? packet.payload.hideModel);
         applyBranding(uiProfile.brand);
@@ -1373,8 +1414,7 @@ function showScopedModelsPicker(payload) {
 
 function showHotkeysModal() {
   const items = [
-    { keys: "Enter", desc: "Send / accept slash completion" },
-    { keys: "Shift+Enter", desc: "Newline in input" },
+    { keys: "Enter", desc: "Newline in input (送出請點右下角 send 按鈕)" },
     { keys: "Tab", desc: "Complete slash command" },
     { keys: "↑ / ↓", desc: "Navigate slash menu / picker" },
     { keys: "Esc", desc: "Abort running session / close picker" },
@@ -1886,22 +1926,16 @@ input.addEventListener("keydown", (event) => {
       slashMenu.hidden = true;
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    if (event.key === "Enter" && !event.isComposing) {
+      // slash menu 開啟時 Enter 跟 Tab 一致:填入 autocomplete + 關 menu,
+      // 不送出 — 維持「Enter 永遠不送出、只能點 send 按鈕」全站規則。
       event.preventDefault();
-      const cmd = slashFiltered[slashIndex];
-      if (cmd) {
-        input.value = `/${cmd.name}`;
-      }
-      slashMenu.hidden = true;
-      composer.requestSubmit();
+      applySlashSelection();
       return;
     }
   }
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-    event.preventDefault();
-    composer.requestSubmit();
-    return;
-  }
+  // Enter / Shift+Enter 一律讓 textarea 自然斷行;送出唯一入口是 send 按鈕。
+  // 不在這裡 preventDefault,讓 browser default 處理換行。
   if (event.key === "ArrowUp" && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
     if (input.selectionStart !== 0 || input.selectionEnd !== 0) return;
     event.preventDefault();
@@ -2066,11 +2100,13 @@ function refocusInputIfIdle() {
   input.focus();
 }
 
-// renders the chip strip above the composer reflecting `pendingImages`.
+// renders the chip strip above the composer reflecting `pendingImages` and
+// `pendingFiles`. images keep their thumbnail; files show a [ext] badge + name.
 const attachmentsBar = document.getElementById("composer-attachments");
 function renderAttachments() {
   attachmentsBar.replaceChildren();
-  attachmentsBar.hidden = pendingImages.length === 0;
+  const empty = pendingImages.length === 0 && pendingFiles.length === 0;
+  attachmentsBar.hidden = empty;
   pendingImages.forEach((img, i) => {
     const chip = document.createElement("div");
     chip.className = "attachment-chip";
@@ -2089,6 +2125,59 @@ function renderAttachments() {
     chip.append(thumb, remove);
     attachmentsBar.append(chip);
   });
+  pendingFiles.forEach((file) => {
+    const chip = document.createElement("div");
+    chip.className = "attachment-chip file";
+    if (file.status !== "ready") chip.classList.add("pending");
+    const badge = document.createElement("span");
+    badge.className = "file-badge";
+    badge.textContent = file.ext || "FILE";
+    const name = document.createElement("span");
+    name.className = "file-name";
+    name.title = file.originalName;
+    let display = file.originalName;
+    if (file.status === "uploading") display = `${display} (uploading…)`;
+    else if (file.status === "error") display = `${display} (failed)`;
+    name.textContent = display;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "attachment-remove";
+    remove.setAttribute("aria-label", "Remove attachment");
+    remove.textContent = "×";
+    remove.addEventListener("click", () => {
+      const idx = pendingFiles.findIndex((f) => f.id === file.id);
+      if (idx >= 0) pendingFiles.splice(idx, 1);
+      renderAttachments();
+    });
+    chip.append(badge, name, remove);
+    attachmentsBar.append(chip);
+  });
+}
+
+// 取副檔名(全小寫、不含點)
+function getFileExt(name) {
+  const s = String(name || "");
+  const dot = s.lastIndexOf(".");
+  if (dot < 0 || dot === s.length - 1) return "";
+  return s.slice(dot + 1).toLowerCase();
+}
+
+// 把單一 File 透過 PUT /api/upload 送上去,回傳 server 給的 file metadata。
+// 失敗時 throw,呼叫端用 chip status / toast 呈現。
+async function uploadFile(file) {
+  const res = await fetch(`/api/upload?name=${encodeURIComponent(file.name)}`, {
+    method: "PUT",
+    body: file,
+    credentials: "same-origin",
+    headers: { "content-type": "application/octet-stream" },
+  });
+  let body = null;
+  try { body = await res.json(); } catch { /* server 沒回 JSON */ }
+  if (!res.ok || !body?.ok) {
+    const reason = body?.error || `upload failed (${res.status})`;
+    throw new Error(reason);
+  }
+  return body.file;
 }
 
 // converts an ArrayBuffer to a base64 string without using FileReader so the
@@ -2103,48 +2192,111 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
-// shared by paste and drag/drop: appends valid image files to `pendingImages`,
-// surfaces a toast for any rejection, and re-renders the chip strip.
-async function ingestImageFiles(files) {
+// shared by paste / drag-drop / file picker: dispatches each File to either the
+// in-band image path (Anthropic ImageContent) or the /api/upload path (any other
+// whitelisted extension). rejections surface as a toast but don't abort the rest
+// of the batch.
+async function ingestFiles(files) {
   if (!files || files.length === 0) return;
   for (const file of files) {
-    if (pendingImages.length >= MAX_PASTED_IMAGES) {
-      showToast(`max ${MAX_PASTED_IMAGES} attachments`, "warning");
+    const ext = getFileExt(file.name);
+    const isImage = ALLOWED_PASTED_IMAGE_MIME.test(file.type);
+    if (isImage) {
+      if (pendingImages.length >= MAX_PASTED_IMAGES) {
+        showToast(`max ${MAX_PASTED_IMAGES} image attachments`, "warning");
+        continue;
+      }
+      if (file.size > MAX_PASTED_IMAGE_BYTES) {
+        showToast("image too large (10 MB max)", "warning");
+        continue;
+      }
+      const buf = await file.arrayBuffer();
+      const data = arrayBufferToBase64(buf);
+      pendingImages.push({
+        data,
+        mimeType: file.type,
+        url: `data:${file.type};base64,${data}`,
+      });
+      continue;
+    }
+    // 非圖片(或 svg / 其他副檔名)走 /api/upload
+    if (!ext) {
+      showToast(`unsupported file (no extension): ${file.name}`, "warning");
+      continue;
+    }
+    if (!uploadConfig.allowedExtensions.has(ext)) {
+      showToast(`unsupported extension: .${ext}`, "warning");
+      continue;
+    }
+    if (pendingFiles.length >= uploadConfig.maxFiles) {
+      showToast(`max ${uploadConfig.maxFiles} file attachments`, "warning");
       break;
     }
-    if (!ALLOWED_PASTED_IMAGE_MIME.test(file.type)) {
-      showToast(`unsupported image type: ${file.type || "unknown"}`, "warning");
+    if (file.size > uploadConfig.maxBytes) {
+      const mb = Math.round(uploadConfig.maxBytes / (1024 * 1024));
+      showToast(`file too large (${mb} MB max): ${file.name}`, "warning");
       continue;
     }
-    if (file.size > MAX_PASTED_IMAGE_BYTES) {
-      showToast("image too large (10 MB max)", "warning");
-      continue;
-    }
-    const buf = await file.arrayBuffer();
-    const data = arrayBufferToBase64(buf);
-    pendingImages.push({
-      data,
-      mimeType: file.type,
-      url: `data:${file.type};base64,${data}`,
-    });
+    const entry = {
+      id: nextPendingFileId++,
+      originalName: file.name,
+      ext,
+      size: file.size,
+      status: "uploading",
+      attachPath: null,
+    };
+    pendingFiles.push(entry);
+    renderAttachments();
+    // upload 非阻塞;成功 / 失敗時更新 entry 並 re-render
+    uploadFile(file).then(
+      (meta) => {
+        entry.status = "ready";
+        entry.attachPath = meta.attachPath;
+        entry.storedName = meta.storedName;
+        renderAttachments();
+      },
+      (err) => {
+        entry.status = "error";
+        showToast(`upload failed: ${err.message}`, "error");
+        renderAttachments();
+      },
+    );
   }
   renderAttachments();
 }
 
+// 舊名 alias:其他地方仍可能呼叫 ingestImageFiles(原本只處理圖)。
+const ingestImageFiles = ingestFiles;
+
 input.addEventListener("paste", (event) => {
   const items = event.clipboardData?.items;
   if (!items) return;
+  // paste 同樣接圖片 + 一般檔案;ingestFiles 內部會依副檔名分流。
+  // 文字 paste 不被攔(items[i].kind === "string")。
   const files = [];
   for (const item of items) {
-    if (item.kind === "file" && ALLOWED_PASTED_IMAGE_MIME.test(item.type)) {
+    if (item.kind === "file") {
       const f = item.getAsFile();
       if (f) files.push(f);
     }
   }
   if (files.length === 0) return; // let normal text paste through
   event.preventDefault();
-  void ingestImageFiles(files);
+  void ingestFiles(files);
 });
+
+// + 附件按鈕:打開隱藏的 file picker。
+const attachButton = document.getElementById("attach");
+const filePicker = document.getElementById("file-picker");
+if (attachButton && filePicker) {
+  attachButton.addEventListener("click", () => filePicker.click());
+  filePicker.addEventListener("change", () => {
+    const list = Array.from(filePicker.files || []);
+    if (list.length > 0) void ingestFiles(list);
+    // 清空 value 讓同一個檔案可以再選一次(否則 change 不會 fire)
+    filePicker.value = "";
+  });
+}
 
 // drag and drop: accept image files dropped anywhere in the document. the
 // dragover handler must call preventDefault for the drop to register at all.
@@ -2170,7 +2322,7 @@ window.addEventListener("drop", (event) => {
   const files = event.dataTransfer?.files;
   if (!files || files.length === 0) return;
   event.preventDefault();
-  void ingestImageFiles(Array.from(files));
+  void ingestFiles(Array.from(files));
 });
 
 composer.addEventListener("submit", (event) => {
@@ -2183,7 +2335,16 @@ composer.addEventListener("submit", (event) => {
   const raw = input.value;
   const message = raw.trim();
   const hasImages = pendingImages.length > 0;
-  if ((!message && !hasImages) || socket?.readyState !== WebSocket.OPEN) return;
+  // 只把上傳完成的(status === "ready")檔案算進送出條件;uploading / error 的
+  // 排除。若還在 uploading,提示使用者稍候。
+  const readyFiles = pendingFiles.filter((f) => f.status === "ready");
+  const uploadingFiles = pendingFiles.filter((f) => f.status === "uploading");
+  const hasFiles = readyFiles.length > 0;
+  if (uploadingFiles.length > 0) {
+    showToast(`waiting for ${uploadingFiles.length} upload(s) to finish`, "info");
+    return;
+  }
+  if ((!message && !hasImages && !hasFiles) || socket?.readyState !== WebSocket.OPEN) return;
   if (message) pushInputHistory(message);
   inputHistoryDraft = "";
   input.value = "";
@@ -2191,8 +2352,8 @@ composer.addEventListener("submit", (event) => {
   slashMenu.hidden = true;
 
   // bash/slash routing applies only when there are no pasted attachments —
-  // images can only be carried by a regular prompt message.
-  if (!hasImages) {
+  // images / files can only be carried by a regular prompt message.
+  if (!hasImages && !hasFiles) {
     const route = routeInput({ message, bashMode });
     if (route.kind === "empty") return;
     if (route.kind === "bash") {
@@ -2219,11 +2380,13 @@ composer.addEventListener("submit", (event) => {
   }
 
   const images = pendingImages.map((img) => ({ data: img.data, mimeType: img.mimeType }));
+  const files = readyFiles.map((f) => ({ originalName: f.originalName, attachPath: f.attachPath }));
   pendingImages.length = 0;
+  pendingFiles.length = 0;
   renderAttachments();
-  logger.info("prompt sent", { length: message.length, images: images.length });
+  logger.info("prompt sent", { length: message.length, images: images.length, files: files.length });
   appendOptimisticUserMessage(message, images);
-  send({ type: "prompt", message, images });
+  send({ type: "prompt", message, images, files });
 });
 
 function appendOptimisticUserMessage(text, images) {
