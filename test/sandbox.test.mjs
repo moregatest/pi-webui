@@ -1,4 +1,4 @@
-// pi-webui Sandbox 純單元測試:
+// readyai-webui Sandbox 純單元測試:
 // - 不啟動真的 QEMU,透過注入 stub vmFactory 驗證路徑轉換、ops 行為、生命週期。
 // - 真實 VM 整合測試走 test/sandbox-vm.test.mjs (SANDBOX_VM=1 opt-in)。
 
@@ -89,16 +89,16 @@ function makeFakeVm() {
 }
 
 function mkWorkspace() {
-  return mkdtempSync(path.join(tmpdir(), "pi-webui-sandbox-"));
+  return mkdtempSync(path.join(tmpdir(), "readyai-webui-sandbox-"));
 }
 
 test("constructor 拒絕不存在的 workspace", () => {
-  assert.throws(() => new Sandbox({ workspaceRoot: "/definitely/not/here/pi-webui" }), /does not exist/);
+  assert.throws(() => new Sandbox({ workspaceRoot: "/definitely/not/here/readyai-webui" }), /does not exist/);
 });
 
 test("constructor 把 workspaceRoot canonicalise (resolve symlink)", () => {
   const real = mkWorkspace();
-  const link = path.join(tmpdir(), `pi-webui-sandbox-link-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const link = path.join(tmpdir(), `readyai-webui-sandbox-link-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   symlinkSync(real, link);
   try {
     const sb = new Sandbox({ workspaceRoot: link });

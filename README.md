@@ -1,4 +1,4 @@
-# pi-webui
+# readyai-webui
 
 a simple, standalone webui for [pi.dev](https://pi.dev)
 
@@ -14,10 +14,13 @@ prerequisites:
 - node.js 20+
 - a working pi installation
 
-install as a pi extension:
+install as a pi extension (this is a private fork — install from source, not the npm registry):
 
 ```bash
-pi install npm:@khimaros/pi-webui
+git clone https://github.com/moregatest/pi-webui
+cd pi-webui
+make            # install deps + build (tsc)
+npm link        # expose the `readyai-webui` bin + register as a pi extension globally
 ```
 
 control from the pi tui:
@@ -36,17 +39,10 @@ pi --webui                              # start with defaults
 pi --webui-listen 0.0.0.0:3000          # start with a custom bind address
 ```
 
-run without installing:
+after `npm link`, run the bin directly:
 
 ```bash
-npx @khimaros/pi-webui
-```
-
-or install globally:
-
-```bash
-npm install -g @khimaros/pi-webui
-pi-webui
+readyai-webui
 ```
 
 then open <http://127.0.0.1:4096>.
@@ -137,12 +133,12 @@ environment variables:
 examples:
 
 ```bash
-pi-webui --listen 0.0.0.0:3000
-pi-webui --model anthropic/claude-opus-4-7 --hide-model
-pi-webui --skill ~/.claude/skills --skill-allow brainstorming,verify
+readyai-webui --listen 0.0.0.0:3000
+readyai-webui --model anthropic/claude-opus-4-7 --hide-model
+readyai-webui --skill ~/.claude/skills --skill-allow brainstorming,verify
 HOST=0.0.0.0 PORT=3000 PI_PROJECT_CWD=/path/to/project npm start
-PI_WEBUI_PASSWORD=hunter2 pi-webui --listen 0.0.0.0:3000 --trust-proxy
-pi-webui --ui-profile customer --brand-name "Acme Bot" --brand-color "#0066cc" --brand-logo ./logo.svg
+PI_WEBUI_PASSWORD=hunter2 readyai-webui --listen 0.0.0.0:3000 --trust-proxy
+readyai-webui --ui-profile customer --brand-name "Acme Bot" --brand-color "#0066cc" --brand-logo ./logo.svg
 ```
 
 when launched via the pi extension, equivalent pi flags are available:
@@ -206,7 +202,7 @@ so the cookie's `Secure` flag is set when `X-Forwarded-Proto: https` is forwarde
 without `--trust-proxy`, the cookie has no `Secure` flag and works in both plain
 HTTP and tunneled HTTPS.
 
-**port note:** if the requested port is in use, pi-webui linearly searches
+**port note:** if the requested port is in use, readyai-webui linearly searches
 `port..port+49` for the first free one and prints the actual port in the
 listening log line.
 
@@ -240,10 +236,10 @@ still run in the host process.
 
 ```bash
 # engineer use — sandbox the current project
-pi-webui --sandbox
+readyai-webui --sandbox
 
 # back-office / customer — bind to LAN with a fixed workspace
-pi-webui --sandbox --sandbox-workspace /srv/projects/demo --listen 0.0.0.0:3000
+readyai-webui --sandbox --sandbox-workspace /srv/projects/demo --listen 0.0.0.0:3000
 ```
 
 Real-VM integration tests are opt-in (`make test-sandbox`) so the
@@ -265,19 +261,19 @@ image = "readyai-sandbox:0.1.0-3.23.0-bba981"
 READYAI_SANDBOX_MODE = "1"
 ```
 
-4. 啟動:`pi-webui --sandbox --profile <name>`
+4. 啟動:`readyai-webui --sandbox --profile <name>`
 
 或不走 profile,直接 CLI:
 
 ```bash
-pi-webui --sandbox \
+readyai-webui --sandbox \
   --sandbox-image readyai-sandbox:0.1.0-3.23.0-bba981 \
   --sandbox-env READYAI_SANDBOX_MODE=1
 ```
 
 注意事項:
 
-- image 必須是 host 本機 `gondolin image ls` 已註冊的;pi-webui **不會**自動下載/build。
+- image 必須是 host 本機 `gondolin image ls` 已註冊的;readyai-webui **不會**自動下載/build。
 - image 內若有 `/etc/profile.d/*.sh`(常見做法注入 `PATH=/usr/local/bin:...`),
   bash 工具走 `bash -lc`(login shell)會自動 source。
 - `--sandbox-env KEY=VAL` 是 VM-wide 預設 env(所有 `vm.exec` 都看得到),非單一指令層 env。
@@ -286,9 +282,9 @@ pi-webui --sandbox \
 
 ### sandbox 身份提示(自動注入)
 
-sandbox 啟用時,pi-webui 會在 model system prompt 末段 append 一段身份提示:
+sandbox 啟用時,readyai-webui 會在 model system prompt 末段 append 一段身份提示:
 
-- 「你在 pi-webui Gondolin micro-VM,不是 Fly.io / Docker / 遠端 SSH」
+- 「你在 readyai-webui Gondolin micro-VM,不是 Fly.io / Docker / 遠端 SSH」
 - cwd `/workspace` 對映到 host 端的具體路徑
 - host 路徑(`/Users/*` / `/home/*` / `/root/*`)在 VM 內不存在
 - 沒 `flyctl` / host SSH / `~/.ssh/` / `~/.readyai/` / `~/.claude/`
@@ -341,10 +337,10 @@ flags and env vars:
 
 ```bash
 # recommended — public URL + sandboxed filesystem access
-pi-webui --tunnel --sandbox
+readyai-webui --tunnel --sandbox
 
 # UNSAFE — only when you fully trust everyone with the URL
-pi-webui --tunnel --allow-unsafe-tunnel
+readyai-webui --tunnel --allow-unsafe-tunnel
 ```
 
 **security notes:**
@@ -373,7 +369,7 @@ default `make test` does not require a network connection or cloudflared.
 
 ## profiles
 
-pi-webui supports a `.pi/profiles/<name>.toml` template system that packages
+readyai-webui supports a `.pi/profiles/<name>.toml` template system that packages
 UI flags, branding, skill/command allowlists, and tool progress labels into
 named startup interfaces. typical use case: engineer writes the toml files
 once per project, then customer/back-office staff can launch the right
@@ -382,9 +378,9 @@ interface with a single `--profile <name>` flag.
 ### startup
 
 ```bash
-pi-webui                                     # engineer use — bare default
-pi-webui --profile staff                     # back-office interface
-pi-webui --profile customer --tunnel \
+readyai-webui                                     # engineer use — bare default
+readyai-webui --profile staff                     # back-office interface
+readyai-webui --profile customer --tunnel \
   --password "$(cat .secret)"                # customer interface, public URL
 ```
 
@@ -474,7 +470,7 @@ fallback (only when `--profile customer` and no file present) > defaults.
 ### customer deployment example
 
 ```bash
-pi-webui \
+readyai-webui \
   --profile customer \
   --sandbox \
   --tunnel \
@@ -530,7 +526,7 @@ test/          node --test files
 ```bash
 make             # install deps + build (tsc)
 make start       # run the server
-make install     # install pi-webui globally from this checkout
+make install     # install readyai-webui globally from this checkout
 make update      # update dependencies (npm update)
 make test        # build + run tests
 make test-sandbox# build + run real-VM sandbox tests (opt-in, needs QEMU)

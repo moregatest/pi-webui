@@ -1,7 +1,7 @@
 /**
  * webui extension
  *
- * provides a /webui command to control the pi-webui server.
+ * provides a /webui command to control the readyai-webui server.
  *
  * usage:
  * /webui            - show interactive picker
@@ -124,7 +124,7 @@ interface StartOptions {
 function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 	const pid = getPid();
 	if (pid && isRunning(pid)) {
-		ctx.ui.notify(`pi-webui is already running (pid: ${pid})`, "info");
+		ctx.ui.notify(`readyai-webui is already running (pid: ${pid})`, "info");
 		return;
 	}
 	try {
@@ -188,7 +188,7 @@ function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 			if (code && code !== 0) {
 				const tail = stderrBuf.trim().split("\n").slice(-3).join(" | ");
 				ctx.ui.notify(
-					`pi-webui server exited (code=${code}${signal ? `, signal=${signal}` : ""})${tail ? `: ${tail}` : ""}`,
+					`readyai-webui server exited (code=${code}${signal ? `, signal=${signal}` : ""})${tail ? `: ${tail}` : ""}`,
 					"error",
 				);
 			}
@@ -200,42 +200,42 @@ function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 		} else {
 			ownedChild = child;
 		}
-		ctx.ui.notify(`launching pi-webui server at ${WEBUI_URL}`, "info");
+		ctx.ui.notify(`launching readyai-webui server at ${WEBUI_URL}`, "info");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		ctx.ui.notify(`failed to launch pi-webui: ${message}`, "error");
+		ctx.ui.notify(`failed to launch readyai-webui: ${message}`, "error");
 	}
 }
 
 function runStatus(ctx: ExtensionCommandContext) {
 	const pid = getPid();
 	if (pid && isRunning(pid)) {
-		ctx.ui.notify(`pi-webui is running (pid: ${pid})`, "info");
+		ctx.ui.notify(`readyai-webui is running (pid: ${pid})`, "info");
 	} else {
-		ctx.ui.notify("pi-webui is not running", "info");
+		ctx.ui.notify("readyai-webui is not running", "info");
 	}
 }
 
 function runStop(ctx: ExtensionCommandContext) {
 	const pid = getPid();
 	if (!pid || !isRunning(pid)) {
-		ctx.ui.notify("pi-webui is not running", "info");
+		ctx.ui.notify("readyai-webui is not running", "info");
 		return;
 	}
 	try {
 		process.kill(pid, "SIGTERM");
 		clearPid();
-		ctx.ui.notify(`stopped pi-webui (pid: ${pid})`, "info");
+		ctx.ui.notify(`stopped readyai-webui (pid: ${pid})`, "info");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		ctx.ui.notify(`failed to stop pi-webui: ${message}`, "error");
+		ctx.ui.notify(`failed to stop readyai-webui: ${message}`, "error");
 	}
 }
 
 function runOpen(ctx: ExtensionCommandContext) {
 	const pid = getPid();
 	if (!pid || !isRunning(pid)) {
-		ctx.ui.notify("pi-webui is not running. run /webui start first.", "error");
+		ctx.ui.notify("readyai-webui is not running. run /webui start first.", "error");
 		return;
 	}
 	openUrl(WEBUI_URL);
@@ -337,7 +337,7 @@ function dispatch(name: string, ctx: ExtensionCommandContext, opts?: StartOption
 
 async function pickAndRun(ctx: ExtensionCommandContext) {
 	const labels = SUBCOMMANDS.map((s) => s.label);
-	const selected = await ctx.ui.select("pi-webui", labels);
+	const selected = await ctx.ui.select("readyai-webui", labels);
 	if (!selected) return;
 	const sub = SUBCOMMANDS.find((s) => s.label === selected);
 	if (sub) dispatch(sub.name, ctx);
@@ -345,61 +345,61 @@ async function pickAndRun(ctx: ExtensionCommandContext) {
 
 export default function webuiExtension(pi: ExtensionAPI) {
 	pi.registerFlag?.("webui", {
-		description: "Start the pi-webui server on launch.",
+		description: "Start the readyai-webui server on launch.",
 		type: "boolean",
 		default: false,
 	});
 
 	pi.registerFlag?.("webui-listen", {
-		description: "pi-webui http bind address (host:port, :port, or port). Implies --webui.",
+		description: "readyai-webui http bind address (host:port, :port, or port). Implies --webui.",
 		type: "string",
 		default: "",
 	});
 
 	pi.registerFlag?.("webui-model", {
-		description: "default model for pi-webui sessions (provider/id, or bare id). Implies --webui.",
+		description: "default model for readyai-webui sessions (provider/id, or bare id). Implies --webui.",
 		type: "string",
 		default: "",
 	});
 
 	pi.registerFlag?.("webui-skill", {
-		description: "extra skill paths for pi-webui (':' or ',' separated). Implies --webui.",
+		description: "extra skill paths for readyai-webui (':' or ',' separated). Implies --webui.",
 		type: "string",
 		default: "",
 	});
 
 	pi.registerFlag?.("webui-skill-allow", {
-		description: "skill whitelist for pi-webui (comma-separated names). Implies --webui.",
+		description: "skill whitelist for readyai-webui (comma-separated names). Implies --webui.",
 		type: "string",
 		default: "",
 	});
 
 	pi.registerFlag?.("webui-skill-allow-file", {
-		description: "skill whitelist file path for pi-webui. Implies --webui.",
+		description: "skill whitelist file path for readyai-webui. Implies --webui.",
 		type: "string",
 		default: "",
 	});
 
 	pi.registerFlag?.("webui-command-allow", {
-		description: "slash command whitelist for pi-webui (comma-separated names). Implies --webui.",
+		description: "slash command whitelist for readyai-webui (comma-separated names). Implies --webui.",
 		type: "string",
 		default: "",
 	});
 
 	pi.registerFlag?.("webui-command-allow-file", {
-		description: "slash command whitelist file path for pi-webui. Implies --webui.",
+		description: "slash command whitelist file path for readyai-webui. Implies --webui.",
 		type: "string",
 		default: "",
 	});
 
 	pi.registerFlag?.("webui-hide-model", {
-		description: "hide the model name in the pi-webui status bar. Implies --webui.",
+		description: "hide the model name in the readyai-webui status bar. Implies --webui.",
 		type: "boolean",
 		default: false,
 	});
 
 	pi.registerFlag?.("webui-password", {
-		description: "enable pi-webui login with this password. Implies --webui.",
+		description: "enable readyai-webui login with this password. Implies --webui.",
 		type: "string",
 		default: "",
 	});
@@ -411,7 +411,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerFlag?.("webui-sandbox", {
-		description: "run pi-webui tools inside a Gondolin micro-VM. Implies --webui.",
+		description: "run readyai-webui tools inside a Gondolin micro-VM. Implies --webui.",
 		type: "boolean",
 		default: false,
 	});
@@ -429,7 +429,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerFlag?.("webui-tunnel", {
-		description: "Enable cloudflared quick tunnel for pi-webui. Implies --webui.",
+		description: "Enable cloudflared quick tunnel for readyai-webui. Implies --webui.",
 		type: "boolean",
 		default: false,
 	});
@@ -447,13 +447,13 @@ export default function webuiExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerFlag?.("webui-hide-thinking", {
-		description: "drop assistant thinking blocks in pi-webui. Implies --webui.",
+		description: "drop assistant thinking blocks in readyai-webui. Implies --webui.",
 		type: "boolean",
 		default: false,
 	});
 
 	pi.registerFlag?.("webui-hide-tool-calls", {
-		description: "drop tool_execution events / tool_call blocks in pi-webui. Implies --webui.",
+		description: "drop tool_execution events / tool_call blocks in readyai-webui. Implies --webui.",
 		type: "boolean",
 		default: false,
 	});
@@ -465,55 +465,55 @@ export default function webuiExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerFlag?.("webui-hide-status-chips", {
-		description: "hide sandbox/tunnel/session chips in the pi-webui status bar. Implies --webui.",
+		description: "hide sandbox/tunnel/session chips in the readyai-webui status bar. Implies --webui.",
 		type: "boolean",
 		default: false,
 	});
 
 	pi.registerFlag?.("webui-hide-session-picker", {
-		description: "hide the session picker UI in pi-webui. Implies --webui.",
+		description: "hide the session picker UI in readyai-webui. Implies --webui.",
 		type: "boolean",
 		default: false,
 	});
 
 	pi.registerFlag?.("webui-safe-errors", {
-		description: "wrap pi-webui server_error payloads as generic + ticket id. Implies --webui.",
+		description: "wrap readyai-webui server_error payloads as generic + ticket id. Implies --webui.",
 		type: "boolean",
 		default: false,
 	});
 
 	pi.registerFlag?.("webui-brand-name", {
-		description: "override the pi-webui title and header label. Implies --webui.",
+		description: "override the readyai-webui title and header label. Implies --webui.",
 		type: "string",
 		default: "",
 	});
 
 	pi.registerFlag?.("webui-brand-logo", {
-		description: "file served at GET /brand/logo in pi-webui. Implies --webui.",
+		description: "file served at GET /brand/logo in readyai-webui. Implies --webui.",
 		type: "string",
 		default: "",
 	});
 
 	pi.registerFlag?.("webui-brand-color", {
-		description: "brand accent color (#rgb or #rrggbb) for pi-webui. Implies --webui.",
+		description: "brand accent color (#rgb or #rrggbb) for readyai-webui. Implies --webui.",
 		type: "string",
 		default: "",
 	});
 
 	pi.registerFlag?.("webui-profile", {
-		description: "pi-webui profile name (loads .pi/profiles/<name>.toml). Implies --webui.",
+		description: "readyai-webui profile name (loads .pi/profiles/<name>.toml). Implies --webui.",
 		type: "string",
 		default: "",
 	});
 
 	pi.registerFlag?.("webui-ui-profile", {
-		description: "pi-webui UI profile preset (e.g. 'customer'). Implies --webui.",
+		description: "readyai-webui UI profile preset (e.g. 'customer'). Implies --webui.",
 		type: "string",
 		default: "",
 	});
 
 	pi.registerFlag?.("webui-upload-ext", {
-		description: "comma-separated file extension whitelist for pi-webui uploads (replaces default). Implies --webui.",
+		description: "comma-separated file extension whitelist for readyai-webui uploads (replaces default). Implies --webui.",
 		type: "string",
 		default: "",
 	});
@@ -555,7 +555,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("webui", {
-		description: "control the pi-webui server",
+		description: "control the readyai-webui server",
 		handler: async (args, ctx) => {
 			const raw = (args || "").trim();
 
@@ -594,7 +594,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 
 	// Defer one tick so pi has finished parsing argv before we read the flag.
 	// the ctx may have been swapped out by then (e.g. when this extension is
-	// loaded inside a pi-webui-spawned session that immediately switches to
+	// loaded inside a readyai-webui-spawned session that immediately switches to
 	// another session) — swallow the resulting stale-ctx error since the
 	// --webui flag is only meaningful for a top-level `pi --webui` invocation.
 	setImmediate(() => {
@@ -705,7 +705,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		const stubCtx = {
 			ui: {
 				notify: (msg: string, level?: string) =>
-					process.stderr.write(`[pi-webui] ${level ?? "info"}: ${msg}\n`),
+					process.stderr.write(`[readyai-webui] ${level ?? "info"}: ${msg}\n`),
 			},
 		} as unknown as ExtensionCommandContext;
 		runStart(stubCtx, {

@@ -39,7 +39,7 @@
 [x] session file watching for external changes
 [x] event log for replay and debugging
 [x] static asset vendoring via `make vendor`
-[x] published as `@khimaros/pi-webui` with `pi-webui` bin
+[x] private fork renamed to `@moregatest/readyai-webui` (decoupled from upstream `@khimaros/pi-webui` update stream) with `readyai-webui` bin
 [x] `make pack` and `make publish` targets
 [x] suppress slash popup when navigating input history
 [x] extension UI bridge — `ExtensionUIContext` notify/select/confirm/input rendered as webui modals (proof of concept; custom/widget/header/footer no-op)

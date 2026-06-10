@@ -1,6 +1,6 @@
-// pi-webui sandbox 身份提示產生器。
+// readyai-webui sandbox 身份提示產生器。
 //
-// 為什麼存在:sandbox 內的 LLM 看不到「自己在 pi-webui sandbox VM」這層事實,
+// 為什麼存在:sandbox 內的 LLM 看不到「自己在 readyai-webui sandbox VM」這層事實,
 // 容易把 cwd=/workspace 解讀成 Fly.io / Docker 容器,套上 host-only 工作流(flyctl、
 // ~/.ssh/、~/.readyai/ 等)做出錯誤判斷。
 //
@@ -14,7 +14,7 @@ export interface SandboxPromptInput {
   // host 端被 mount 到 /workspace 的真實絕對路徑。
   // 給 LLM 看是好的:host 文件提到 <project>/data/foo.json 時 LLM 可對映到 /workspace/data/foo.json。
   workspaceRoot: string;
-  // gondolin image selector(若有)。pi-webui 預設 alpine-base 時為 undefined。
+  // gondolin image selector(若有)。readyai-webui 預設 alpine-base 時為 undefined。
   // 給 LLM 看可以協助它判斷「哪些 CLI 預期存在」(image 本身有 README / motd 時更好,
   // 但 LLM 不一定會主動讀)。
   image?: string;
@@ -23,7 +23,7 @@ export interface SandboxPromptInput {
   extra?: string;
 }
 
-const BUILTIN_HEADER = "## pi-webui sandbox(Gondolin micro-VM)身份提示";
+const BUILTIN_HEADER = "## readyai-webui sandbox(Gondolin micro-VM)身份提示";
 
 export function buildSandboxSystemPrompt(input: SandboxPromptInput): string {
   const { workspaceRoot, image, extra } = input;
@@ -31,7 +31,7 @@ export function buildSandboxSystemPrompt(input: SandboxPromptInput): string {
   lines.push(BUILTIN_HEADER);
   lines.push("");
   lines.push(
-    "你現在跑在 **pi-webui sandbox** 內 — 由 Gondolin (QEMU + Alpine Linux) 啟動的本機 micro-VM。"
+    "你現在跑在 **readyai-webui sandbox** 內 — 由 Gondolin (QEMU + Alpine Linux) 啟動的本機 micro-VM。"
       + "**不是** Fly.io 機器、**不是** Docker 容器、**不是** 遠端 SSH session。",
   );
   lines.push("");

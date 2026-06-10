@@ -18,7 +18,7 @@ const SERVER_PATH = resolve(__dirname, "..", "dist", "server", "index.js");
 
 test("real cloudflared: spawn server, wait for URL, fetch /login, shutdown", { skip: !enabled }, async () => {
   const port = 4300;
-  const agentDir = mkdtempSync(resolve(tmpdir(), "pi-webui-tunnel-real-"));
+  const agentDir = mkdtempSync(resolve(tmpdir(), "readyai-webui-tunnel-real-"));
   const child = spawn(
     "node",
     [SERVER_PATH, "--listen", `127.0.0.1:${port}`, "--tunnel"],

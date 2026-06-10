@@ -2,7 +2,7 @@
 // devtools level filters still work; prefix makes it easy to grep/filter.
 // debug level is opt-in: localStorage.setItem("pi-webui:debug", "1").
 
-const PREFIX = "[pi-webui]";
+const PREFIX = "[readyai-webui]";
 
 function debugEnabled() {
   try { return localStorage.getItem("pi-webui:debug") === "1"; } catch { return false; }

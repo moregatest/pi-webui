@@ -1,4 +1,4 @@
-// pi-webui Sandbox 真實 VM 整合測試。
+// readyai-webui Sandbox 真實 VM 整合測試。
 //
 // 預設不跑 (依賴 QEMU + ~150MB 下載 + ~10s 開機)。要跑就設環境變數:
 //
@@ -26,7 +26,7 @@ test("[opt-in] Sandbox 真實 VM:bash exec、檔案讀寫雙向同步", { skip: 
   // 預檢:沒裝 QEMU 直接放棄,避免讓 user 看到模糊錯誤。
   Sandbox.ensureQemuInstalled();
 
-  const ws = mkdtempSync(path.join(tmpdir(), "pi-webui-sandbox-vm-"));
+  const ws = mkdtempSync(path.join(tmpdir(), "readyai-webui-sandbox-vm-"));
   writeFileSync(path.join(ws, "hello.txt"), "from host");
 
   const sb = new Sandbox({ workspaceRoot: ws });
@@ -68,7 +68,7 @@ test("[opt-in] Sandbox 真實 VM:bash exec、檔案讀寫雙向同步", { skip: 
 
 test("[opt-in] Sandbox 真實 VM:bash exec 阻擋 workspace 外路徑", { skip: !RUN }, async () => {
   Sandbox.ensureQemuInstalled();
-  const ws = mkdtempSync(path.join(tmpdir(), "pi-webui-sandbox-vm-"));
+  const ws = mkdtempSync(path.join(tmpdir(), "readyai-webui-sandbox-vm-"));
   const sb = new Sandbox({ workspaceRoot: ws });
   try {
     const ops = sb.createBashOperations();

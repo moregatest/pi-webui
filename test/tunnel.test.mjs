@@ -1,4 +1,4 @@
-// pi-webui TunnelManager 純單元測試
+// readyai-webui TunnelManager 純單元測試
 // stub child_process.spawn 注入 fake child,不啟動真的 cloudflared。
 // 真實 cloudflared e2e 測試走 test/tunnel-real.test.mjs (TUNNEL_REAL=1 opt-in)。
 

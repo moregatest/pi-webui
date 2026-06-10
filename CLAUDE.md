@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-pi.dev 的獨立 webui。可以單獨啟動 (`pi-webui`) 也可以當 pi extension(在 pi 內以 `/webui` 控制或 `pi --webui` 自動啟動)。
+pi.dev 的獨立 webui。可以單獨啟動 (`readyai-webui`) 也可以當 pi extension(在 pi 內以 `/webui` 控制或 `pi --webui` 自動啟動)。
 
 ## 官方文件優先
 

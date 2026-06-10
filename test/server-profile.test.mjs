@@ -16,7 +16,7 @@ const FIXTURES = path.join(__dirname, "fixtures", "profiles");
 
 // 建立暫時工作目錄,並選擇性複製 fixture 進 .pi/profiles/<profileName>.toml
 function makeCwd(profileName, fixtureFile) {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   if (fixtureFile) {
     const dir = path.join(tmp, ".pi", "profiles");
     fs.mkdirSync(dir, { recursive: true });
@@ -189,7 +189,7 @@ test("個別 CLI flag override profile", async (t) => {
 });
 
 test("profile [skills].allow 與 .pi/skills-allow.txt 同存 → 印 override 警告", async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   fs.mkdirSync(path.join(cwd, ".pi", "profiles"), { recursive: true });
   fs.writeFileSync(path.join(cwd, ".pi", "skills-allow.txt"), "old-skill\n");
@@ -207,7 +207,7 @@ test("profile [skills].allow 與 .pi/skills-allow.txt 同存 → 印 override �
 });
 
 test("connected packet 帶 brand.tokens / brand.mode / brand.css 且 /brand/theme.css 可拿", async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   fs.mkdirSync(path.join(cwd, ".pi", "profiles"), { recursive: true });
   fs.writeFileSync(path.join(cwd, "theme.css"), `:root { --accent: red; }`);
@@ -233,7 +233,7 @@ test("connected packet 帶 brand.tokens / brand.mode / brand.css 且 /brand/them
 });
 
 test("profile 帶 [tool_labels] 啟動成功,connected uiProfile boolean 正確", async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   fs.mkdirSync(path.join(cwd, ".pi", "profiles"), { recursive: true });
   fs.writeFileSync(
@@ -266,7 +266,7 @@ test("profile 帶 [tool_labels] 啟動成功,connected uiProfile boolean 正確"
 });
 
 test("profile [defaults].model 啟動套用,但 --model CLI 勝", async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   fs.mkdirSync(path.join(cwd, ".pi", "profiles"), { recursive: true });
   fs.writeFileSync(

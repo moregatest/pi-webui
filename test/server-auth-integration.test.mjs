@@ -58,7 +58,7 @@ test("no password: GET / returns 200 (向後相容)", async () => {
     const res = await fetch(`${url}/`, { redirect: "manual" });
     assert.equal(res.status, 200);
     const body = await res.text();
-    assert.match(body, /<title>pi-webui<\/title>/);
+    assert.match(body, /<title>readyai-webui<\/title>/);
   } finally {
     await stopServer(child);
   }

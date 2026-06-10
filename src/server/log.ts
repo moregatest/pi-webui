@@ -1,8 +1,8 @@
-// tiny logger: ISO timestamp + level + [pi-webui] prefix, one-line output.
+// tiny logger: ISO timestamp + level + [readyai-webui] prefix, one-line output.
 // extra fields are stringified compactly so logs stay greppable.
 // debug level is opt-in via PI_WEBUI_DEBUG=1.
 
-const PREFIX = "[pi-webui]";
+const PREFIX = "[readyai-webui]";
 const debugEnabled = process.env.PI_WEBUI_DEBUG === "1";
 
 function fmt(level, msg, fields) {

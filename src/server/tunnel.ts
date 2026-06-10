@@ -1,4 +1,4 @@
-// pi-webui × cloudflared quick tunnel 整合
+// readyai-webui × cloudflared quick tunnel 整合
 //
 // 對外只暴露 TunnelManager class,所有 cloudflared 子 process lifecycle
 // 都在這裡處理,不外洩 spawn 細節給 src/server/index.ts。

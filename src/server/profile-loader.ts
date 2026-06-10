@@ -36,7 +36,7 @@ export interface UiFlags {
 export interface SandboxConfig {
   image?: string;
   env?: Record<string, string>;
-  // 客製身份提示;append 到 pi-webui built-in sandbox system prompt 之後。
+  // 客製身份提示;append 到 readyai-webui built-in sandbox system prompt 之後。
   // 通常用於提示 image-specific 的 CLI 與限制(例如「本 image 預裝 readyai-db 等 N 個 CLI」)。
   system_prompt?: string;
 }

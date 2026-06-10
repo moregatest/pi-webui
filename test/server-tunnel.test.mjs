@@ -1,4 +1,4 @@
-// server + tunnel 整合測試:spawn 真 pi-webui server,把 --tunnel-cloudflared
+// server + tunnel 整合測試:spawn 真 readyai-webui server,把 --tunnel-cloudflared
 // 指向 fake fixture,驗證 banner / WS packet / connected payload / shutdown。
 
 import { test } from "node:test";
@@ -33,7 +33,7 @@ async function waitFor(predicate, timeoutMs, describe) {
 // 預設加 --listen 127.0.0.1:<freePort>。
 async function startServer(extraArgs = []) {
   const port = takeFreePort();
-  const agentDir = mkdtempSync(resolve(tmpdir(), "pi-webui-tunnel-"));
+  const agentDir = mkdtempSync(resolve(tmpdir(), "readyai-webui-tunnel-"));
   const child = spawn(
     "node",
     [
@@ -151,7 +151,7 @@ test("server --tunnel: tunnel chip / connected payload / WS broadcast / shutdown
 
 test("server --tunnel + --listen 0.0.0.0 (+ --allow-unsafe-tunnel): 印 LAN + 沙盒繞行警告", async () => {
   const port = takeFreePort();
-  const agentDir = mkdtempSync(resolve(tmpdir(), "pi-webui-tunnel-warn-"));
+  const agentDir = mkdtempSync(resolve(tmpdir(), "readyai-webui-tunnel-warn-"));
   const child = spawn(
     "node",
     [
@@ -194,7 +194,7 @@ test("server --tunnel + --listen 0.0.0.0 (+ --allow-unsafe-tunnel): 印 LAN + �
 
 test("server --tunnel 沒 --sandbox 沒 --allow-unsafe-tunnel → exit 2 + 提示", async () => {
   const port = takeFreePort();
-  const agentDir = mkdtempSync(resolve(tmpdir(), "pi-webui-tunnel-gate-"));
+  const agentDir = mkdtempSync(resolve(tmpdir(), "readyai-webui-tunnel-gate-"));
   const child = spawn(
     "node",
     [
@@ -227,7 +227,7 @@ test("server --tunnel 沒 --sandbox 沒 --allow-unsafe-tunnel → exit 2 + 提�
 
 test("server --tunnel 沒 --sandbox 但 PI_WEBUI_ALLOW_UNSAFE_TUNNEL=1 → 通過 + warning", async () => {
   const port = takeFreePort();
-  const agentDir = mkdtempSync(resolve(tmpdir(), "pi-webui-tunnel-envopt-"));
+  const agentDir = mkdtempSync(resolve(tmpdir(), "readyai-webui-tunnel-envopt-"));
   const child = spawn(
     "node",
     [

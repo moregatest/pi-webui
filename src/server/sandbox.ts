@@ -1,4 +1,4 @@
-// pi-webui 的 Gondolin micro-VM sandbox。
+// readyai-webui 的 Gondolin micro-VM sandbox。
 //
 // 啟用 sandbox 時,所有 read/write/edit/bash 動作改走一個獨立的 Alpine VM,
 // host workspace 透過 RealFSProvider mount 到 guest 的 /workspace。
@@ -386,7 +386,7 @@ function defaultVmFactory(
       RealFSProvider: new (root: string) => unknown;
     };
     const createOptions: Record<string, unknown> = {
-      sessionLabel: `pi-webui ${path.basename(workspaceRoot)}`,
+      sessionLabel: `readyai-webui ${path.basename(workspaceRoot)}`,
       vfs: {
         mounts: {
           [GUEST_WORKSPACE]: new RealFSProvider(workspaceRoot),

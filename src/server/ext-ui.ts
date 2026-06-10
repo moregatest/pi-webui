@@ -14,7 +14,7 @@ const themeMod = await import(
   pathToFileURL(resolve(piDistDir, "modes/interactive/theme/theme.js")).href
 );
 // `theme` is a Proxy that reads a globalThis slot populated by initTheme().
-// Pi's interactive CLI calls this at startup; pi-webui never enters that
+// Pi's interactive CLI calls this at startup; readyai-webui never enters that
 // codepath, so we initialize it ourselves before any extension touches the
 // proxy (otherwise the first `.fg/.bg/.bold` access throws).
 themeMod.initTheme?.();

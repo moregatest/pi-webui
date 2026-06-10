@@ -36,7 +36,7 @@ test("loadBrandCss 目錄路徑 throw not a regular file", () => {
 
 test("loadBrandCss > 100KB throw", (t) => {
   // 動態生成 huge.css 避免 repo 膨脹
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-brand-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-brand-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const huge = path.join(tmp, "huge.css");
   fs.writeFileSync(huge, Buffer.alloc(150 * 1024, 0x20));

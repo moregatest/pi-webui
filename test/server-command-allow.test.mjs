@@ -10,7 +10,7 @@ import {
 } from "../dist/server/command-allow.js";
 
 function makeCwd() {
-  return mkdtempSync(join(tmpdir(), "pi-webui-cmd-allow-"));
+  return mkdtempSync(join(tmpdir(), "readyai-webui-cmd-allow-"));
 }
 
 test("readCommandAllowFile: empty path returns null", () => {

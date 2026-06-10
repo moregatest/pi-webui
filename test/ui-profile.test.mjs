@@ -11,7 +11,7 @@ import {
 } from "../dist/server/ui-profile.js";
 
 function makeTmp() {
-  return mkdtempSync(join(tmpdir(), "pi-webui-ui-profile-"));
+  return mkdtempSync(join(tmpdir(), "readyai-webui-ui-profile-"));
 }
 
 //

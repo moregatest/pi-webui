@@ -17,7 +17,7 @@ import fs from "node:fs";
 import os from "node:os";
 
 function makeCwdWithProfile(name, fixtureFile) {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
   fs.copyFileSync(
@@ -28,7 +28,7 @@ function makeCwdWithProfile(name, fixtureFile) {
 }
 
 test("loadProfile name=customer 檔不存在回內建 fallback", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profile = loadProfile("customer", tmp);
 
@@ -44,7 +44,7 @@ test("loadProfile name=customer 檔不存在回內建 fallback", (t) => {
 });
 
 test("loadProfile name=staff 檔不存在 throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   assert.throws(
     () => loadProfile("staff", tmp),
@@ -76,7 +76,7 @@ test("loadProfile [brand].mode 非 dark/light → throw", (t) => {
 });
 
 test("loadProfile [brand].bg 不是 hex → throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -88,7 +88,7 @@ test("loadProfile [brand].bg 不是 hex → throw", (t) => {
 });
 
 test("loadProfile [brand].bg 合法 hex 短長兩種", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -102,7 +102,7 @@ test("loadProfile [brand].bg 合法 hex 短長兩種", (t) => {
 });
 
 test("loadProfile [brand].logo 路徑不存在 → throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -114,7 +114,7 @@ test("loadProfile [brand].logo 路徑不存在 → throw", (t) => {
 });
 
 test("loadProfile [brand].logo 路徑存在 OK", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -131,7 +131,7 @@ test("loadProfile [brand].logo 路徑存在 OK", (t) => {
 });
 
 test("loadProfile [brand].color 自動 alias 到 accent", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -145,7 +145,7 @@ test("loadProfile [brand].color 自動 alias 到 accent", (t) => {
 });
 
 test("loadProfile [brand].color + accent 同時設 → throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -157,7 +157,7 @@ test("loadProfile [brand].color + accent 同時設 → throw", (t) => {
 });
 
 test("loadProfile [brand].logo 絕對路徑逃出 cwd → throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -169,7 +169,7 @@ test("loadProfile [brand].logo 絕對路徑逃出 cwd → throw", (t) => {
 });
 
 test("loadProfile [brand].css ../ 逃出 cwd → throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -181,7 +181,7 @@ test("loadProfile [brand].css ../ 逃出 cwd → throw", (t) => {
 });
 
 test("loadProfile 未知 top-level table → throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -193,7 +193,7 @@ test("loadProfile 未知 top-level table → throw", (t) => {
 });
 
 test("loadProfile 未知 [ui] 欄位 → throw(catch typo)", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -214,7 +214,7 @@ test("loadProfile tool_labels 未知 placeholder → throw 並指明 tool/phase"
 });
 
 test("loadProfile tool_labels 合法 placeholder OK", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -230,7 +230,7 @@ test("loadProfile tool_labels 合法 placeholder OK", (t) => {
 });
 
 test("loadProfile tool_labels 空 placeholder key → throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -242,7 +242,7 @@ test("loadProfile tool_labels 空 placeholder key → throw", (t) => {
 });
 
 test("loadProfile tool_labels tool_arg.__proto__ → throw 含 tool_arg key 字元白名單訊息", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -265,7 +265,7 @@ test("loadProfile 解析 [sandbox] image + env", (t) => {
 });
 
 test("loadProfile [sandbox].image 非字串 → throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -277,7 +277,7 @@ test("loadProfile [sandbox].image 非字串 → throw", (t) => {
 });
 
 test("loadProfile [sandbox].image 不是 name:tag 格式 → throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -289,7 +289,7 @@ test("loadProfile [sandbox].image 不是 name:tag 格式 → throw", (t) => {
 });
 
 test("loadProfile [sandbox.env] value 非字串 → throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -301,7 +301,7 @@ test("loadProfile [sandbox.env] value 非字串 → throw", (t) => {
 });
 
 test("loadProfile [sandbox.env] key 不合法 → throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -313,7 +313,7 @@ test("loadProfile [sandbox.env] key 不合法 → throw", (t) => {
 });
 
 test("loadProfile [sandbox] 內未知欄位 → throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -325,7 +325,7 @@ test("loadProfile [sandbox] 內未知欄位 → throw", (t) => {
 });
 
 test("loadProfile [sandbox] 沒設 image 也合法(env-only)", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -339,7 +339,7 @@ test("loadProfile [sandbox] 沒設 image 也合法(env-only)", (t) => {
 });
 
 test("loadProfile [sandbox].system_prompt 字串 OK", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -352,7 +352,7 @@ test("loadProfile [sandbox].system_prompt 字串 OK", (t) => {
 });
 
 test("loadProfile [sandbox].system_prompt 非字串 → throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -364,7 +364,7 @@ test("loadProfile [sandbox].system_prompt 非字串 → throw", (t) => {
 });
 
 test("loadProfile [sandbox].system_prompt 超過 16KB → throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -377,7 +377,7 @@ test("loadProfile [sandbox].system_prompt 超過 16KB → throw", (t) => {
 });
 
 test("loadProfile [uploads] 全欄位 OK", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -401,7 +401,7 @@ test("loadProfile [uploads] 全欄位 OK", (t) => {
 });
 
 test("loadProfile [uploads] 未知欄位 → throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -413,7 +413,7 @@ test("loadProfile [uploads] 未知欄位 → throw", (t) => {
 });
 
 test("loadProfile [uploads].allowed_extensions 必須是字串陣列", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -425,7 +425,7 @@ test("loadProfile [uploads].allowed_extensions 必須是字串陣列", (t) => {
 });
 
 test("loadProfile [uploads].subdir 非法字元 → throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -437,7 +437,7 @@ test("loadProfile [uploads].subdir 非法字元 → throw", (t) => {
 });
 
 test("loadProfile [uploads].max_bytes 非正整數 → throw", (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-webui-profile-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const profilesDir = path.join(tmp, ".pi", "profiles");
   fs.mkdirSync(profilesDir, { recursive: true });

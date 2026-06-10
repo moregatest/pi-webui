@@ -170,7 +170,7 @@ test("--ui-profile customer → 7 個 boolean 全 true + brand 全 null", async 
 });
 
 test("--brand-name --brand-color --brand-logo → connected brand 三欄都帶值,logoUrl 為 /brand/logo", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "pi-webui-brand-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "readyai-webui-brand-"));
   const logoPath = path.join(dir, "logo.svg");
   writeFileSync(logoPath, '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><circle cx="5" cy="5" r="4" /></svg>');
 
@@ -191,7 +191,7 @@ test("--brand-name --brand-color --brand-logo → connected brand 三欄都帶�
 });
 
 test("GET /brand/logo 有設 logo 時回 200 + svg content-type", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "pi-webui-brand-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "readyai-webui-brand-"));
   const logoPath = path.join(dir, "logo.svg");
   const svgBody = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><circle cx="5" cy="5" r="4" /></svg>';
   writeFileSync(logoPath, svgBody);
@@ -242,7 +242,7 @@ test("--ui-profile 不認得的名稱 → exit 非 0 + stderr 帶 'unknown prese
 });
 
 test("/brand/logo 在 password 模式下不需 cookie 也可存取(避免 login 頁載入失敗)", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "pi-webui-brand-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "readyai-webui-brand-"));
   const logoPath = path.join(dir, "logo.svg");
   writeFileSync(logoPath, "<svg/>");
 

@@ -165,7 +165,7 @@ function parseListen(spec) {
 
 function printHelp() {
   const lines = [
-    "usage: pi-webui [options]",
+    "usage: readyai-webui [options]",
     "",
     "a native web app for pi, backed by the pi sdk runtime and your",
     "existing persisted pi sessions.",
@@ -292,10 +292,10 @@ function printHelp() {
     "  PI_SESSION_DIR             session storage directory (default pi default)",
     "",
     "examples:",
-    "  pi-webui --listen 0.0.0.0:3000",
-    "  pi-webui --model anthropic/claude-opus-4-7",
-    "  pi-webui --skill ~/.claude/skills --skill-allow brainstorming,verify",
-    "  PI_WEBUI_HOST=0.0.0.0 PI_WEBUI_PORT=3000 pi-webui",
+    "  readyai-webui --listen 0.0.0.0:3000",
+    "  readyai-webui --model anthropic/claude-opus-4-7",
+    "  readyai-webui --skill ~/.claude/skills --skill-allow brainstorming,verify",
+    "  PI_WEBUI_HOST=0.0.0.0 PI_WEBUI_PORT=3000 readyai-webui",
   ];
   process.stdout.write(lines.join("\n") + "\n");
 }
@@ -901,7 +901,7 @@ function resolveCliModel(services, pattern) {
     available.find((m) => m.id === pattern);
   if (!found) {
     process.stderr.write(
-      `[pi-webui] warning: model not found in registry: ${pattern}\n`,
+      `[readyai-webui] warning: model not found in registry: ${pattern}\n`,
     );
     return undefined;
   }
@@ -1292,7 +1292,7 @@ function serveStatic(req, res) {
 // Built-in slash commands that map cleanly to SDK calls. Commands that require
 // interactive UI (settings, login, model selector, fork picker, etc.) are not
 // here — the client handles them with a "not supported" toast.
-// Slash commands implemented by pi-webui itself (not in pi's BUILTIN list).
+// Slash commands implemented by readyai-webui itself (not in pi's BUILTIN list).
 // Surfaced in the client's `/` autocomplete via collectSlashCommands().
 const WEBUI_SLASH_COMMANDS = {
   cwd: {

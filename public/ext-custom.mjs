@@ -4,7 +4,7 @@
 // same input it would on a real TTY.
 //
 // Only legacy escape sequences are emitted (no Kitty CSI-u). The components
-// pi-webui currently needs to support (guardrails permission-gate, path-
+// readyai-webui currently needs to support (guardrails permission-gate, path-
 // access) recognise these in their `matchesKey` calls. If we later need
 // modifier-rich keys we'll layer on Kitty encoding.
 

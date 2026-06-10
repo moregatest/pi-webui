@@ -7,7 +7,7 @@ description: Use when verifying pi runs Claude Code skills equivalently to Claud
 
 ## Overview
 
-pi-webui 的產品定位是「工程師用 Claude Code 把困難的設計與初版實作做完(skill 內含完整規則 / 決策樹 / 產出規格),後勤人員用 pi-webui 接手做微調與重跑」。要讓這分工成立,pi 必須把 SKILL.md 當**一級指令文件**:
+readyai-webui 的產品定位是「工程師用 Claude Code 把困難的設計與初版實作做完(skill 內含完整規則 / 決策樹 / 產出規格),後勤人員用 readyai-webui 接手做微調與重跑」。要讓這分工成立,pi 必須把 SKILL.md 當**一級指令文件**:
 
 - 整檔讀進 context(不是只讀 frontmatter / description)
 - 規則編號 / Step 順序 / 區塊產出格式照規範跑
@@ -20,16 +20,16 @@ pi-webui 的產品定位是「工程師用 Claude Code 把困難的設計與初�
 ## When to Use
 
 - 升級 `@earendil-works/pi-coding-agent` dist
-- pi-webui server runtime 改了 `createAgentSessionServices` / `createAgentSessionRuntime` / `SessionManager` 的呼叫
+- readyai-webui server runtime 改了 `createAgentSessionServices` / `createAgentSessionRuntime` / `SessionManager` 的呼叫
 - 換新 model(例如從 `openrouter/deepseek/deepseek-v4-pro` 換到下一代)
 - 反饋說「pi 跑 skill 跟 Claude Code 不一樣」
-- 評估某個 skill 是否能放心交給後勤人員用 pi-webui 重跑
+- 評估某個 skill 是否能放心交給後勤人員用 readyai-webui 重跑
 - 新增 skill 後想確認 pi / Claude Code 兩邊一致
 
 **不適用**:
 - 純 public/ 前端 UI 改動,沒動到 runtime / skill loading → 跑 client 端 `node:test` 就好
 - skill 本身的設計階段 → 用 `superpowers:writing-skills` + `superpowers:brainstorming`
-- 一般 pi-webui server bug → 一般 debug 流程
+- 一般 readyai-webui server bug → 一般 debug 流程
 
 ## Prerequisites
 
@@ -132,7 +132,7 @@ pi --print "/<slash-command> <args>"   # 一次性 print 模式
 
 ### Step 5:寫結論
 
-最後一段必須回答:**「這個 skill 在當前 pi + model 組合下,是否可以放心交給後勤人員用 pi-webui 重跑?」**
+最後一段必須回答:**「這個 skill 在當前 pi + model 組合下,是否可以放心交給後勤人員用 readyai-webui 重跑?」**
 
 - 全綠 → 可以,直接收斂 use case
 - 有退化但可繞 → 列出 workaround(例如「用 `pi -c` 不用 `--print`」)

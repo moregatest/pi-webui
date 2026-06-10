@@ -4,9 +4,9 @@ import assert from "node:assert/strict";
 
 import { buildSandboxSystemPrompt } from "../dist/server/sandbox-prompt.js";
 
-test("含 Gondolin / pi-webui 身份字串(避免被誤認 Fly.io / Docker)", () => {
+test("含 Gondolin / readyai-webui 身份字串(避免被誤認 Fly.io / Docker)", () => {
   const out = buildSandboxSystemPrompt({ workspaceRoot: "/Users/tung/foo" });
-  assert.match(out, /pi-webui sandbox/);
+  assert.match(out, /readyai-webui sandbox/);
   assert.match(out, /Gondolin/);
   assert.match(out, /micro-VM/);
   assert.match(out, /不是.*Fly\.io/);

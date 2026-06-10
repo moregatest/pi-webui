@@ -1,5 +1,5 @@
 {
-  "name": "@khimaros/pi-webui",
+  "name": "@moregatest/readyai-webui",
   "version": "0.5.1",
   "type": "module",
   "description": "a simple, standalone webui for pi.dev",
@@ -9,15 +9,15 @@
   "license": "GPL-3.0-or-later",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/khimaros/pi-webui.git"
+    "url": "git+https://github.com/moregatest/pi-webui.git"
   },
-  "homepage": "https://github.com/khimaros/pi-webui#readme",
+  "homepage": "https://github.com/moregatest/pi-webui#readme",
   "bugs": {
-    "url": "https://github.com/khimaros/pi-webui/issues"
+    "url": "https://github.com/moregatest/pi-webui/issues"
   },
   "main": "dist/server/index.js",
   "bin": {
-    "pi-webui": "dist/server/index.js"
+    "readyai-webui": "dist/server/index.js"
   },
   "pi": {
     "extensions": [
