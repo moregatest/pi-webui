@@ -1,5 +1,10 @@
 # CLAUDE.md
 
+<!-- readyAI 生態系定位（內部 only，勿下傳客戶） -->
+> **生態系角色**：給公司後勤＋客戶的前端接口（沙盒），底層走 Claude Code + readyAI。
+> - 上游：readyaiJobs 工作區、readyAI 引擎　下游：公司後勤、客戶
+> - 完整 map：https://github.com/readymarket/readyai-project-template/blob/main/docs/ecosystem-map.md
+
 pi.dev 的獨立 webui。可以單獨啟動 (`readyai-webui`) 也可以當 pi extension(在 pi 內以 `/webui` 控制或 `pi --webui` 自動啟動)。
 
 ## 官方文件優先
