@@ -14,6 +14,7 @@ import {
   getAgentDir,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import { resolveSessionDir, isWithinSessionDir } from "./session-dir.js";
 // 這幾個 factory 沒在 index 包裝;走 dist 直接拿。
 const piToolsIndexUrl = pathToFileURL(
   resolve(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")), "..", "core/tools/index.js"),
@@ -187,6 +188,9 @@ function printHelp() {
     "                              file missing => behaves as if not set (all commands allowed).",
     "                              when neither flag nor env var is set, <cwd>/.pi/commands-allow.txt",
     "                              is auto-detected if present.",
+    "  --session-dir <path>        session storage directory. overrides the default",
+    "                              <cwd>/.pi/sessions. full override, may be shared across cwds.",
+    "                              alias: PI_SESSION_DIR env var (CLI wins).",
     "  --password <pw>             enable login; require this password to access the webui.",
     "                              alias: PI_WEBUI_PASSWORD env var.",
     "  --trust-proxy               honor X-Forwarded-Proto when deciding cookie Secure flag.",
@@ -289,7 +293,7 @@ function printHelp() {
     "  PI_WEBUI_UPLOAD_MAX_FILES  max files per prompt",
     "  PI_PROJECT_CWD             project directory used for sessions (default cwd)",
     "  PI_AGENT_DIR               pi agent config directory (default ~/.pi/agent)",
-    "  PI_SESSION_DIR             session storage directory (default pi default)",
+    "  PI_SESSION_DIR             session storage dir; full override of default <cwd>/.pi/sessions",
     "",
     "examples:",
     "  readyai-webui --listen 0.0.0.0:3000",
@@ -318,6 +322,8 @@ function parseArgs(argv) {
     else if (a.startsWith("--command-allow=")) out.commandAllow = a.slice("--command-allow=".length);
     else if (a === "--command-allow-file") out.commandAllowFile = argv[++i];
     else if (a.startsWith("--command-allow-file=")) out.commandAllowFile = a.slice("--command-allow-file=".length);
+    else if (a === "--session-dir") out.sessionDir = argv[++i];
+    else if (a.startsWith("--session-dir=")) out.sessionDir = a.slice("--session-dir=".length);
     else if (a === "--hide-model") out.hideModel = true;
     else if (a === "--hide-thinking") out.hideThinking = true;
     else if (a === "--hide-tool-calls") out.hideToolCalls = true;
@@ -698,7 +704,10 @@ async function collectRecentCwds() {
   return [...seen.values()].sort((a, b) => b.modified - a.modified);
 }
 const agentDir = process.env.PI_AGENT_DIR || getAgentDir();
-const sessionDir = process.env.PI_SESSION_DIR;
+// session 儲存目錄輸入。實際目錄由 resolveSessionDir(cwd, ...) 算:
+// CLI > env > 預設 <cwd>/.pi/sessions。override 跨 cwd 共用,預設隨 cwd 重算。
+const cliSessionDir = args.sessionDir;
+const envSessionDir = process.env.PI_SESSION_DIR;
 
 // 偵測使用者顯式設了 PI_AGENT_DIR 但該目錄沒有 auth.json,而預設 ~/.pi/agent 有。
 // 這通常表示使用者想隔離 session 但忘了把 OAuth credential 帶過去,會導致 AI 對接失敗。
@@ -1591,16 +1600,15 @@ const SLASH_HANDLERS = {
       }
       return result;
     }
-    const [currentProject, allProjects] = await Promise.all([
-      SessionManager.list(ctrl.runtime.cwd, sessionDir),
-      SessionManager.listAll(),
-    ]);
+    // project-local 模式:只列當前專案目錄;不再跨專案 listAll()。
+    const dir = resolveSessionDir(ctrl.runtime.cwd, { cliSessionDir, envSessionDir });
+    const currentProject = await SessionManager.list(ctrl.runtime.cwd, dir);
     return {
       needsPicker: "session",
       currentSessionFile: ctrl.session.sessionFile || null,
       sessions: {
         currentProject: currentProject.map(serializeSessionInfo),
-        allProjects: allProjects.map(serializeSessionInfo),
+        allProjects: [],
       },
     };
   },
@@ -1665,7 +1673,7 @@ class NativePiSessionController {
     this.runtime = await createAgentSessionRuntime(createRuntime, {
       cwd: this.cwd,
       agentDir,
-      sessionManager: SessionManager.create(this.cwd, sessionDir),
+      sessionManager: SessionManager.create(this.cwd, resolveSessionDir(this.cwd, { cliSessionDir, envSessionDir })),
     });
 
     await this.bindSession();
@@ -1717,7 +1725,7 @@ class NativePiSessionController {
     this.runtime = await createAgentSessionRuntime(createRuntime, {
       cwd: newCwd,
       agentDir,
-      sessionManager: SessionManager.create(newCwd, sessionDir),
+      sessionManager: SessionManager.create(newCwd, resolveSessionDir(newCwd, { cliSessionDir, envSessionDir })),
     });
     await this.bindSession();
     await this.sendBootstrap();
@@ -1949,16 +1957,15 @@ class NativePiSessionController {
   }
 
   async sendSessions() {
-    const [currentProject, allProjects] = await Promise.all([
-      SessionManager.list(this.runtime.cwd, sessionDir),
-      SessionManager.listAll(),
-    ]);
+    // project-local 模式:只列當前專案目錄;allProjects 恆空(不跨專案 listAll)。
+    const dir = resolveSessionDir(this.runtime.cwd, { cliSessionDir, envSessionDir });
+    const currentProject = await SessionManager.list(this.runtime.cwd, dir);
 
     sendJson(this.ws, {
       type: "sessions",
       payload: {
         currentProject: currentProject.map(serializeSessionInfo),
-        allProjects: allProjects.map(serializeSessionInfo),
+        allProjects: [],
       },
     });
   }
@@ -2065,11 +2072,25 @@ class NativePiSessionController {
           sessionFile = null;
         }
       }
+      // #5 reconnect guard:只接受落在「該 session 自身 cwd」對應 project-local /
+      // override 目錄內的 session。依 stored session 的 header cwd 判定(非 this.cwd),
+      // 才不會誤擋 /cwd 切換後合法的他專案 project-local session(P1)。
+      if (sessionFile) {
+        const sessionCwd = readSessionCwdSync(sessionFile);
+        const dir = resolveSessionDir(sessionCwd || this.cwd, { cliSessionDir, envSessionDir });
+        if (!isWithinSessionDir(sessionFile, dir)) {
+          logger.info("ignoring stored session outside its project session dir", { sessionFile, sessionCwd, dir });
+          sessionFile = null;
+        }
+      }
       if (sessionFile) {
         try {
           logger.info("client requested session", { sessionFile });
           const switched = await this.runtime.switchSession(sessionFile);
-          if (!switched?.cancelled) await this.bindSession();
+          if (!switched?.cancelled) {
+            await this.bindSession();
+            this.cwd = this.runtime.cwd; // P1:resume 後同步 controller cwd
+          }
         } catch (error) {
           logger.warn("client requested session unavailable", {
             sessionFile,
@@ -2459,7 +2480,7 @@ logger.info("listening", {
   fallback: actualPort !== port,
   appCwd,
   agentDir,
-  sessionDir: sessionDir || undefined,
+  sessionDir: resolveSessionDir(appCwd, { cliSessionDir, envSessionDir }),
   auth: authEnabled ? "enabled" : "disabled",
   trustProxy: authEnabled ? trustProxy : undefined,
   sandbox: sandboxEnabled ? (sandbox ? "enabled" : `error:${sandboxInitError}`) : "disabled",

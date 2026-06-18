@@ -6,3 +6,5 @@ build/
 .env.*
 # server-side 上傳目錄(/api/upload 寫入點),內含使用者上傳檔不應入庫
 uploads/
+# 對話 session 預設落地目錄,內含對話內容(可能含敏感資訊)不應入庫
+.pi/sessions/

@@ -90,6 +90,7 @@ interface StartOptions {
 	skillAllowFile?: string;
 	commandAllow?: string;
 	commandAllowFile?: string;
+	sessionDir?: string;
 	hideModel?: boolean;
 	password?: string;
 	trustProxy?: boolean;
@@ -142,6 +143,7 @@ function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 		if (opts.skillAllowFile) serverArgs.push("--skill-allow-file", opts.skillAllowFile);
 		if (opts.commandAllow) serverArgs.push("--command-allow", opts.commandAllow);
 		if (opts.commandAllowFile) serverArgs.push("--command-allow-file", opts.commandAllowFile);
+		if (opts.sessionDir) serverArgs.push("--session-dir", opts.sessionDir);
 		if (opts.hideModel) serverArgs.push("--hide-model");
 		if (opts.password) serverArgs.push("--password", opts.password);
 		if (opts.trustProxy) serverArgs.push("--trust-proxy");
@@ -280,6 +282,8 @@ function parseStartFlags(tokens: string[]): StartOptions {
 		else if (t.startsWith("--command-allow=")) opts.commandAllow = t.slice("--command-allow=".length);
 		else if (t === "--command-allow-file") opts.commandAllowFile = valueOf(++i, t);
 		else if (t.startsWith("--command-allow-file=")) opts.commandAllowFile = t.slice("--command-allow-file=".length);
+		else if (t === "--session-dir") opts.sessionDir = valueOf(++i, t);
+		else if (t.startsWith("--session-dir=")) opts.sessionDir = t.slice("--session-dir=".length);
 		else if (t === "--hide-model") opts.hideModel = true;
 		else if (t === "--password") opts.password = valueOf(++i, t);
 		else if (t.startsWith("--password=")) opts.password = t.slice("--password=".length);
@@ -388,6 +392,12 @@ export default function webuiExtension(pi: ExtensionAPI) {
 
 	pi.registerFlag?.("webui-command-allow-file", {
 		description: "slash command whitelist file path for readyai-webui. Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
+	pi.registerFlag?.("webui-session-dir", {
+		description: "session storage dir for readyai-webui (overrides default <cwd>/.pi/sessions). Implies --webui.",
 		type: "string",
 		default: "",
 	});
@@ -605,6 +615,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		let skillAllowFile: string;
 		let commandAllow: string;
 		let commandAllowFile: string;
+		let sessionDir: string;
 		let hideModel: boolean;
 		let password: string;
 		let trustProxy: boolean;
@@ -639,6 +650,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			skillAllowFile = String(pi.getFlag?.("webui-skill-allow-file") || "").trim();
 			commandAllow = String(pi.getFlag?.("webui-command-allow") || "").trim();
 			commandAllowFile = String(pi.getFlag?.("webui-command-allow-file") || "").trim();
+			sessionDir = String(pi.getFlag?.("webui-session-dir") || "").trim();
 			hideModel = !!pi.getFlag?.("webui-hide-model");
 			password = String(pi.getFlag?.("webui-password") || "").trim();
 			trustProxy = !!pi.getFlag?.("webui-trust-proxy");
@@ -673,6 +685,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 				skillAllowFile.length > 0 ||
 				commandAllow.length > 0 ||
 				commandAllowFile.length > 0 ||
+				sessionDir.length > 0 ||
 				hideModel ||
 				password.length > 0 ||
 				trustProxy ||
@@ -716,6 +729,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			skillAllowFile: skillAllowFile || undefined,
 			commandAllow: commandAllow || undefined,
 			commandAllowFile: commandAllowFile || undefined,
+			sessionDir: sessionDir || undefined,
 			hideModel: hideModel || undefined,
 			password: password || undefined,
 			trustProxy: trustProxy || undefined,

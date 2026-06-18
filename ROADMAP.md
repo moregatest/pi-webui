@@ -15,7 +15,7 @@
 ```
 [x] continue most recent pi session on startup
 [x] list sessions in the current project
-[x] list sessions across all projects
+[x] sessions default to project-local `<cwd>/.pi/sessions/` (`--session-dir` / `PI_SESSION_DIR` override; legacy cross-project picker removed)
 [x] switch between persisted sessions
 [x] start new sessions
 [x] rename sessions
@@ -35,7 +35,7 @@
 [x] `--listen <host:port>` cli flag
 [x] ipv6 bind support
 [x] `HOST` / `PORT` env vars
-[x] `PI_PROJECT_CWD` / `PI_AGENT_DIR` / `PI_SESSION_DIR` overrides
+[x] `PI_PROJECT_CWD` / `PI_AGENT_DIR` / `PI_SESSION_DIR` overrides (plus `--session-dir` CLI flag)
 [x] session file watching for external changes
 [x] event log for replay and debugging
 [x] static asset vendoring via `make vendor`

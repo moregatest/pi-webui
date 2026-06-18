@@ -68,6 +68,7 @@ command-line flags:
 | `--skill-allow-file <path>` | whitelist file (one name per line, `#` for comments). missing file behaves as if unset. when neither this flag nor `PI_WEBUI_SKILL_ALLOW_FILE` is set, `<cwd>/.pi/skills-allow.txt` is auto-detected if present. |
 | `--command-allow <names>` | comma-separated slash command whitelist (names like `new`, `cwd`, `skill:foo`). only these commands appear in the slash menu and may be executed. |
 | `--command-allow-file <path>` | slash command whitelist file (one name per line, `#` for comments). missing file behaves as if unset. when neither this flag nor `PI_WEBUI_COMMAND_ALLOW_FILE` is set, `<cwd>/.pi/commands-allow.txt` is auto-detected if present. |
+| `--session-dir <path>` | session storage directory. overrides the default `<cwd>/.pi/sessions/`. this is a *full* override and may be shared across cwds (sessions from different cwds land in one dir). alias: `PI_SESSION_DIR` env var (CLI wins). |
 | `--password <pw>` | enable login; require this password to access the webui. alias: `PI_WEBUI_PASSWORD` env var. |
 | `--trust-proxy` | honor `X-Forwarded-Proto` when deciding cookie `Secure` flag; useful behind cloudflare tunnel / reverse proxy. alias: `PI_WEBUI_TRUST_PROXY=1`. |
 | `--sandbox` | run `read` / `write` / `edit` / `bash` inside a [Gondolin](https://github.com/earendil-works/gondolin) micro-VM. workspace path is locked to the launch cwd (or `--sandbox-workspace`); `/cwd` is disabled. requires QEMU. alias: `PI_WEBUI_SANDBOX=1`. |
@@ -127,7 +128,7 @@ environment variables:
 | `PI_WEBUI_UPLOAD_MAX_FILES` | `20` | 單一 prompt 最多附幾個非圖片檔 |
 | `PI_PROJECT_CWD` | `process.cwd()` | project directory used for sessions |
 | `PI_AGENT_DIR` | pi default (`~/.pi/agent`) | pi agent config directory |
-| `PI_SESSION_DIR` | pi default | session storage directory |
+| `PI_SESSION_DIR` | `<cwd>/.pi/sessions/` | session storage directory; full override of the default. same as `--session-dir` (CLI wins). |
 | `PI_WEBUI_CWD_ALLOW_ANY` | `0` | allow `/cwd` to switch to paths outside `$HOME` |
 
 examples:
@@ -144,7 +145,7 @@ readyai-webui --ui-profile customer --brand-name "Acme Bot" --brand-color "#0066
 when launched via the pi extension, equivalent pi flags are available:
 `--webui-model`, `--webui-skill`, `--webui-skill-allow`,
 `--webui-skill-allow-file`, `--webui-command-allow`,
-`--webui-command-allow-file`, `--webui-hide-model`,
+`--webui-command-allow-file`, `--webui-session-dir`, `--webui-hide-model`,
 `--webui-password`, `--webui-trust-proxy`,
 `--webui-sandbox`, `--webui-sandbox-workspace`,
 `--webui-hide-thinking`, `--webui-hide-tool-calls`,
@@ -504,6 +505,31 @@ paste images into the composer (Ctrl/Cmd+V) or drag and drop them onto the
 window. thumbnails appear above the input and ride along with the next
 prompt. up to 8 images per turn, 10 MB each. PNG, JPEG, GIF, and WebP are
 accepted.
+
+## sessions
+
+conversations are persisted as append-only `.jsonl` files. by default they
+land in **`<cwd>/.pi/sessions/`** (the same `.pi/` convention as
+`profiles` / `skills-allow.txt`), so a project's history travels with the
+project directory rather than your home directory.
+
+- **override location:** `--session-dir <path>` (or `PI_SESSION_DIR`, CLI
+  wins). this is a *full* override and may be shared across cwds — sessions
+  from different cwds then land in one dir.
+- **resolution priority:** `--session-dir` > `PI_SESSION_DIR` > default
+  `<cwd>/.pi/sessions/`.
+- **session picker** (`/resume`) lists only the current project's sessions.
+  to load a session stored elsewhere (e.g. a legacy
+  `~/.pi/agent/sessions/...` one from before this change), pass an explicit
+  path: `/resume <absolute-path>`.
+- **reconnect:** a browser reload only auto-resumes a stored session if it
+  is a genuine project-local (or override-dir) session of its own cwd;
+  otherwise it starts fresh in the project-local default.
+- **`/cwd` recent list** is sourced from the legacy home-dir index, so
+  project-local-only projects do not appear there; use the directory
+  browser to switch instead.
+- **gitignore:** sessions can contain sensitive conversation content. this
+  repo ignores `.pi/sessions/`; downstream projects should do the same.
 
 ## roadmap
 
