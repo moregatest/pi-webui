@@ -28,3 +28,13 @@ export function isBlockedCustomerMessage(payload: any, isCustomer: boolean): boo
   if (type === "slash_command" && BLOCKED_SLASH.has(String(payload?.name))) return true;
   return false;
 }
+
+const SCRUB_KEYS = ["model", "agentDir", "sessionDir", "homeDir", "cwd", "activeTools", "models", "scopedModels"];
+
+/** customer 模式下，從送往 client 的 payload 移除會洩漏 host/model/tool 內情的欄位（server-side）。 */
+export function scrubForCustomer<T extends Record<string, any>>(payload: T, isCustomer: boolean): T {
+  if (!isCustomer || payload == null || typeof payload !== "object") return payload;
+  const out: Record<string, any> = Array.isArray(payload) ? [...payload] : { ...payload };
+  for (const k of SCRUB_KEYS) if (k in out) delete out[k];
+  return out as T;
+}

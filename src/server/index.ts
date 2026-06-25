@@ -80,7 +80,7 @@ import type { UiProfile } from "./ui-profile.js";
 import { loadProfile } from "./profile-loader.js";
 import type { ProfileFile } from "./profile-loader.js";
 import { loadBrandCss } from "./brand-overlay.js";
-import { isCustomerMode, isBlockedCustomerMessage } from "./customer-policy.js";
+import { isCustomerMode, isBlockedCustomerMessage, scrubForCustomer } from "./customer-policy.js";
 import {
   resolveUploadConfig,
   extractExtension,
@@ -1682,7 +1682,7 @@ class NativePiSessionController {
 
     sendJson(this.ws, {
       type: "connected",
-      payload: {
+      payload: scrubForCustomer({
         appCwd: this.cwd,
         agentDir,
         // resolved session 目錄。讓 headless 測試免 grep log 即可斷言 resolved 設定(D9)。
@@ -1709,7 +1709,7 @@ class NativePiSessionController {
           maxFiles: effectiveUploadConfig.maxFiles,
           subdir: effectiveUploadConfig.subdir,
         },
-      },
+      }, isCustomerMode(profileName, profileFile)),
     });
     // Bootstrap is now driven by the client's `ready` message — they tell us
     // their lastSeq and we either replay missed events or send a reset +
@@ -1950,7 +1950,7 @@ class NativePiSessionController {
   }
 
   async sendState() {
-    sendJson(this.ws, { type: "session_state", payload: this.serializeState() });
+    sendJson(this.ws, { type: "session_state", payload: scrubForCustomer(this.serializeState(), isCustomerMode(profileName, profileFile)) });
   }
 
   async sendMessages() {

@@ -1,7 +1,7 @@
 // test/customer-policy.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isCustomerMode, isBlockedCustomerMessage } from "../dist/server/customer-policy.js";
+import { isCustomerMode, isBlockedCustomerMessage, scrubForCustomer } from "../dist/server/customer-policy.js";
 
 test("isCustomerMode: profileName customer → true", () => {
   assert.equal(isCustomerMode("customer", undefined), true);
@@ -32,4 +32,21 @@ test("gate: customer 放行 prompt / abort / ready", () => {
 });
 test("gate: 非 customer 一律放行", () => {
   assert.equal(isBlockedCustomerMessage({ type: "bash", command: "x" }, false), false);
+});
+
+test("scrub: customer 移除敏感欄位", () => {
+  const out = scrubForCustomer({
+    type: "bootstrap", model: "openrouter/x", agentDir: "/root/.pi",
+    sessionDir: "/ws/.pi", homeDir: "/root", activeTools: ["bash"], keep: "ok",
+  }, true);
+  assert.equal(out.model, undefined);
+  assert.equal(out.agentDir, undefined);
+  assert.equal(out.sessionDir, undefined);
+  assert.equal(out.homeDir, undefined);
+  assert.equal(out.activeTools, undefined);
+  assert.equal(out.keep, "ok");
+});
+test("scrub: 非 customer 原樣", () => {
+  const p = { model: "x", agentDir: "/r" };
+  assert.deepEqual(scrubForCustomer(p, false), p);
 });
