@@ -19,6 +19,7 @@ const BLOCKED_TYPES = new Set<string>([
 const BLOCKED_SLASH = new Set<string>([
   "login", "logout", "model", "scoped-models",
   "settings", "export", "import", "cwd",
+  "session", "resume", "fork", "clone", "tree",
 ]);
 
 export function isBlockedCustomerMessage(payload: any, isCustomer: boolean): boolean {

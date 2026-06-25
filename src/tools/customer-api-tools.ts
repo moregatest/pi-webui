@@ -19,14 +19,19 @@ function uploadImageTool(): ToolDefinition {
       image_url: Type.String({ description: "圖片的 https URL" }),
     }),
     async execute(_id, params, _signal, _onUpdate, _ctx) {
-      // 從 pathname 取副檔名，避免 query string 注入假副檔名（如 abc.php?foo=x.jpg）
-      let pathname: string;
+      // 解析 URL：同時驗證格式、協定、副檔名
+      let parsedUrl: URL;
       try {
-        pathname = new URL(params.image_url).pathname;
+        parsedUrl = new URL(params.image_url);
       } catch {
-        pathname = "";
+        return { content: [{ type: "text" as const, text: "無效的 URL" }], details: { error: "bad_url" } };
       }
-      const ext = (pathname.split(".").pop() ?? "").toLowerCase();
+      // 只允許 https，防止 SSRF 攻擊（http/ftp/file/... 一律拒絕）
+      if (parsedUrl.protocol !== "https:") {
+        return { content: [{ type: "text" as const, text: "僅接受 https URL" }], details: { error: "bad_scheme" } };
+      }
+      // 從 pathname 取副檔名，避免 query string 注入假副檔名（如 abc.php?foo=x.jpg）
+      const ext = (parsedUrl.pathname.split(".").pop() ?? "").toLowerCase();
       if (!ALLOWED_EXT.has(ext)) {
         return { content: [{ type: "text" as const, text: "不支援的圖片格式" }], details: { error: "bad_ext" } };
       }

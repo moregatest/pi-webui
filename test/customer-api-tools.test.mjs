@@ -21,6 +21,17 @@ test("upload_image.execute: query string 注入假副檔名應被拒絕（不發
   assert.match(payload, /bad_ext|不支援/);
 });
 
+test("upload_image.execute: http URL（非 https）應被拒絕且 fetch 不被呼叫", async () => {
+  const calls = [];
+  globalThis.fetch = async (url, opt) => { calls.push({ url, opt });
+    return { status: 200, async json(){ return {}; }, async text(){ return ""; } }; };
+  const [tool] = buildCustomerApiTools();
+  const res = await tool.execute("call_http", { image_url: "http://cdn.evil.com/x.jpg" }, undefined, undefined, {});
+  assert.equal(calls.length, 0, "http URL：fetch 不應被呼叫");
+  const payload = JSON.stringify(res);
+  assert.match(payload, /bad_scheme/, `應含 bad_scheme 錯誤，但收到：${payload}`);
+});
+
 test("upload_image.execute: 打 service、回最小資訊、不洩漏 hostPath", async () => {
   process.env.PC2_SERVICE_HOST = "https://demo.example.com";
   process.env.PC2_API_TOKEN = "a".repeat(64);

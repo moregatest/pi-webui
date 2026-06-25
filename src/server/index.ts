@@ -1258,7 +1258,7 @@ function handleUpload(req, res) {
         file: {
           originalName: rawName,
           storedName,
-          hostPath,
+          // hostPath 刻意不回傳：browser 不使用，且含伺服器本機路徑會洩漏內部資訊
           attachPath,
           size: received,
         },
@@ -1980,11 +1980,20 @@ class NativePiSessionController {
     // project-local 模式:只列當前專案目錄;allProjects 恆空(不跨專案 listAll)。
     const dir = resolveSessionDir(this.runtime.cwd, { cliSessionDir, envSessionDir });
     const currentProject = await SessionManager.list(this.runtime.cwd, dir);
+    const isCustomer = isCustomerMode(profileName, profileFile);
 
     sendJson(this.ws, {
       type: "sessions",
       payload: {
-        currentProject: currentProject.map(serializeSessionInfo),
+        currentProject: currentProject.map((info) => {
+          const entry = serializeSessionInfo(info);
+          if (isCustomer) {
+            // 客戶模式：移除 host 路徑與工作目錄，避免洩漏伺服器內部資訊
+            const { path: _p, cwd: _c, ...safe } = entry as any;
+            return safe;
+          }
+          return entry;
+        }),
         allProjects: [],
       },
     });

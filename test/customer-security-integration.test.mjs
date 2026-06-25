@@ -280,6 +280,143 @@ test("客戶模式：未登入 WS upgrade 被拒（401）", async (t) => {
   });
 });
 
+// 等待 WS 連線後的 sessions packet（在 connected 之前或之後都可能出現）
+function waitForSessions(url, cookie) {
+  return new Promise((resolve, reject) => {
+    const wsUrl = url.replace(/^http:/, "ws:") + "/ws";
+    const ws = new WebSocket(wsUrl, { headers: { cookie } });
+    let connected = false;
+    let sessionsPayload = null;
+    const packets = [];
+    const timer = setTimeout(() => {
+      try { ws.close(); } catch {}
+      reject(new Error(`sessions packet timeout; received types: ${packets.map(p => p.type).join(",")}`));
+    }, 12000);
+    ws.on("open", () => {
+      ws.send(JSON.stringify({ type: "ready", lastSeq: null, sessionFile: null }));
+    });
+    ws.on("message", (data) => {
+      const pkt = JSON.parse(String(data));
+      packets.push(pkt);
+      if (pkt.type === "sessions") sessionsPayload = pkt.payload;
+      if (pkt.type === "connected") connected = true;
+      if (connected && sessionsPayload !== null) {
+        clearTimeout(timer);
+        ws.close();
+        resolve(sessionsPayload);
+      }
+    });
+    ws.on("error", (err) => { clearTimeout(timer); reject(err); });
+  });
+}
+
+// ─── 測試 Fix1：session / resume / fork / clone / tree slash 封鎖 ─────────
+
+test("客戶模式：slash_command session/resume/fork/clone/tree 被閘門拒絕", async (t) => {
+  const cwd = makeTmpCwd();
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const { child, url } = await startServer(cwd);
+  t.after(() => stopServer(child));
+
+  const cookie = await login(url);
+  const { ws } = await connectAndReady(url, cookie);
+  t.after(() => { try { ws.close(); } catch {} });
+
+  for (const name of ["session", "resume", "fork", "clone", "tree"]) {
+    const { response } = await sendAndCollect(ws, {
+      type: "slash_command",
+      name,
+      arg: "",
+    });
+    assert.ok(response, `閘門未回應 /${name} slash`);
+    assert.equal(response.type, "error", `expected error for /${name}, got ${response.type}`);
+    assert.equal(response.message, "operation not permitted", `/${name} 應回 operation not permitted`);
+  }
+});
+
+// ─── 測試 Fix2：sendSessions 不含 path / cwd ──────────────────────────────
+
+// 建立 mock session jsonl 讓 SessionManager.list 能列出非空清單
+function createMockSession(cwd) {
+  const sessionDir = path.join(cwd, ".pi", "sessions");
+  fs.mkdirSync(sessionDir, { recursive: true });
+  const id = "test-session-abc123";
+  const filename = `20260101T000000_${id}.jsonl`;
+  const header = JSON.stringify({
+    type: "session",
+    id,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    cwd,
+    version: "1",
+  });
+  const entry = JSON.stringify({
+    type: "message",
+    id: "msg1",
+    timestamp: "2026-01-01T00:00:01.000Z",
+    message: { role: "user", content: [{ type: "text", text: "hello" }] },
+  });
+  fs.writeFileSync(path.join(sessionDir, filename), `${header}\n${entry}\n`);
+}
+
+test("客戶模式：sessions packet 每個 entry 不含 path 與 cwd", async (t) => {
+  const cwd = makeTmpCwd();
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  // 預先建立 mock session，確保 currentProject 不是空陣列
+  createMockSession(cwd);
+  const { child, url } = await startServer(cwd);
+  t.after(() => stopServer(child));
+
+  const cookie = await login(url);
+  const sessionsPayload = await waitForSessions(url, cookie);
+
+  assert.ok(sessionsPayload, "未收到 sessions packet");
+  const allEntries = [
+    ...(sessionsPayload.currentProject ?? []),
+    ...(sessionsPayload.allProjects ?? []),
+  ];
+  // mock session 要能被列到，確保測試真的有驗到東西
+  assert.ok(allEntries.length > 0, `currentProject 應有至少 1 個 session entry（mock 已建立），但拿到 ${allEntries.length} 個`);
+  for (const entry of allEntries) {
+    assert.equal(entry.path, undefined, `session entry 不應含 path：${JSON.stringify(entry)}`);
+    assert.equal(entry.cwd, undefined, `session entry 不應含 cwd：${JSON.stringify(entry)}`);
+  }
+});
+
+// ─── 測試 Fix3：upload 回應不含 hostPath ──────────────────────────────────
+
+test("客戶模式：upload 回應不含 hostPath 欄位", async (t) => {
+  const cwd = makeTmpCwd();
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const { child, url } = await startServer(cwd);
+  t.after(() => stopServer(child));
+
+  const cookie = await login(url);
+
+  // 上傳一個最小 PNG（1x1 pixel）
+  const minimalPng = Buffer.from(
+    "89504e470d0a1a0a0000000d49484452000000010000000108020000009001" +
+    "2e00000000c4944415478016360f8cf0000000200015e221bc30000000049454e44ae426082",
+    "hex",
+  );
+  const res = await fetch(`${url}/api/upload?name=test.png`, {
+    method: "PUT",
+    headers: {
+      Cookie: cookie,
+      "Content-Type": "image/png",
+      "Content-Length": String(minimalPng.length),
+    },
+    body: minimalPng,
+  });
+  assert.equal(res.status, 200, `upload 應回 200，實際：${res.status}`);
+  const body = await res.json();
+  assert.ok(body.ok, `upload 應成功：${JSON.stringify(body)}`);
+  assert.ok(body.file, "upload 回應應有 file 欄位");
+  assert.equal(body.file.hostPath, undefined, `upload file 不應含 hostPath，但收到：${JSON.stringify(body.file)}`);
+  // 保留 attachPath / storedName / originalName / size
+  assert.ok(body.file.attachPath !== undefined, "upload file 應保留 attachPath");
+  assert.ok(body.file.storedName !== undefined, "upload file 應保留 storedName");
+});
+
 // ─── 測試 5：connected payload 已 scrub 敏感欄位 ─────────────────────────
 
 test("客戶模式：connected payload scrub（model/agentDir/sessionDir/homeDir/cwd/activeTools/models/scopedModels 不出現）", async (t) => {
