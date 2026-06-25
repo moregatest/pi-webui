@@ -1,3 +1,4 @@
+const BASE = (window.__BASE__ || "");
 const composer = document.getElementById("composer");
 const input = document.getElementById("input");
 const sendButton = document.getElementById("send");
@@ -730,11 +731,11 @@ function applyBranding(brand) {
   // brand.css:動態載入 /brand/theme.css 覆蓋層
   // 避免重複插入:先確認 head 裡是否已有相同 href
   if (brand.css === true) {
-    const existing = document.head.querySelector('link[href="/brand/theme.css"]');
+    const existing = document.head.querySelector(`link[href="${BASE}/brand/theme.css"]`);
     if (!existing) {
       const link = document.createElement("link");
       link.rel = "stylesheet";
-      link.href = "/brand/theme.css";
+      link.href = `${BASE}/brand/theme.css`;
       document.head.appendChild(link);
     }
   }
@@ -770,7 +771,7 @@ function applyBranding(brand) {
 
 function connect() {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
-  const url = `${protocol}://${location.host}/ws`;
+  const url = `${protocol}://${location.host}${BASE}/ws`;
   logger.info("ws connecting", { url });
   socket = new WebSocket(url);
 
@@ -2165,7 +2166,7 @@ function getFileExt(name) {
 // 把單一 File 透過 PUT /api/upload 送上去,回傳 server 給的 file metadata。
 // 失敗時 throw,呼叫端用 chip status / toast 呈現。
 async function uploadFile(file) {
-  const res = await fetch(`/api/upload?name=${encodeURIComponent(file.name)}`, {
+  const res = await fetch(`${BASE}/api/upload?name=${encodeURIComponent(file.name)}`, {
     method: "PUT",
     body: file,
     credentials: "same-origin",

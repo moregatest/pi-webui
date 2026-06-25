@@ -1301,6 +1301,18 @@ function serveStatic(req, res) {
     return;
   }
 
+  if (filePath.endsWith(".html")) {
+    const base = process.env.PI_WEBUI_BASE_PATH || "";
+    let html = readFileSync(filePath, "utf8");
+    html = html.replace("</head>", `<script>window.__BASE__=${JSON.stringify(base)}</script></head>`);
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-cache, no-store, must-revalidate",
+    });
+    res.end(html);
+    return;
+  }
+
   sendFile(res, filePath);
 }
 
