@@ -956,6 +956,8 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
       additionalSkillPaths: cliSkillPaths.length > 0 ? cliSkillPaths : undefined,
       skillsOverride: buildSkillsOverride(cliSkillAllow),
       appendSystemPrompt: sandboxAppend.length > 0 ? sandboxAppend : undefined,
+      noExtensions: isCustomerMode(profileName, profileFile),
+      noSkills: isCustomerMode(profileName, profileFile),
     },
   });
   const scopedModels = resolveScopedModelsFromSettings(services);
