@@ -14,7 +14,8 @@ import {
   getAgentDir,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { resolveSessionDir, isWithinSessionDir } from "./session-dir.js";
+import { resolveSessionDir, canonicalize } from "./session-dir.js";
+import { shouldResumeStoredSession } from "./session-guard.js";
 // 這幾個 factory 沒在 index 包裝;走 dist 直接拿。
 const piToolsIndexUrl = pathToFileURL(
   resolve(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")), "..", "core/tools/index.js"),
@@ -79,6 +80,7 @@ import type { UiProfile } from "./ui-profile.js";
 import { loadProfile } from "./profile-loader.js";
 import type { ProfileFile } from "./profile-loader.js";
 import { loadBrandCss } from "./brand-overlay.js";
+import { isCustomerMode, isBlockedCustomerMessage } from "./customer-policy.js";
 import {
   resolveUploadConfig,
   extractExtension,
@@ -1683,6 +1685,8 @@ class NativePiSessionController {
       payload: {
         appCwd: this.cwd,
         agentDir,
+        // resolved session 目錄。讓 headless 測試免 grep log 即可斷言 resolved 設定(D9)。
+        sessionDir: resolveSessionDir(this.cwd, { cliSessionDir, envSessionDir }),
         homeDir: process.env.HOME || "",
         diagnostics: this.runtime.diagnostics,
         slashCommands: this.collectSlashCommands(),
@@ -2056,51 +2060,39 @@ class NativePiSessionController {
   // fresh bootstrap.
   async handleReady(lastSeq, sessionFile) {
     if (sessionFile && sessionFile !== (this.session.sessionFile || null)) {
-      // sandbox 模式下 workspace 被 mount 鎖死。Client 若 request 切到別個
-      // cwd 的 session,read/write/bash 工具會通通踩到 workspace 邊界被擋。
-      // 直接拒絕跨 workspace 的 session switch,server 繼續用啟動時的 cwd。
-      if (sandboxEnabled && sandbox) {
-        const sessionCwd = readSessionCwdSync(sessionFile);
-        const wsRoot = sandbox.workspaceRoot;
-        if (sessionCwd && resolve(sessionCwd) !== resolve(wsRoot)) {
-          logger.warn("sandbox: refused cross-workspace session switch", {
-            sessionFile,
-            sessionCwd,
-            workspaceRoot: wsRoot,
-          });
-          // fall through,不 switchSession;往下走 bootstrap 用當前 session
-          sessionFile = null;
-        }
-      }
-      // #5 reconnect guard:只接受落在「該 session 自身 cwd」對應 project-local /
-      // override 目錄內的 session。依 stored session 的 header cwd 判定(非 this.cwd),
-      // 才不會誤擋 /cwd 切換後合法的他專案 project-local session(P1)。
-      if (sessionFile) {
-        const sessionCwd = readSessionCwdSync(sessionFile);
-        const dir = resolveSessionDir(sessionCwd || this.cwd, { cliSessionDir, envSessionDir });
-        if (!isWithinSessionDir(sessionFile, dir)) {
-          logger.info("ignoring stored session outside its project session dir", { sessionFile, sessionCwd, dir });
-          sessionFile = null;
-        }
-      }
-      if (sessionFile) {
-        try {
-          logger.info("client requested session", { sessionFile });
-          const switched = await this.runtime.switchSession(sessionFile);
-          if (!switched?.cancelled) {
-            await this.bindSession();
-            this.cwd = this.runtime.cwd; // P1:resume 後同步 controller cwd
-          }
-        } catch (error) {
-          logger.warn("client requested session unavailable", {
-            sessionFile,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      } else {
-        // sandbox refused switch — 直接 reset bootstrap 讓 client 用 server 端 session
+      // reconnect guard 判定抽到 session-guard.ts(純函式 shouldResumeStoredSession)。
+      // 這裡只做 IO:讀 stored session 的 header cwd、canonicalize 路徑、算出對應 session 目錄。
+      // 兩邊路徑都先 canonicalize 再比對,消滅 macOS /tmp→/private/tmp 的 symlink 誤判(D5)。
+      const sessionCwd = readSessionCwdSync(sessionFile);
+      const resolvedDir = canonicalize(
+        resolveSessionDir(sessionCwd || this.cwd, { cliSessionDir, envSessionDir }),
+      );
+      const decision = shouldResumeStoredSession({
+        requestedSessionFile: canonicalize(sessionFile),
+        sessionCwd,
+        resolvedSessionDir: resolvedDir,
+        sandboxEnabled: sandboxEnabled && !!sandbox,
+        sandboxWorkspaceRoot: sandbox?.workspaceRoot ?? null,
+      });
+      if (!decision.resume) {
+        // 不接受(跨 sandbox workspace / 不在 project session 目錄內):不 switchSession,
+        // 直接 reset bootstrap 讓 client 用 server 端啟動時的 session。
+        logger.info("ignoring stored session", { sessionFile, sessionCwd, reason: decision.reason });
         await this.sendBootstrap({ reset: true });
         return;
+      }
+      try {
+        logger.info("client requested session", { sessionFile });
+        const switched = await this.runtime.switchSession(sessionFile);
+        if (!switched?.cancelled) {
+          await this.bindSession();
+          this.cwd = this.runtime.cwd; // P1:resume 後同步 controller cwd
+        }
+      } catch (error) {
+        logger.warn("client requested session unavailable", {
+          sessionFile,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
     const result = this.eventLog.eventsAfter(lastSeq);
@@ -2134,6 +2126,11 @@ class NativePiSessionController {
 
   async handle(payload) {
     await this.ready;
+
+    if (isBlockedCustomerMessage(payload, isCustomerMode(profileName, profileFile))) {
+      sendJson(this.ws, { type: "error", message: "operation not permitted" });
+      return;
+    }
 
     const inboundType = payload?.type === "slash_command"
       ? `slash_command:${payload?.name || "?"}`
