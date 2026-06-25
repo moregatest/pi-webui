@@ -81,6 +81,7 @@ import { loadProfile } from "./profile-loader.js";
 import type { ProfileFile } from "./profile-loader.js";
 import { loadBrandCss } from "./brand-overlay.js";
 import { isCustomerMode, isBlockedCustomerMessage, scrubForCustomer } from "./customer-policy.js";
+import { buildCustomerApiTools } from "../tools/customer-api-tools.js";
 import {
   resolveUploadConfig,
   extractExtension,
@@ -998,8 +999,9 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
       sessionStartEvent,
       model: cliModel,
       scopedModels,
-      noTools: sandboxTools ? "builtin" : undefined,
-      customTools: sandboxTools,
+      noTools: (sandboxTools || isCustomerMode(profileName, profileFile)) ? "builtin" : undefined,
+      tools: isCustomerMode(profileName, profileFile) ? ["upload_image"] : undefined,
+      customTools: sandboxTools ?? (isCustomerMode(profileName, profileFile) ? buildCustomerApiTools() : undefined),
     })),
     services,
     diagnostics: services.diagnostics,
