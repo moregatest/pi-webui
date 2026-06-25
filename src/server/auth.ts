@@ -56,9 +56,12 @@ export function shouldSetSecure(opts: {
   return value === "https";
 }
 
-// 注意:Path=/ 假設 webui 部署在 root。若日後透過 reverse proxy 掛到
-// subpath (例如 /webui/),需要把 Path 改成對應 prefix,否則 cookie 不會
-// 在子路徑生效。
+/** cookie Path：base-path（/webui）下 cookie 才會在 subpath 送出。 */
+export function cookiePath(basePath: string | undefined): string {
+  if (!basePath || basePath === "/") return "/";
+  return basePath.replace(/\/+$/, "");
+}
+
 export function buildSetCookie(
   value: string,
   opts: { secure: boolean; maxAge?: number } = { secure: false },
@@ -68,7 +71,7 @@ export function buildSetCookie(
     `${COOKIE_NAME}=${value}`,
     "HttpOnly",
     "SameSite=Lax",
-    "Path=/",
+    `Path=${cookiePath(process.env.PI_WEBUI_BASE_PATH)}`,
     `Max-Age=${maxAge}`,
   ];
   if (opts.secure) parts.push("Secure");
