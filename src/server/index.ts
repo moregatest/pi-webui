@@ -80,7 +80,7 @@ import type { UiProfile } from "./ui-profile.js";
 import { loadProfile } from "./profile-loader.js";
 import type { ProfileFile } from "./profile-loader.js";
 import { loadBrandCss } from "./brand-overlay.js";
-import { isCustomerMode, isBlockedCustomerMessage, scrubForCustomer } from "./customer-policy.js";
+import { isCustomerMode, isBlockedCustomerMessage, scrubForCustomer, missingCustomerSecrets } from "./customer-policy.js";
 import { buildCustomerApiTools } from "../tools/customer-api-tools.js";
 import {
   resolveUploadConfig,
@@ -2452,6 +2452,12 @@ wss.on("connection", (ws, req) => {
   });
 });
 
+const isCustomer = isCustomerMode(profileName, profileFile);
+const miss = missingCustomerSecrets(isCustomer, process.env);
+if (miss.length) {
+  process.stderr.write(`fatal: customer profile 缺必要設定：${miss.join(", ")}\n`);
+  process.exit(1);
+}
 const actualPort = await listenWithFallback(server, { host, port, logger });
 const actualUrl = `http://${host}:${actualPort}`;
 

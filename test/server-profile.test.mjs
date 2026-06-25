@@ -29,14 +29,14 @@ function makeCwd(profileName, fixtureFile) {
 }
 
 // spawn server,等到 log 出現 url=http://127.0.0.1:<port> 後 resolve。
-function startServer(cwd, args = []) {
+function startServer(cwd, args = [], extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
       [SERVER, "--listen", "127.0.0.1:0", ...args],
       {
         cwd,
-        env: { ...process.env, PI_WEBUI_PORT: "0" },
+        env: { ...process.env, PI_WEBUI_PORT: "0", ...extraEnv },
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -80,10 +80,23 @@ function stopServer(child) {
 }
 
 // 連 WS 收 connected packet,回傳 payload。
-function getConnected(url) {
+// password 可選:有帶時先 POST /api/login 拿 cookie 再連 WS。
+async function getConnected(url, password) {
+  let cookie = "";
+  if (password) {
+    const login = await fetch(`${url}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    if (login.status !== 200) throw new Error(`login failed: ${login.status}`);
+    const setCookie = login.headers.get("set-cookie") || "";
+    cookie = setCookie.split(";")[0];
+  }
   return new Promise((resolve, reject) => {
     const wsUrl = url.replace(/^http:/, "ws:") + "/ws";
-    const ws = new WebSocket(wsUrl);
+    const headers = cookie ? { cookie } : undefined;
+    const ws = new WebSocket(wsUrl, { headers });
     const timer = setTimeout(() => {
       try { ws.close(); } catch {}
       reject(new Error("connected packet timeout"));
@@ -147,9 +160,13 @@ test("--profile <不存在> exit 非 0", async (t) => {
 test("--profile customer 無檔走內建 fallback", async (t) => {
   const cwd = makeCwd();
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
-  const { child, url } = await startServer(cwd, ["--profile", "customer"]);
+  const CUSTOMER_PW = "test-pw-customer";
+  const { child, url } = await startServer(cwd, ["--profile", "customer"], {
+    PI_WEBUI_PASSWORD: CUSTOMER_PW, PI_WEBUI_MODEL: "m", OPENROUTER_API_KEY: "k",
+    PC2_SERVICE_HOST: "h", PC2_API_TOKEN: "t", PI_WEBUI_BASE_PATH: "/webui", PI_PROJECT_CWD: cwd,
+  });
   try {
-    const payload = await getConnected(url);
+    const payload = await getConnected(url, CUSTOMER_PW);
     assert.equal(payload.uiProfile.hideThinking, true);
     assert.equal(payload.uiProfile.hideToolCalls, true);
     assert.equal(payload.uiProfile.safeErrors, true);
