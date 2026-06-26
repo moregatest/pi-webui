@@ -639,6 +639,9 @@ if (tunnelEnabled && !trustProxy) {
 }
 // authEnabled / authStore 在 agentDir 確定後才算(tunnel 可能自動產生密碼)
 // ↓ 見下方 agentDir 之後的 block
+const SERVER_BASE_PATH = (process.env.PI_WEBUI_BASE_PATH || "").replace(/\/+$/, "");
+// LOGIN_PATH 是 pi-webui 收到的內部 path（Apache 已 strip /webui/），用於 isAuthPublic 比對 → 無前綴。
+// redirect location 給瀏覽器才要加 SERVER_BASE_PATH 前綴（見 handleAuth）。
 const LOGIN_PATH = "/login";
 const HOME_DIR = process.env.HOME || "";
 const ALLOW_ANY_CWD = process.env.PI_WEBUI_CWD_ALLOW_ANY === "1";
@@ -1132,7 +1135,7 @@ async function handleAuth(req, res) {
     sendJsonHttp(res, 401, { ok: false, error: "Unauthorized" });
     return true;
   }
-  res.writeHead(302, { location: `${LOGIN_PATH}?next=${encodeURIComponent(pathname + url.search)}` });
+  res.writeHead(302, { location: `${SERVER_BASE_PATH}${LOGIN_PATH}?next=${encodeURIComponent(SERVER_BASE_PATH + pathname + url.search)}` });
   res.end();
   return true;
 }
@@ -1151,7 +1154,7 @@ const BRAND_LOGO_MIME: Record<string, string> = {
 function serveBrandLogo(req, res) {
   const logoPath = effectiveUiProfile.brand.logoPath;
   if (!logoPath) {
-    res.writeHead(302, { location: "/favicon.svg" });
+    res.writeHead(302, { location: `${SERVER_BASE_PATH}/favicon.svg` });
     res.end();
     return;
   }
