@@ -40,6 +40,15 @@ export function scrubForCustomer<T extends Record<string, any>>(payload: T, isCu
   return out as T;
 }
 
+/** customer-open（A2 全開）：customer profile + PI_WEBUI_SKILLS_OPEN=1 才開放 skills+bash。
+ *  全開期靠 Fly 單客戶邊界；收攏（skill/command 白名單 + secret 隔離）留後。 */
+export function isCustomerOpenMode(
+  profileName: string | undefined,
+  env: Record<string, string | undefined>,
+): boolean {
+  return profileName === "customer" && env.PI_WEBUI_SKILLS_OPEN === "1";
+}
+
 const REQUIRED_CUSTOMER_ENV = [
   "PI_WEBUI_PASSWORD", "PI_WEBUI_MODEL", "OPENROUTER_API_KEY",
   "PC2_SERVICE_HOST", "PC2_API_TOKEN", "PI_WEBUI_BASE_PATH", "PI_PROJECT_CWD",
