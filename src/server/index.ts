@@ -80,7 +80,8 @@ import type { UiProfile } from "./ui-profile.js";
 import { loadProfile } from "./profile-loader.js";
 import type { ProfileFile } from "./profile-loader.js";
 import { loadBrandCss } from "./brand-overlay.js";
-import { isCustomerMode, isBlockedCustomerMessage, scrubForCustomer, missingCustomerSecrets } from "./customer-policy.js";
+import { isCustomerMode, isCustomerOpenMode, isBlockedCustomerMessage, scrubForCustomer, missingCustomerSecrets } from "./customer-policy.js";
+import { resolveCustomerInjection } from "./customer-injection.js";
 import { buildCustomerApiTools } from "../tools/customer-api-tools.js";
 import {
   resolveUploadConfig,
@@ -950,6 +951,10 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
       }),
     );
   }
+  const customerOpen = isCustomerOpenMode(profileName, process.env);
+  const isCustomer = isCustomerMode(profileName, profileFile);
+  // noExtensions/noSkills 不受 sandboxTools 影響，此處 sandboxTools 省略（= undefined）
+  const loaderInjection = resolveCustomerInjection({ isCustomer, customerOpen });
   const services = await createAgentSessionServices({
     cwd,
     agentDir,
@@ -957,8 +962,8 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
       additionalSkillPaths: cliSkillPaths.length > 0 ? cliSkillPaths : undefined,
       skillsOverride: buildSkillsOverride(cliSkillAllow),
       appendSystemPrompt: sandboxAppend.length > 0 ? sandboxAppend : undefined,
-      noExtensions: isCustomerMode(profileName, profileFile),
-      noSkills: isCustomerMode(profileName, profileFile),
+      noExtensions: loaderInjection.noExtensions,
+      noSkills:     loaderInjection.noSkills,
     },
   });
   const scopedModels = resolveScopedModelsFromSettings(services);
@@ -991,6 +996,7 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
   // noTools="builtin" 會關掉 SDK 的內建 read/bash/edit/write,再用 customTools
   // 重新註冊同名工具。
   const sandboxTools = sandboxEnabled && sandbox ? buildSandboxCustomTools(cwd) : undefined;
+  const toolInjection = resolveCustomerInjection({ isCustomer, customerOpen, sandboxTools });
 
   return {
     ...(await createAgentSessionFromServices({
@@ -999,9 +1005,9 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
       sessionStartEvent,
       model: cliModel,
       scopedModels,
-      noTools: (sandboxTools || isCustomerMode(profileName, profileFile)) ? "builtin" : undefined,
-      tools: isCustomerMode(profileName, profileFile) ? ["upload_image"] : undefined,
-      customTools: sandboxTools ?? (isCustomerMode(profileName, profileFile) ? buildCustomerApiTools() : undefined),
+      noTools: toolInjection.noTools,
+      tools: toolInjection.tools,
+      customTools: toolInjection.customTools,
     })),
     services,
     diagnostics: services.diagnostics,
