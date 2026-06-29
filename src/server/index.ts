@@ -3,7 +3,7 @@
 import { createServer } from "node:http";
 import { execSync } from "node:child_process";
 import { createReadStream, chmodSync, existsSync, readdirSync, readFileSync, statSync, watch as fsWatch, writeFileSync } from "node:fs";
-import { extname, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, extname, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
@@ -423,6 +423,9 @@ const port = listenFromArg?.port ?? Number(process.env.PI_WEBUI_PORT || DEFAULT_
 // package root, so walk up two levels from import.meta.url.
 const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "public");
 const appCwd = resolve(process.env.PI_PROJECT_CWD || process.cwd());
+// artifact 目錄：存截圖 PNG，位於非 docroot 的 .artifacts/（不會被 push-back 帶進正式站）。
+// 可由環境變數 PI_WEBUI_ARTIFACTS_DIR 覆蓋；預設 <appCwd>/.artifacts。
+const artifactsDir = resolve(process.env.PI_WEBUI_ARTIFACTS_DIR || join(appCwd, ".artifacts"));
 
 // 載入 profile 檔（--profile 或 PI_WEBUI_PROFILE 環境變數）
 // 必須在 cliModelPattern / skill allow / command allow 計算前完成,
@@ -1164,6 +1167,36 @@ function serveBrandLogo(req, res) {
     "cache-control": "no-cache, no-store, must-revalidate",
   });
   createReadStream(logoPath).pipe(res);
+}
+
+// artifacts 路由：serve <artifactsDir>/<filename>.png。
+// - 只允許 .png 副檔名，拒絕其他格式。
+// - 防 path traversal：basename 取純檔名後，resolvedPath 必須在 artifactsDir 內。
+function serveArtifact(req, res) {
+  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  const filename = basename(url.pathname.slice("/artifacts/".length));
+  if (!filename || !filename.endsWith(".png")) {
+    res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: "Not found" }));
+    return;
+  }
+  const resolvedPath = resolve(join(artifactsDir, filename));
+  // 防 path traversal：確認解析後路徑在 artifactsDir 內
+  if (!resolvedPath.startsWith(artifactsDir + sep) && resolvedPath !== artifactsDir) {
+    res.writeHead(403, { "content-type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: "Forbidden" }));
+    return;
+  }
+  if (!existsSync(resolvedPath)) {
+    res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: "Not found" }));
+    return;
+  }
+  res.writeHead(200, {
+    "content-type": "image/png",
+    "cache-control": "no-cache, no-store, must-revalidate",
+  });
+  createReadStream(resolvedPath).pipe(res);
 }
 
 // 上傳路由:接 PUT /api/upload?name=<filename>,body 為 raw bytes。
@@ -2418,6 +2451,11 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     if (url.pathname === "/api/upload") {
       handleUpload(req, res);
+      return;
+    }
+    // artifact 截圖路由：/artifacts/<filename>.png（已通過 handleAuth 驗證）
+    if (url.pathname.startsWith("/artifacts/")) {
+      serveArtifact(req, res);
       return;
     }
     serveStatic(req, res);
