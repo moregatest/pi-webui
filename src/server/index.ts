@@ -80,8 +80,9 @@ import type { UiProfile } from "./ui-profile.js";
 import { loadProfile } from "./profile-loader.js";
 import type { ProfileFile } from "./profile-loader.js";
 import { loadBrandCss } from "./brand-overlay.js";
-import { isCustomerMode, isCustomerOpenMode, isBlockedCustomerMessage, scrubForCustomer, missingCustomerSecrets } from "./customer-policy.js";
+import { isCustomerMode, isCustomerOpenMode, isBlockedCustomerMessage, scrubForCustomer, missingCustomerSecrets, customerOpenSkillGuardWarning } from "./customer-policy.js";
 import { resolveCustomerInjection } from "./customer-injection.js";
+import { modelNotFoundNotice } from "./model-notice.js";
 import { buildCustomerApiTools } from "../tools/customer-api-tools.js";
 import {
   resolveUploadConfig,
@@ -569,6 +570,9 @@ if (effectiveUiProfile.brand.cssPath) {
 }
 // hideModel 沿用既有變數名避免大改;effectiveUiProfile.hideModel 是 single source of truth。
 const hideModel = effectiveUiProfile.hideModel;
+// 模型在 registry 找不到時的使用者提示(issue #2 P1)。resolveCliModel 設值、
+// connected packet 帶給 client。null = 模型解析正常或未指定 model。
+let modelResolveWarning: string | null = null;
 
 // 一般檔案上傳設定:合併 CLI / env / profile [uploads],fail-fast 不合法的條目。
 let effectiveUploadConfig: EffectiveUploadConfig;
@@ -913,7 +917,10 @@ function buildSkillsOverride(allow) {
 // 從 modelRegistry 把 "provider/id" 或單獨 id 解析成 Model 物件。
 // 找不到時印警告,讓 SDK 回退到預設模型。
 function resolveCliModel(services, pattern) {
-  if (!pattern) return undefined;
+  if (!pattern) {
+    modelResolveWarning = null;
+    return undefined;
+  }
   const available = services.modelRegistry.getAvailable();
   const found =
     available.find((m) => `${m.provider}/${m.id}` === pattern) ||
@@ -922,8 +929,11 @@ function resolveCliModel(services, pattern) {
     process.stderr.write(
       `[readyai-webui] warning: model not found in registry: ${pattern}\n`,
     );
+    // 不再只吞進 log:記下提示,connected 時送 client(hideModel 下不含 model 名)。
+    modelResolveWarning = modelNotFoundNotice(pattern, hideModel);
     return undefined;
   }
+  modelResolveWarning = null;
   return found;
 }
 
@@ -990,6 +1000,13 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
     logger.warn("skills introspection failed", {
       error: error instanceof Error ? error.message : String(error),
     });
+  }
+
+  // P0 防呆:customer-open 放行了 skills,但若沒設白名單,cwd 的 operator
+  // 技能會全載入、客戶可見。啟動時印明確警告(issue #2 P0)。
+  const skillGuardWarning = customerOpenSkillGuardWarning(profileName, process.env, cliSkillAllow);
+  if (skillGuardWarning) {
+    logger.warn("customer-open skill guard", { warning: skillGuardWarning });
   }
 
   logger.info("commands allowlist", {
@@ -1173,11 +1190,17 @@ function serveBrandLogo(req, res) {
 // - 只允許 .png 副檔名，拒絕其他格式。
 // - 防 path traversal：basename 取純檔名後，resolvedPath 必須在 artifactsDir 內。
 function serveArtifact(req, res) {
+  // 404 一律帶 hint 引導排查:截圖技能輸出目錄常與 route 預設不一致，
+  // 只回 {"error":"Not found"} 無從追。hint 不洩漏絕對路徑（customer 場景），
+  // 改用 <cwd>/.artifacts 字面 + 環境變數名提示。
+  const send404 = (hint) => {
+    res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: "Not found", hint }));
+  };
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const filename = basename(url.pathname.slice("/artifacts/".length));
   if (!filename || !filename.endsWith(".png")) {
-    res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ error: "Not found" }));
+    send404("只服務 .png artifact（例如截圖）；其他副檔名一律拒絕。");
     return;
   }
   const resolvedPath = resolve(join(artifactsDir, filename));
@@ -1188,8 +1211,17 @@ function serveArtifact(req, res) {
     return;
   }
   if (!existsSync(resolvedPath)) {
-    res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ error: "Not found" }));
+    if (!existsSync(artifactsDir)) {
+      send404(
+        "artifacts 目錄不存在（directory missing）。預設為 <cwd>/.artifacts；" +
+        "若截圖輸出到他處（如 data/output/...），請設環境變數 PI_WEBUI_ARTIFACTS_DIR 指向該目錄。",
+      );
+    } else {
+      send404(
+        "此 artifact 不存在於 artifacts 目錄。預設 <cwd>/.artifacts，" +
+        "可由 PI_WEBUI_ARTIFACTS_DIR 覆蓋為截圖實際輸出目錄。",
+      );
+    }
     return;
   }
   res.writeHead(200, {
@@ -1749,6 +1781,7 @@ class NativePiSessionController {
         diagnostics: this.runtime.diagnostics,
         slashCommands: this.collectSlashCommands(),
         hideModel,
+        modelWarning: modelResolveWarning,
         uiProfile: serializeUiProfile(effectiveUiProfile),
         sandbox: sandboxEnabled
           ? {

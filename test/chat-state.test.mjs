@@ -15,6 +15,7 @@ import {
   selectItems,
   userMessageText,
 } from "../public/chat-state.mjs";
+import { formatMessage } from "../public/format-message.mjs";
 
 // Returns the text of the first text block in an item, if any.
 function itemText(item) {
@@ -408,6 +409,31 @@ test("clearError resets lastError to null", () => {
   setError(s, "x");
   clearError(s);
   assert.equal(s.lastError, null);
+});
+
+test("live 401 failure surfaces end-to-end as a red error item (not a blank assistant)", () => {
+  // issue #2 P1 / 留言 A 的即時路徑:401 非 retryable,失敗 assistant 留在
+  // session.messages;agent_end 後 server sendMessages 把它送進 canonical。
+  // 此 turn 沒有任何 delta,streamExtras 為空,selectItems 不該 clip 掉它。
+  const s = createChatState();
+  submitUser(s, "hi");
+  onAgentStart(s);
+  onAgentEnd(s);
+  setHistory(s, [
+    userMsg("hi"),
+    { role: "assistant", content: [], stopReason: "error", errorMessage: "401 User not found." },
+  ]);
+  const items = selectItems(s);
+  const failed = items.find(
+    (it) =>
+      it.source === "canonical" &&
+      it.message?.role === "assistant" &&
+      it.message?.stopReason === "error",
+  );
+  assert.ok(failed, "failed assistant must be present in render items (not clipped away)");
+  const formatted = formatMessage(failed.message);
+  assert.equal(formatted.kind, "error", "must render as a red error item");
+  assert.match(formatted.blocks.map((b) => b.text || "").join("\n"), /401 User not found\./);
 });
 
 test("streamed extras survive a canonical snapshot containing the same content", () => {

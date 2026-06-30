@@ -37,7 +37,7 @@ import {
   stripCatNLinePrefixes,
 } from "./tool-result.mjs";
 import { ACTIVE_SESSION_KEY, extractSessionFileFromState } from "./storage.mjs";
-import { formatMessage, sdkContentToBlocks } from "./format-message.mjs";
+import { formatMessage, sdkContentToBlocks, hasVisibleContent } from "./format-message.mjs";
 import { shouldHighlightCodeBlock } from "./highlight.mjs";
 import { planBlockRenders, reconcileChildrenInPlace } from "./render-blocks.mjs";
 import { createFollowState, onScrollEvent, shouldAutoScroll } from "./scroll-follow.mjs";
@@ -550,6 +550,9 @@ function renderLog() {
     let el;
     if (it.source === "canonical") {
       const r = formatMessage(it.message);
+      // issue #2 B:渲染後無可見內容的 assistant 不掛裸 header
+      // (thinking/tool 在 customer 模式摺疊後會留下空殼「Assistant」)。
+      if (r.kind === "assistant" && !hasVisibleContent(r.blocks, uiProfile)) continue;
       const prev = canonicalEls[canonicalIdx];
       if (prev && prev.message === it.message) {
         // Same SDK message reference — reuse the DOM node as-is. The SDK
@@ -564,8 +567,11 @@ function renderLog() {
       canonicalIdx += 1;
     } else if (it.source === "extra") {
       const item = it.item;
-      const cached = extraEls.get(item);
       const isLive = liveItems.has(item);
+      // issue #2 B:渲染後無可見內容的 assistant 不掛裸 header。streaming 中的
+      // live assistant 例外(內容隨 delta 進來),其餘空 assistant 直接跳過。
+      if (item.kind === "assistant" && !isLive && !hasVisibleContent(item.blocks, uiProfile)) continue;
+      const cached = extraEls.get(item);
       if (!cached) {
         el = buildMessageElement(item.kind, item.title, item.blocks, { highlight: !isLive });
         extraEls.set(item, {
@@ -840,6 +846,14 @@ function connect() {
             logger.warn("startup diagnostic", { diagnostic: d });
           }
           showToast(`${packet.payload.diagnostics.length} startup diagnostic(s)`, "warning");
+        }
+        // issue #2 P1:模型 registry 找不到時 server 主動帶警告,UI 明確報錯
+        // (不再靜默 fallback)。訊息已在 server 端依 hideModel 決定是否含 model 名。
+        if (packet.payload.modelWarning) {
+          logger.warn("model resolve warning", { warning: packet.payload.modelWarning });
+          showToast(packet.payload.modelWarning, "error");
+          csSetError(chatState, packet.payload.modelWarning);
+          renderStatusBar();
         }
         return;
       case "session_state": {

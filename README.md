@@ -102,6 +102,7 @@ environment variables:
 | `PI_WEBUI_SKILLS` | (unset) | extra skill paths, `:` or `,` separated |
 | `PI_WEBUI_SKILL_ALLOW` | (unset) | skill name whitelist (comma-separated) |
 | `PI_WEBUI_SKILL_ALLOW_FILE` | (unset) | skill whitelist file path |
+| `PI_WEBUI_SKILLS_OPEN` | `0` | `1`（限 `customer` profile）放寬技能鎖，放行 skills + read/bash。**未配 `PI_WEBUI_SKILL_ALLOW` 時 cwd 全部技能會載入、客戶可見，啟動會印警告**。 |
 | `PI_WEBUI_COMMAND_ALLOW` | (unset) | slash command name whitelist (comma-separated) |
 | `PI_WEBUI_COMMAND_ALLOW_FILE` | (unset) | slash command whitelist file path |
 | `PI_WEBUI_PASSWORD` | (unset) | enable login with this password (same as `--password`) |
@@ -130,6 +131,7 @@ environment variables:
 | `PI_AGENT_DIR` | pi default (`~/.pi/agent`) | pi agent config directory |
 | `PI_SESSION_DIR` | `<cwd>/.pi/sessions/` | session storage directory; full override of the default. same as `--session-dir` (CLI wins). |
 | `PI_WEBUI_CWD_ALLOW_ANY` | `0` | allow `/cwd` to switch to paths outside `$HOME` |
+| `PI_WEBUI_ARTIFACTS_DIR` | `<cwd>/.artifacts` | 目錄供 `/artifacts/<file>.png` route 服務（截圖等）；設為截圖實際輸出目錄。命中不存在時 404 會帶引導 hint。 |
 
 examples:
 

@@ -107,3 +107,46 @@ test("GET /artifacts/malware.exe 回 404（非 .png 拒絕）", async () => {
     await stopServer(child);
   }
 });
+
+// issue #2 P1（消費端）：route 預設目錄與截圖輸出常不一致，命中不存在時
+// 只回 {"error":"Not found"} 無從排查。404 應帶引導，指向 PI_WEBUI_ARTIFACTS_DIR。
+
+test("GET /artifacts/nonexistent.png 的 404 帶引導 hint（指向 PI_WEBUI_ARTIFACTS_DIR）", async () => {
+  const { child, url } = await startServer({ PI_WEBUI_ARTIFACTS_DIR: artifactsDir });
+  try {
+    const res = await fetch(`${url}/artifacts/nonexistent.png`);
+    assert.equal(res.status, 404);
+    const body = await res.json();
+    assert.ok(body.hint, "404 body 應帶 hint 引導");
+    assert.match(body.hint, /PI_WEBUI_ARTIFACTS_DIR/, "hint 應提到可設定的環境變數");
+  } finally {
+    await stopServer(child);
+  }
+});
+
+test("artifacts 目錄本身不存在時，404 hint 明確點出目錄缺失", async () => {
+  const missingDir = join(tmpdir(), `pi-webui-artifacts-missing-${Date.now()}`);
+  const { child, url } = await startServer({ PI_WEBUI_ARTIFACTS_DIR: missingDir });
+  try {
+    const res = await fetch(`${url}/artifacts/whatever.png`);
+    assert.equal(res.status, 404);
+    const body = await res.json();
+    assert.ok(body.hint, "404 body 應帶 hint");
+    assert.match(body.hint, /目錄|directory/, "hint 應點出 artifacts 目錄不存在");
+    assert.match(body.hint, /PI_WEBUI_ARTIFACTS_DIR/);
+  } finally {
+    await stopServer(child);
+  }
+});
+
+test("非 .png 的 404 hint 說明只服務 .png", async () => {
+  const { child, url } = await startServer({ PI_WEBUI_ARTIFACTS_DIR: artifactsDir });
+  try {
+    const res = await fetch(`${url}/artifacts/malware.exe`);
+    assert.equal(res.status, 404);
+    const body = await res.json();
+    assert.match(body.hint || "", /\.png/, "hint 應說明只接受 .png");
+  } finally {
+    await stopServer(child);
+  }
+});

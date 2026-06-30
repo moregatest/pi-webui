@@ -213,3 +213,56 @@ test("customer-open: 非黑名單 slash 不被當未授權擋", async (t) => {
   }
   // response 為 null（timeout）或 command_result 均視為通過（技能已進入執行流程）
 });
+
+// ─── P0 防呆整合測試：customer-open 無 skill-allow → 啟動印警告 ───────────────
+
+test("customer-open 無 skill-allow：createRuntime 啟動印出 P0 收斂警告", async (t) => {
+  const cwd = makeTmpCwd();
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const { child, url } = await startServer(cwd, {
+    PI_WEBUI_SKILLS_OPEN: "1",
+    PI_WEBUI_SKILLS: SKILLS_DIR,
+    // 故意不設 PI_WEBUI_SKILL_ALLOW
+  });
+  t.after(() => stopServer(child));
+
+  // server 已 listening；後續 createRuntime 在 WS 連線時跑，警告隨之印出。
+  let stderrTail = "";
+  child.stderr.on("data", (c) => { stderrTail += c.toString(); });
+
+  const cookie = await login(url);
+  const { ws } = await connectAndReady(url, cookie);
+  t.after(() => { try { ws.close(); } catch {} });
+
+  await new Promise((r) => setTimeout(r, 800)); // 等 log flush
+  assert.match(
+    stderrTail,
+    /customer-open skill guard|技能未收斂/,
+    `應在啟動 log 出現 P0 收斂警告，但 stderr 尾段:\n${stderrTail.slice(-800)}`,
+  );
+});
+
+test("customer-open 有設 skill-allow：不印 P0 警告", async (t) => {
+  const cwd = makeTmpCwd();
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const { child, url } = await startServer(cwd, {
+    PI_WEBUI_SKILLS_OPEN: "1",
+    PI_WEBUI_SKILLS: SKILLS_DIR,
+    PI_WEBUI_SKILL_ALLOW: "customer-pgc-dialogue",
+  });
+  t.after(() => stopServer(child));
+
+  let stderrTail = "";
+  child.stderr.on("data", (c) => { stderrTail += c.toString(); });
+
+  const cookie = await login(url);
+  const { ws } = await connectAndReady(url, cookie);
+  t.after(() => { try { ws.close(); } catch {} });
+
+  await new Promise((r) => setTimeout(r, 800));
+  assert.doesNotMatch(
+    stderrTail,
+    /customer-open skill guard/,
+    `設了白名單不應出現 P0 警告，但 stderr 尾段:\n${stderrTail.slice(-800)}`,
+  );
+});

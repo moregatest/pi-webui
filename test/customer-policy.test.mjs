@@ -1,7 +1,7 @@
 // test/customer-policy.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isCustomerMode, isBlockedCustomerMessage, scrubForCustomer } from "../dist/server/customer-policy.js";
+import { isCustomerMode, isBlockedCustomerMessage, scrubForCustomer, customerOpenSkillGuardWarning } from "../dist/server/customer-policy.js";
 
 test("isCustomerMode: profileName customer → true", () => {
   assert.equal(isCustomerMode("customer", undefined), true);
@@ -49,4 +49,30 @@ test("scrub: customer 移除敏感欄位", () => {
 test("scrub: 非 customer 原樣", () => {
   const p = { model: "x", agentDir: "/r" };
   assert.deepEqual(scrubForCustomer(p, false), p);
+});
+
+// ── P0 防呆：customer-open 無 skill-allow 白名單警告 ─────────────────────────
+// issue #2 P0:容器 customer-open（PI_WEBUI_SKILLS_OPEN=1）放行 skills，但漏設
+// --skill-allow，cwd 的 operator 技能（onboard-*/readyai-publish…）全數載入，
+// 客戶可見。啟動時應印明確警告。
+
+test("guard: customer-open 且無 skill-allow（undefined）→ 回警告字串", () => {
+  const w = customerOpenSkillGuardWarning("customer", { PI_WEBUI_SKILLS_OPEN: "1" }, undefined);
+  assert.ok(w, "應回非空警告");
+  assert.match(w, /skill-allow|白名單/);
+});
+test("guard: customer-open 且白名單為空陣列 → 回警告", () => {
+  assert.ok(customerOpenSkillGuardWarning("customer", { PI_WEBUI_SKILLS_OPEN: "1" }, []));
+});
+test("guard: customer-open 已設白名單 → null（不警告）", () => {
+  assert.equal(
+    customerOpenSkillGuardWarning("customer", { PI_WEBUI_SKILLS_OPEN: "1" }, ["customer-pgc-dialogue"]),
+    null,
+  );
+});
+test("guard: plain customer 無 SKILLS_OPEN → null（非 open，skills 本來就鎖死）", () => {
+  assert.equal(customerOpenSkillGuardWarning("customer", {}, undefined), null);
+});
+test("guard: 非 customer profile → null", () => {
+  assert.equal(customerOpenSkillGuardWarning("staff", { PI_WEBUI_SKILLS_OPEN: "1" }, undefined), null);
 });

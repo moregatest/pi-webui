@@ -49,6 +49,26 @@ export function isCustomerOpenMode(
   return profileName === "customer" && env.PI_WEBUI_SKILLS_OPEN === "1";
 }
 
+/** customer-open 但未設 skill 白名單時的啟動警告;不適用時回 null。
+ *  customer-open 放行 skills，但若不靠 --skill-allow 收斂，cwd 下的 operator
+ *  技能會全數載入、客戶可見（issue #2 P0）。skillAllow 傳最終解析後的清單。 */
+export function customerOpenSkillGuardWarning(
+  profileName: string | undefined,
+  env: Record<string, string | undefined>,
+  skillAllow: string[] | string | undefined,
+): string | null {
+  if (!isCustomerOpenMode(profileName, env)) return null;
+  const hasAllow = Array.isArray(skillAllow)
+    ? skillAllow.length > 0
+    : !!(skillAllow && String(skillAllow).trim());
+  if (hasAllow) return null;
+  return (
+    "customer-open 模式(PI_WEBUI_SKILLS_OPEN=1)未設 --skill-allow / PI_WEBUI_SKILL_ALLOW 白名單:" +
+    "技能未收斂,cwd 下的 operator 技能會全數載入、客戶可見。" +
+    "請設定 customer 子集白名單(--skill-allow 或 .pi/skills-allow.txt)。"
+  );
+}
+
 const REQUIRED_CUSTOMER_ENV = [
   "PI_WEBUI_PASSWORD", "PI_WEBUI_MODEL", "OPENROUTER_API_KEY",
   "PC2_SERVICE_HOST", "PC2_API_TOKEN", "PI_WEBUI_BASE_PATH", "PI_PROJECT_CWD",

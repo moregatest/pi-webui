@@ -262,3 +262,40 @@ test("/brand/logo 在 password 模式下不需 cookie 也可存取(避免 login 
     await stopServer(child);
   }
 });
+
+// ── issue #2 P1:模型 registry 找不到 → connected.modelWarning（不再靜默）─────
+
+test("PI_WEBUI_MODEL 在 registry 找不到 → connected payload 帶 modelWarning（含 model 名）", async () => {
+  const { child, url } = await startServer({ PI_WEBUI_MODEL: "nonexistent/zzz-model-xyz" });
+  try {
+    const payload = await getConnectedPayload(url);
+    assert.ok(payload.modelWarning, "找不到 model 時應帶 modelWarning");
+    assert.match(payload.modelWarning, /zzz-model-xyz/, "非 hideModel：含 model 名便於排查");
+  } finally {
+    await stopServer(child);
+  }
+});
+
+test("未指定 PI_WEBUI_MODEL → connected payload.modelWarning 為 null", async () => {
+  const { child, url } = await startServer({});
+  try {
+    const payload = await getConnectedPayload(url);
+    assert.equal(payload.modelWarning ?? null, null, "未指定 model 不應有 warning");
+  } finally {
+    await stopServer(child);
+  }
+});
+
+test("--hide-model + 找不到 model → modelWarning 不洩漏 model 名稱（對外場景）", async () => {
+  const { child, url } = await startServer(
+    { PI_WEBUI_MODEL: "nonexistent/zzz-secret-xyz" },
+    ["--hide-model"],
+  );
+  try {
+    const payload = await getConnectedPayload(url);
+    assert.ok(payload.modelWarning, "仍應有警告");
+    assert.doesNotMatch(payload.modelWarning, /zzz-secret-xyz/, "hideModel 不可洩漏 model 名");
+  } finally {
+    await stopServer(child);
+  }
+});
