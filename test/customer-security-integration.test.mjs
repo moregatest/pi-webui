@@ -29,7 +29,9 @@ function startServer(cwd, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
-      [SERVER, "--listen", "127.0.0.1:0", "--profile", "customer"],
+      // --allow-unsafe-customer：CI 無 QEMU，customer profile 的 effective-sandbox 要求
+      // （L2, spec 2026-07-01）需顯式表態繞過，才能在無 VM 環境測 WS 閘門本身。
+      [SERVER, "--listen", "127.0.0.1:0", "--profile", "customer", "--allow-unsafe-customer"],
       {
         cwd,
         env: {

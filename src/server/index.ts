@@ -16,16 +16,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { resolveSessionDir, canonicalize } from "./session-dir.js";
 import { shouldResumeStoredSession } from "./session-guard.js";
-// 這幾個 factory 沒在 index 包裝;走 dist 直接拿。
-const piToolsIndexUrl = pathToFileURL(
-  resolve(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")), "..", "core/tools/index.js"),
-).href;
-const {
-  createReadToolDefinition,
-  createWriteToolDefinition,
-  createEditToolDefinition,
-  createBashToolDefinition,
-} = await import(piToolsIndexUrl);
+// read/write/edit/bash 的 sandbox/guarded 版工具改由 ./guarded-tools.js 統一組裝
+// （create*ToolDefinition 由 package root 直接 import）。
 
 // The package's `exports` field doesn't expose the slash-commands list.
 // Resolve the package's `import` entry via import.meta.resolve and load the
@@ -81,7 +73,8 @@ import { loadProfile } from "./profile-loader.js";
 import type { ProfileFile } from "./profile-loader.js";
 import { loadBrandCss } from "./brand-overlay.js";
 import { isCustomerMode, isCustomerOpenMode, isBlockedCustomerMessage, scrubForCustomer, missingCustomerSecrets, customerOpenSkillGuardWarning } from "./customer-policy.js";
-import { resolveCustomerInjection } from "./customer-injection.js";
+import { resolveCustomerInjection, shouldInjectHostGuards } from "./customer-injection.js";
+import { buildSandboxGuardedTools, buildHostGuardedTools } from "./guarded-tools.js";
 import { modelNotFoundNotice } from "./model-notice.js";
 import { buildCustomerApiTools } from "../tools/customer-api-tools.js";
 import {
@@ -246,6 +239,10 @@ function printHelp() {
     "                              tools will run with full host access; only set this if you",
     "                              fully trust everyone who can reach the tunnel URL.",
     "                              alias: PI_WEBUI_ALLOW_UNSAFE_TUNNEL=1.",
+    "  --allow-unsafe-customer     bypass the EFFECTIVE-sandbox requirement of the customer",
+    "                              profile (env/file isolation drops to in-process only).",
+    "                              only for local dev / CI without QEMU; NOT for production.",
+    "                              alias: PI_WEBUI_ALLOW_UNSAFE_CUSTOMER=1.",
     "  --upload-ext <list>         comma-separated file extension whitelist for the upload",
     "                              endpoint (replaces the default list). without dots, e.g.",
     "                              'jpg,pdf,docx'. alias: PI_WEBUI_UPLOAD_EXT.",
@@ -291,6 +288,9 @@ function printHelp() {
     "  PI_WEBUI_TUNNEL            '1' to expose the webui via a cloudflared quick tunnel",
     "  PI_WEBUI_CLOUDFLARED       cloudflared binary path",
     "  PI_WEBUI_ALLOW_UNSAFE_TUNNEL '1' to skip the --sandbox requirement of --tunnel (UNSAFE)",
+    "  PI_WEBUI_ALLOW_UNSAFE_CUSTOMER '1' to skip the effective-sandbox requirement of the",
+    "                              customer profile (UNSAFE; local/CI only)",
+    "  PI_WEBUI_BASH_ENV_ALLOW    extra non-secret env keys to allow into bash (comma-separated)",
     "  PI_WEBUI_UPLOAD_EXT        comma-separated extension whitelist (replaces default)",
     "  PI_WEBUI_UPLOAD_EXT_ADD    comma-separated extensions added on top",
     "  PI_WEBUI_UPLOAD_SUBDIR     subdir under <cwd>/uploads/ (same as --upload-subdir)",
@@ -386,6 +386,7 @@ function parseArgs(argv) {
     else if (a === "--tunnel-cloudflared") out.tunnelCloudflared = argv[++i];
     else if (a.startsWith("--tunnel-cloudflared=")) out.tunnelCloudflared = a.slice("--tunnel-cloudflared=".length);
     else if (a === "--allow-unsafe-tunnel") out.allowUnsafeTunnel = true;
+    else if (a === "--allow-unsafe-customer") out.allowUnsafeCustomer = true;
     else if (a === "--upload-ext") out.uploadExt = argv[++i];
     else if (a.startsWith("--upload-ext=")) out.uploadExt = a.slice("--upload-ext=".length);
     else if (a === "--upload-ext-add") out.uploadExtAdd = argv[++i];
@@ -862,6 +863,44 @@ if (tunnelEnabled && !sandboxEnabled && allowUnsafeTunnel) {
   );
 }
 
+// security gate（L2）:customer / customer-open profile *必須* 跑在 effective sandbox 上
+// （QEMU init 成功、VM 真的 boot 得起來）。只看 flag 不夠——sandboxEnabled 為 true 但
+// init 失敗時 sandbox=null，會落回 host bash、繼承完整 env。故檢查「sandboxEnabled && sandbox」
+// 這個 effective 條件；不符即 fail-closed（exit 2），除非顯式 --allow-unsafe-customer 表態。
+const allowUnsafeCustomer =
+  !!args.allowUnsafeCustomer || process.env.PI_WEBUI_ALLOW_UNSAFE_CUSTOMER === "1";
+const customerRequiresSandbox = isCustomerMode(profileName, profileFile);
+if (customerRequiresSandbox && !(sandboxEnabled && sandbox) && !allowUnsafeCustomer) {
+  process.stderr.write(
+    "error: customer profile requires an EFFECTIVE sandbox (QEMU init must succeed).\n" +
+    "       the sandboxEnabled flag alone is insufficient; the sandbox object is null on\n" +
+    "       init failure and tools would fall back to host bash with full env access.\n" +
+    "       fix QEMU/image (see --sandbox), or pass --allow-unsafe-customer to bypass.\n" +
+    "       bypass keeps in-process L0/L1/L3 (env allowlist + read guard + redaction) and\n" +
+    "       relies on single-tenant isolation; only the hard VM boundary is dropped.\n" +
+    "       (required on hosts without nested KVM, e.g. Fly Firecracker — see issue #4.)\n",
+  );
+  process.exit(2);
+}
+// eager boot（因 VM 是 lazy boot）:customer session 建立前先 await sandbox.ensure() 觸發實際
+// VM 啟動。boot 失敗一律 fail-closed（拒開 server），不落回 host bash。堵住「flag 開、
+// constructor 成功、但 VM 實際起不來」的殘餘破口。allow-unsafe 時尊重營運端選擇、維持 lazy。
+if (customerRequiresSandbox && sandboxEnabled && sandbox && !allowUnsafeCustomer) {
+  try {
+    await sandbox.ensure();
+    logger.info("customer sandbox eager boot ok", { workspace: sandbox.workspaceRoot });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    process.stderr.write(
+      "error: customer profile requires an EFFECTIVE sandbox, but the VM failed to boot\n" +
+      `       (fail-closed, refusing to start): ${msg}\n` +
+      "       fix QEMU/image, or pass --allow-unsafe-customer to bypass (NOT recommended).\n",
+    );
+    logger.error("customer sandbox eager boot failed (fail-closed)", { error: msg });
+    process.exit(2);
+  }
+}
+
 // 讀 session jsonl 的第一行 header,拿 cwd 欄位。sandbox guard 用來判斷
 // client request 的 session 是否屬於目前 mount 的 workspace。
 function readSessionCwdSync(sessionFile) {
@@ -940,14 +979,12 @@ function resolveCliModel(services, pattern) {
 // sandbox 模式下用 host cwd 當 tool cwd:user 給 relative path 由 host cwd
 // 解析,operations 內部再 host→guest 轉。這樣 system prompt 看到的 cwd 一致,
 // 不需要拼裝額外的 mount-prompt。
-function buildSandboxCustomTools(cwd) {
+//
+// sandbox 模式的 read/write/edit/bash（含 L0/L1/L3）走 guarded-tools.ts 的共用工廠。
+// buildSandboxGuardedTools / buildHostGuardedTools 亦被真實 VM 整合測試直接呼叫（同一份程式）。
+function buildSandboxCustomTools(cwd, workspaceRoot) {
   if (!sandbox) return undefined;
-  return [
-    createReadToolDefinition(cwd, { operations: sandbox.createReadOperations() }),
-    createWriteToolDefinition(cwd, { operations: sandbox.createWriteOperations() }),
-    createEditToolDefinition(cwd, { operations: sandbox.createEditOperations() }),
-    createBashToolDefinition(cwd, { operations: sandbox.createBashOperations() }),
-  ];
+  return buildSandboxGuardedTools(sandbox, cwd, workspaceRoot);
 }
 
 const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
@@ -1015,11 +1052,24 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
     whitelistSource: effectiveCommandAllowFile || null,
   });
 
-  // sandbox 啟用時,把 read/write/edit/bash 從預設 builtin 改為走 VM 的版本。
-  // noTools="builtin" 會關掉 SDK 的內建 read/bash/edit/write,再用 customTools
-  // 重新註冊同名工具。
-  const sandboxTools = sandboxEnabled && sandbox ? buildSandboxCustomTools(cwd) : undefined;
+  // L1/L3 圍欄與遮蔽用的 workspace 邊界:sandbox 開走 VM mount 根,否則走 appCwd。
+  const guardWorkspaceRoot = sandboxEnabled && sandbox ? sandbox.workspaceRoot : appCwd;
+
+  // sandbox 啟用時,把 read/write/edit/bash 從預設 builtin 改為走 VM 的版本（含 L0/L1/L3）。
+  // noTools="builtin" 會關掉 SDK 的內建 read/bash/edit/write,再用 customTools 重新註冊同名工具。
+  const sandboxTools = sandboxEnabled && sandbox ? buildSandboxCustomTools(cwd, guardWorkspaceRoot) : undefined;
   const toolInjection = resolveCustomerInjection({ isCustomer, customerOpen, sandboxTools });
+
+  // 無 effective sandbox 時的 in-process 防護（L0 bash env 白名單 + L1 read 圍欄 + L3 輸出遮蔽）,
+  // 以同名 custom tool 覆蓋 builtin read/bash。涵蓋:
+  //   - 開發者 / staff / brand 等非 customer 模式;
+  //   - customer-open 走 --allow-unsafe-customer 繞過 L2（如 Fly 無 KVM 無法跑 Gondolin,見 issue #4）:
+  //     VM 邊界拿掉,但 L0/L1/L3 in-process 仍套上,補掉「全開 bash 能 printenv 讀 L-甲」的洩漏,
+  //     配 Fly 單租戶邊界。plain customer（僅 upload_image、不開 bash/read）不需,故排除。
+  const hostGuardTools = shouldInjectHostGuards({ hasSandboxTools: !!sandboxTools, isCustomer, customerOpen })
+    ? buildHostGuardedTools(cwd, guardWorkspaceRoot)
+    : undefined;
+  const finalCustomTools = toolInjection.customTools ?? hostGuardTools;
 
   return {
     ...(await createAgentSessionFromServices({
@@ -1030,7 +1080,7 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
       scopedModels,
       noTools: toolInjection.noTools,
       tools: toolInjection.tools,
-      customTools: toolInjection.customTools,
+      customTools: finalCustomTools,
     })),
     services,
     diagnostics: services.diagnostics,

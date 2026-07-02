@@ -100,6 +100,7 @@ interface StartOptions {
 	tunnel?: boolean;
 	tunnelCloudflared?: string;
 	allowUnsafeTunnel?: boolean;
+	allowUnsafeCustomer?: boolean;
 	// 客戶導向 UI profile 旗標(整組 forward 給 server)
 	hideThinking?: boolean;
 	hideToolCalls?: boolean;
@@ -153,6 +154,7 @@ function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 		if (opts.tunnel) serverArgs.push("--tunnel");
 		if (opts.tunnelCloudflared) serverArgs.push("--tunnel-cloudflared", opts.tunnelCloudflared);
 		if (opts.allowUnsafeTunnel) serverArgs.push("--allow-unsafe-tunnel");
+		if (opts.allowUnsafeCustomer) serverArgs.push("--allow-unsafe-customer");
 		if (opts.hideThinking) serverArgs.push("--hide-thinking");
 		if (opts.hideToolCalls) serverArgs.push("--hide-tool-calls");
 		if (opts.showToolProgress) serverArgs.push("--show-tool-progress");
@@ -297,6 +299,7 @@ function parseStartFlags(tokens: string[]): StartOptions {
 		else if (t === "--tunnel-cloudflared") opts.tunnelCloudflared = valueOf(++i, t);
 		else if (t.startsWith("--tunnel-cloudflared=")) opts.tunnelCloudflared = t.slice("--tunnel-cloudflared=".length);
 		else if (t === "--allow-unsafe-tunnel") opts.allowUnsafeTunnel = true;
+		else if (t === "--allow-unsafe-customer") opts.allowUnsafeCustomer = true;
 		else if (t === "--hide-thinking") opts.hideThinking = true;
 		else if (t === "--hide-tool-calls") opts.hideToolCalls = true;
 		else if (t === "--show-tool-progress") opts.showToolProgress = true;
@@ -452,6 +455,12 @@ export default function webuiExtension(pi: ExtensionAPI) {
 
 	pi.registerFlag?.("webui-allow-unsafe-tunnel", {
 		description: "bypass --sandbox requirement of --tunnel (UNSAFE; full host access). Implies --webui.",
+		type: "boolean",
+		default: false,
+	});
+
+	pi.registerFlag?.("webui-allow-unsafe-customer", {
+		description: "bypass the customer profile's effective-sandbox requirement (UNSAFE; local/CI only). Implies --webui.",
 		type: "boolean",
 		default: false,
 	});
@@ -625,6 +634,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		let tunnel: boolean;
 		let tunnelCloudflared: string;
 		let allowUnsafeTunnel: boolean;
+		let allowUnsafeCustomer: boolean;
 		let hideThinking: boolean;
 		let hideToolCalls: boolean;
 		let showToolProgress: boolean;
@@ -660,6 +670,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			tunnel = !!pi.getFlag?.("webui-tunnel");
 			tunnelCloudflared = String(pi.getFlag?.("webui-tunnel-cloudflared") || "").trim();
 			allowUnsafeTunnel = !!pi.getFlag?.("webui-allow-unsafe-tunnel");
+			allowUnsafeCustomer = !!pi.getFlag?.("webui-allow-unsafe-customer");
 			hideThinking = !!pi.getFlag?.("webui-hide-thinking");
 			hideToolCalls = !!pi.getFlag?.("webui-hide-tool-calls");
 			showToolProgress = !!pi.getFlag?.("webui-show-tool-progress");
@@ -695,6 +706,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 				tunnel ||
 				tunnelCloudflared.length > 0 ||
 				allowUnsafeTunnel ||
+				allowUnsafeCustomer ||
 				hideThinking ||
 				hideToolCalls ||
 				showToolProgress ||
@@ -739,6 +751,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			tunnel: tunnel || undefined,
 			tunnelCloudflared: tunnelCloudflared || undefined,
 			allowUnsafeTunnel: allowUnsafeTunnel || undefined,
+			allowUnsafeCustomer: allowUnsafeCustomer || undefined,
 			hideThinking: hideThinking || undefined,
 			hideToolCalls: hideToolCalls || undefined,
 			showToolProgress: showToolProgress || undefined,

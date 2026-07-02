@@ -40,7 +40,7 @@ test: build
 # 透過 SANDBOX_VM=1 切換 opt-in 標記。
 test-sandbox: build
 	@echo "==> test-sandbox (opt-in real VM)"
-	@SANDBOX_VM=1 node --test test/sandbox.test.mjs test/sandbox-vm.test.mjs
+	@SANDBOX_VM=1 node --test test/sandbox.test.mjs test/sandbox-vm.test.mjs test/secret-guard-sandbox-vm.test.mjs
 
 # 真實 cloudflared 整合測試。預設不跑 (要 cloudflared binary + 網路)。
 # 透過 TUNNEL_REAL=1 切換 opt-in 標記。

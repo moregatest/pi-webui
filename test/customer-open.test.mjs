@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { WebSocket } from "ws";
 import { isCustomerOpenMode } from "../dist/server/customer-policy.js";
-import { resolveCustomerInjection } from "../dist/server/customer-injection.js";
+import { resolveCustomerInjection, shouldInjectHostGuards } from "../dist/server/customer-injection.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(__dirname, "..", "dist", "server", "index.js");
@@ -27,7 +27,9 @@ function startServer(cwd, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
-      [SERVER, "--listen", "127.0.0.1:0", "--profile", "customer"],
+      // --allow-unsafe-customer：CI 無 QEMU，customer profile 的 effective-sandbox 要求
+      // （L2, spec 2026-07-01）需顯式表態繞過，才能在無 VM 環境測 customer-open 注入/技能可達性。
+      [SERVER, "--listen", "127.0.0.1:0", "--profile", "customer", "--allow-unsafe-customer"],
       {
         cwd,
         env: {
@@ -178,6 +180,21 @@ test("injection: customer-open → 放寬 + read/bash", () => {
   assert.equal(r.noTools, undefined);
   assert.deepEqual(r.tools, ["read", "bash"]);
   assert.equal(r.customTools, undefined);
+});
+
+// shouldInjectHostGuards：無 effective sandbox 時是否套 in-process L0/L1/L3（guarded host read/bash）
+test("hostGuards: 開發者無 sandbox → 套（true）", () => {
+  assert.equal(shouldInjectHostGuards({ hasSandboxTools: false, isCustomer: false, customerOpen: false }), true);
+});
+test("hostGuards: 有 effective sandbox → 不套（走 VM 版）", () => {
+  assert.equal(shouldInjectHostGuards({ hasSandboxTools: true, isCustomer: false, customerOpen: false }), false);
+  assert.equal(shouldInjectHostGuards({ hasSandboxTools: true, isCustomer: true, customerOpen: true }), false);
+});
+test("hostGuards: customer-open 無 sandbox（Fly/allow-unsafe）→ 套（true，修正點）", () => {
+  assert.equal(shouldInjectHostGuards({ hasSandboxTools: false, isCustomer: true, customerOpen: true }), true);
+});
+test("hostGuards: plain customer（僅 upload_image）→ 不套（false）", () => {
+  assert.equal(shouldInjectHostGuards({ hasSandboxTools: false, isCustomer: true, customerOpen: false }), false);
 });
 
 // ─── Task 4：整合測試（customer-open 模式技能可達性）────────────────────────

@@ -15,6 +15,7 @@ import { existsSync, statSync } from "node:fs";
 
 import type { ProfileFile, ToolLabelEntry } from "./profile-loader.js";
 import { resolveLabel } from "./tool-label.js";
+import { redactBlocks } from "./secret-guard.js";
 
 export interface UiProfile {
   hideThinking: boolean;
@@ -234,6 +235,37 @@ export type FilterResult =
 // console.warn 會 spam log。要追蹤時改注入有 throttle 的 logger。
 const silentLogger = { warn: (_msg: string, _ctx?: unknown) => {} };
 
+// L3 送 client 兜底（spec 2026-07-01）:對 tool 輸出事件遮蔽 L-甲 機密「值」。
+// tool_execution_update 的 partialResult 是 streaming 中間結果,SDK emit-only、extension
+// 回傳無效,只能在 pi-webui 自己的出口（本函式）遮;tool_execution_end 的 result 一併遮
+// （涵蓋未被 execute() 源頭包裝的 builtin 工具在開發者模式的輸出）。
+// 已被源頭遮過的（wrapped bash/read）在此為 no-op（redactBlocks 找不到值即回原陣列）。
+function redactToolEventForClient(event: any): any {
+  if (
+    event.type === "tool_execution_update" &&
+    event.partialResult &&
+    Array.isArray(event.partialResult.content)
+  ) {
+    const red = redactBlocks(event.partialResult.content);
+    if (red !== event.partialResult.content) {
+      return { ...event, partialResult: { ...event.partialResult, content: red } };
+    }
+    return event;
+  }
+  if (
+    event.type === "tool_execution_end" &&
+    event.result &&
+    Array.isArray(event.result.content)
+  ) {
+    const red = redactBlocks(event.result.content);
+    if (red !== event.result.content) {
+      return { ...event, result: { ...event.result, content: red } };
+    }
+    return event;
+  }
+  return event;
+}
+
 export function filterEvent(event: any, profile: UiProfile): FilterResult {
   if (!event || typeof event !== "object") return { kind: "event", event };
 
@@ -243,7 +275,7 @@ export function filterEvent(event: any, profile: UiProfile): FilterResult {
     event.type === "tool_execution_end" ||
     event.type === "tool_execution_update"
   ) {
-    if (!profile.hideToolCalls) return { kind: "event", event };
+    if (!profile.hideToolCalls) return { kind: "event", event: redactToolEventForClient(event) };
     // update 是 streaming 中間結果,不轉 progress(避免閃);整個 drop
     if (event.type === "tool_execution_update") return null;
     if (!profile.showToolProgress) return null;

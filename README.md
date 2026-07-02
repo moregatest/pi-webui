@@ -75,6 +75,7 @@ command-line flags:
 | `--sandbox-workspace <path>` | host directory mounted as `/workspace` inside the VM. defaults to the launch cwd. alias: `PI_WEBUI_SANDBOX_WORKSPACE`. |
 | `--sandbox-image <ref>` | gondolin image selector(`name:tag` 或 buildId)。e.g. `readyai-sandbox:0.1.0-3.23.0-bba981`。alias: `PI_WEBUI_SANDBOX_IMAGE`;profile `[sandbox].image` 為 fallback。 |
 | `--sandbox-env KEY=VAL` | 注入 VM-wide env(可重複)。與 profile `[sandbox.env]` merge,CLI 優先。 |
+| `--allow-unsafe-customer` | bypass the `customer` profile's **effective-sandbox** requirement（見下方 "agent secret isolation" 段）。隔離降級為 in-process only。僅供無 QEMU 的本地 dev / CI；**不可用於 production**。alias: `PI_WEBUI_ALLOW_UNSAFE_CUSTOMER=1`。 |
 | `--hide-model` | hide the model name shown in the status bar. |
 | `--hide-thinking` | drop `thinking` blocks before they reach the browser (server-side filter, not just css). |
 | `--hide-tool-calls` | drop `tool_call` / `tool_result` blocks before they reach the browser. |
@@ -110,6 +111,8 @@ environment variables:
 | `PI_WEBUI_SANDBOX` | `0` | `1` to run tools inside a Gondolin micro-VM (same as `--sandbox`) |
 | `PI_WEBUI_SANDBOX_WORKSPACE` | (launch cwd) | host directory mounted as `/workspace` (same as `--sandbox-workspace`) |
 | `PI_WEBUI_SANDBOX_IMAGE` | (unset) | gondolin image selector(same as `--sandbox-image`) |
+| `PI_WEBUI_ALLOW_UNSAFE_CUSTOMER` | `0` | `1` bypasses the customer effective-sandbox requirement (UNSAFE; local/CI only; same as `--allow-unsafe-customer`) |
+| `PI_WEBUI_BASH_ENV_ALLOW` | (unset) | 額外放行進 bash 的非機密 env key（逗號/空白分隔），疊在內建 allowlist 之上（見 agent secret isolation） |
 | `PI_WEBUI_HIDE_MODEL` | `0` | `1` hides the model name in the status bar |
 | `PI_WEBUI_HIDE_THINKING` | `0` | `1` drops thinking blocks server-side (same as `--hide-thinking`) |
 | `PI_WEBUI_HIDE_TOOL_CALLS` | `0` | `1` drops tool_call / tool_result blocks server-side (same as `--hide-tool-calls`) |
@@ -308,6 +311,34 @@ system_prompt = """
 ```
 
 `[sandbox].system_prompt` 上限 16KB,append 在 built-in 提示之後。
+
+## agent secret isolation（防 agent 洩漏主機機密）
+
+agent 的 `bash` / `read` 與 web server 跑在同一台主機、同一個 Node.js process。若不設防,
+一行 `printenv` 就能把主機上的 production 機密(`OPENROUTER_API_KEY`、`R2_*`、`PC2_SERVICE_PWS` …)
+傾印進對話——而對話會送往雲端 LLM、寫進 session log。分四層防禦深度(spec
+`docs/superpowers/specs/2026-07-01-agent-secret-isolation-design.md`):
+
+- **L0 bash env allowlist.** bash 子行程不再繼承整個 `process.env`,改為正面表列白名單
+  (`PATH`/`HOME`/`LANG`/`LC_*`/`ZYTE_API_KEY`/`PI_PROJECT_CWD` 等非機密)。機密天然被擋。
+  host bash 與 sandbox bash 的 per-exec env 兩條路徑共用同一 hook。要額外放行非機密 key 用
+  `PI_WEBUI_BASH_ENV_ALLOW`(逗號/空白分隔;**不要**拿來放機密)。sandbox bash 另注入
+  `READYAI_SANDBOX_MODE=1`,讓 readyAI CLI 從 mounted workspace `.env` 讀 scoped 憑證。
+- **L1 read workspace 圍欄.** `read` 目標經 `realpath`(解 `../` 與 symlink)後必須落在
+  workspace 內才放行;`/proc/*/environ` 與 workspace 外主機機密(`~/.ssh`、server `.env`)一律擋。
+- **L2 customer 強制 effective sandbox.** `customer` profile **必須**跑在真的 boot 起來的
+  Gondolin VM 上(不只是 `--sandbox` 旗標;init 失敗 `sandbox=null` 會落回 host bash)。
+  啟動時 eager boot VM,失敗即 **fail-closed**(拒啟)。要在無 QEMU/無 KVM 環境跑須顯式
+  `--allow-unsafe-customer` 繞過 —— **繞過後仍保留 in-process L0+L1+L3**(customer-open 的
+  read/bash 改走 guarded 版:env 白名單 + read 圍欄 + 遮蔽),只是少了 VM 硬邊界,配單租戶隔離。
+  **Fly Firecracker 無 nested `/dev/kvm`,Gondolin 只能 TCG(不可用),故 Fly preview 走此
+  in-process 路徑**(見 issue #4)。
+- **L3 機密值遮蔽.** tool 輸出(送 model 與送 client/streaming 兩路)掃描已知 L-甲共用機密
+  「值」換成 `«REDACTED»` 兜底。L-乙 scoped 憑證(`PC2_API_TOKEN` 等)走 workspace `.env`、
+  不在 `process.env`,不在遮蔽範圍(半信任下 customer 本就能讀自己 workspace `.env`)。
+
+分模式強度:開發者 L0+L1+L3(純 in-process,防手滑);`customer`/`customer-open` 另加 L2 強制 VM
+硬邊界(防不信任客戶主動撈)。`ZYTE_API_KEY` 為使用者拍板接受的殘餘風險例外(進 VM/env 白名單)。
 
 ## tunnel
 
