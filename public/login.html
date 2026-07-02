@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <base href="/webui/" />
+    <!-- <base href> 由 server 依 PI_WEBUI_BASE_PATH 注入為 <head> 首元素（見 src/server/index.ts serveStatic） -->
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>readyai-webui · login</title>
@@ -91,8 +91,11 @@
             credentials: "same-origin",
           });
           if (res.ok) {
-            const redirect = new URLSearchParams(location.search).get("next") || "/";
-            location.href = redirect.startsWith("/") ? redirect : "/";
+            const base = window.__BASE__ || "";
+            const raw = new URLSearchParams(location.search).get("next") || "";
+            // 僅接受「單一 / 開頭、且次字元非 / 或 \」的內部路徑；其餘（含 protocol-relative //、/\）一律回 base 根
+            const next = /^\/(?![/\\])/.test(raw) ? raw : `${base}/`;
+            location.href = next;
             return;
           }
           let msg = "Login failed";

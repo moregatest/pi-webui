@@ -62,24 +62,27 @@ export function cookiePath(basePath: string | undefined): string {
   return basePath.replace(/\/+$/, "");
 }
 
+// basePath 由 caller（index.ts）傳入已正規化的 SERVER_BASE_PATH，
+// 不再直讀 process.env（避免 auth.ts 反向依賴 index.ts 的 circular import）。
 export function buildSetCookie(
   value: string,
-  opts: { secure: boolean; maxAge?: number } = { secure: false },
+  opts: { secure: boolean; maxAge?: number; basePath?: string } = { secure: false },
 ): string {
   const maxAge = opts.maxAge ?? COOKIE_MAX_AGE_SECONDS;
   const parts = [
     `${COOKIE_NAME}=${value}`,
     "HttpOnly",
     "SameSite=Lax",
-    `Path=${cookiePath(process.env.PI_WEBUI_BASE_PATH)}`,
+    `Path=${cookiePath(opts.basePath)}`,
     `Max-Age=${maxAge}`,
   ];
   if (opts.secure) parts.push("Secure");
   return parts.join("; ");
 }
 
-export function buildClearCookie(opts: { secure: boolean }): string {
-  return buildSetCookie("", { secure: opts.secure, maxAge: 0 });
+export function buildClearCookie(opts: { secure: boolean; basePath?: string }): string {
+  // 委派 buildSetCookie，須把 basePath 一併轉傳，否則 logout 的 Path 掉回預設 "/"，cookie 清不掉。
+  return buildSetCookie("", { secure: opts.secure, maxAge: 0, basePath: opts.basePath });
 }
 
 export interface AuthStore {

@@ -190,6 +190,23 @@ test("--brand-name --brand-color --brand-logo → connected brand 三欄都帶�
   }
 });
 
+test("PI_WEBUI_BASE_PATH=/webui → connected logoUrl 帶 base 前綴 /webui/brand/logo", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "readyai-webui-brand-"));
+  const logoPath = path.join(dir, "logo.svg");
+  writeFileSync(logoPath, '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><circle cx="5" cy="5" r="4" /></svg>');
+
+  const { child, url } = await startServer({ PI_WEBUI_BASE_PATH: "/webui" }, [
+    "--brand-logo", logoPath,
+  ]);
+  try {
+    const payload = await getConnectedPayload(url);
+    // logoUrl 由 server 依 SERVER_BASE_PATH 加前綴（egress single source）
+    assert.equal(payload.uiProfile.brand.logoUrl, "/webui/brand/logo");
+  } finally {
+    await stopServer(child);
+  }
+});
+
 test("GET /brand/logo 有設 logo 時回 200 + svg content-type", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "readyai-webui-brand-"));
   const logoPath = path.join(dir, "logo.svg");

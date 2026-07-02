@@ -49,6 +49,7 @@ import {
   resolveCommandAllowFile,
 } from "./command-allow.js";
 import { listenWithFallback } from "./listen.js";
+import { normalizeBasePath, stripBasePrefix } from "./base-path.js";
 import {
   COOKIE_NAME,
   buildClearCookie,
@@ -624,7 +625,7 @@ function serializeUiProfile(profile: UiProfile) {
     safeErrors: profile.safeErrors,
     brand: {
       name: profile.brand.name,
-      logoUrl: profile.brand.logoPath ? "/brand/logo" : null,
+      logoUrl: profile.brand.logoPath ? `${SERVER_BASE_PATH}/brand/logo` : null,
       // backward-compat shim:Task 2.4 client 切換到 brand.tokens 後可移除
       color: profile.brand.tokens.accent ?? null,
       mode: profile.brand.mode,
@@ -647,7 +648,7 @@ if (tunnelEnabled && !trustProxy) {
 }
 // authEnabled / authStore 在 agentDir 確定後才算(tunnel 可能自動產生密碼)
 // ↓ 見下方 agentDir 之後的 block
-const SERVER_BASE_PATH = (process.env.PI_WEBUI_BASE_PATH || "").replace(/\/+$/, "");
+const SERVER_BASE_PATH = normalizeBasePath(process.env.PI_WEBUI_BASE_PATH);
 // LOGIN_PATH 是 pi-webui 收到的內部 path（Apache 已 strip /webui/），用於 isAuthPublic 比對 → 無前綴。
 // redirect location 給瀏覽器才要加 SERVER_BASE_PATH 前綴（見 handleAuth）。
 const LOGIN_PATH = "/login";
@@ -1168,7 +1169,7 @@ async function handleLogin(req, res) {
   }
   const token = authStore.issue();
   const secure = shouldSetSecure({ trustProxy, headers: req.headers });
-  res.setHeader("Set-Cookie", buildSetCookie(token, { secure }));
+  res.setHeader("Set-Cookie", buildSetCookie(token, { secure, basePath: SERVER_BASE_PATH }));
   return sendJsonHttp(res, 200, { ok: true });
 }
 
@@ -1176,7 +1177,7 @@ function handleLogout(req, res) {
   const token = readAuthCookie(req.headers);
   if (token) authStore.revoke(token);
   const secure = shouldSetSecure({ trustProxy, headers: req.headers });
-  res.setHeader("Set-Cookie", buildClearCookie({ secure }));
+  res.setHeader("Set-Cookie", buildClearCookie({ secure, basePath: SERVER_BASE_PATH }));
   return sendJsonHttp(res, 200, { ok: true });
 }
 
@@ -1426,8 +1427,13 @@ function serveStatic(req, res) {
   }
 
   if (filePath.endsWith(".html")) {
-    const base = process.env.PI_WEBUI_BASE_PATH || "";
+    const base = SERVER_BASE_PATH; // 正規化 base（去尾斜線；root 為 ""）
+    const baseHref = base ? base + "/" : "/";
     let html = readFileSync(filePath, "utf8");
+    // <base> 必須是 <head> 首個子元素，才能 rebase 其後所有相對 asset（見 spec P1-a）；
+    // 不可注在 </head> 前（會落在 head 尾端，對前面的 <link>/<script> 無效）。
+    html = html.replace(/<head(\s[^>]*)?>/i, (m) => `${m}<base href="${baseHref}">`);
+    // __BASE__ 只設 JS 變數，位置不敏感，維持注在 </head> 前。
     html = html.replace("</head>", `<script>window.__BASE__=${JSON.stringify(base)}</script></head>`);
     res.writeHead(200, {
       "content-type": "text/html; charset=utf-8",
@@ -2527,6 +2533,14 @@ function broadcastTunnelState(state: TunnelState) {
 
 const server = createServer(async (req, res) => {
   try {
+    // Ingress strip：在所有 HTTP handler 之前就地改寫 req.url，strip 掉 base 前綴（保留 query）。
+    // 之後 handleAuth / dispatcher / serveStatic / serveArtifact / handleUpload 的
+    // new URL(req.url) 全部拿到內部無前綴路徑。改寫後 req.url 語意＝內部路徑。base="" 時 no-op。
+    if (SERVER_BASE_PATH) {
+      const u = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+      const stripped = stripBasePrefix(u.pathname, SERVER_BASE_PATH);
+      if (stripped !== u.pathname) req.url = stripped + u.search;
+    }
     const handled = await handleAuth(req, res);
     if (handled) return;
     // upload route 走獨立 dispatcher;handleAuth 已驗過 cookie。
@@ -2561,7 +2575,9 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
-  if (url.pathname !== "/ws") {
+  // 同 ingress strip：/webui/ws → /ws。handleUpgrade 不看 pathname，此處不需回寫 req.url。
+  const wsPath = SERVER_BASE_PATH ? stripBasePrefix(url.pathname, SERVER_BASE_PATH) : url.pathname;
+  if (wsPath !== "/ws") {
     socket.destroy();
     return;
   }

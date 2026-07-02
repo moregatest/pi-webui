@@ -79,6 +79,23 @@ test("buildClearCookie: value 空,Max-Age=0", () => {
   assert.equal(c.includes("Secure"), false);
 });
 
+test("buildSetCookie: basePath=/webui → Path=/webui", () => {
+  const c = buildSetCookie("tok", { secure: false, basePath: "/webui" });
+  assert.ok(c.includes("Path=/webui"));
+});
+
+test("buildSetCookie: 未帶 basePath → Path=/（cookiePath(undefined) 預設，維持相容）", () => {
+  const c = buildSetCookie("tok", { secure: false });
+  assert.ok(c.includes("Path=/"));
+  assert.equal(c.includes("Path=/webui"), false);
+});
+
+test("buildClearCookie: basePath=/webui → Path=/webui（logout 才清得掉 subpath cookie）", () => {
+  const c = buildClearCookie({ secure: false, basePath: "/webui" });
+  assert.ok(c.includes("Path=/webui"));
+  assert.ok(c.includes("Max-Age=0"));
+});
+
 test("createAuthStore.issue/verify/revoke 基本流程", () => {
   const store = createAuthStore();
   const t1 = store.issue();
