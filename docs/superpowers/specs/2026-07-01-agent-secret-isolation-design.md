@@ -1,6 +1,6 @@
 # pi-webui 防 agent 洩漏主機機密：分模式防禦深度（env 白名單 ＋ read 圍欄 ＋ customer 強制 Gondolin ＋ 輸出遮蔽）
 
-> **狀態**：設計 v3（收三輪 code review：PC2 三層分類、fail-closed effective sandbox、sandbox bash 第二條 env 路徑、L3 三接點分工〔送 model／送 client／session log〕、ZYTE 拍板），待使用者 review → writing-plans。
+> **狀態**：設計 v3.1。v3 收三輪 code review（PC2 三層分類、fail-closed effective sandbox、sandbox bash 第二條 env 路徑、L3 三接點分工〔送 model／送 client／session log〕、ZYTE 拍板）。**v3.1（2026-07-06）補 Fly 無 nested KVM 現實**：L2 effective Gondolin 在 Fly Firecracker 不可用，改「部署隔離＋in-process 縱深」承擔，殘餘風險（共用 LLM key）誠實記錄——見文末〈Fly 無 nested KVM：L2 缺席下的實際防線〉。
 > **範圍**：防止 coding agent 在對話中洩漏 pi-webui 主機的敏感環境變數與機密檔案。分「開發者模式（防 AI 誤觸）」與「customer 模式（防不信任客戶）」兩層強度。
 > **不在範圍**：出站網路流量過濾、Gondolin/QEMU 逃逸漏洞、customer 之間隔離（single-tenant 已天然隔離）、登入 auth 強化、readyAI/readyscript 端機密治理。見文末 Out of Scope。
 > **關聯 spec**：延伸 `2026-05-21-gondolin-sandbox-design.md`（沙盒）與 `2026-05-22-customer-ui-profile-design.md`（customer profile）；L3 遮蔽清單與 readyAI `2026-06-30-env-secret-sanitize-on-sync-design.md`（`SECRET_KEY_PATTERN`）同源。
@@ -317,6 +317,45 @@ readyAI customer 技能是 **bash 直呼 CLI**、走 `load_env_with_fallback()`�
 | `tool_result` content 型別＋extension return 採用 | L3 送 model | `types.d.ts:726-730`；`emitToolResult`（`runner.js:546`）採用回傳 |
 | `filterEvent` 回傳修改後 event 被採用；`tool_execution_update` **emit-only** | L3 送 client | `ui-profile.ts:237`／`index.ts:1852`；`runner.js:476` 丟棄 handler 回傳 |
 | `sandbox` 物件於 init 失敗為 null | L2 | `index.ts:795-830`、正解 `:1037` |
+
+## Fly 無 nested KVM：L2 缺席下的實際防線（v3.1，2026-07-06）
+
+**現實**：Fly Firecracker 不提供 `/dev/kvm`，Gondolin 只能 TCG（純軟體模擬）、實質不可用。故 customer 在 Fly **走 `--allow-unsafe-customer` 繞過 L2**（`index.ts:867-885` gate 已載明），實際跑 customer-open：有 host `bash`／`read`，靠 in-process L0/L1/L3。對應 issue #4。
+
+這使 Fly 生產防線**退回本 spec〈否決的替代方案〉的「純 in-process」格**。以下兩條替代共同承擔 L2 原本的 env＋檔案雙根治，並誠實記錄殘餘風險。
+
+### 替代一：部署隔離（等價 L2 的檔案/env 面根治）
+
+單租戶＋機密不進機器：preview 機 `process.env` **只准**含該站 scoped 憑證與該站專屬密鑰，**L-甲 共用機密一律不注入**。
+
+| 機密 | 在 preview 機 `process.env`？ | 依據 |
+|---|---|---|
+| `R2_*`、`PC2_SERVICE_PWS`（L-甲） | **否**（operator 本機層級） | readyai-project `readyai-project/SKILL.md`：R2_* 走 operator `~/.env`、非客戶專案；customer 技能改走 Bearer `PC2_API_TOKEN` |
+| `PC2_API_TOKEN`（L-乙 scoped）、`PC2_SERVICE_HOST=127.0.0.1` | 是（半信任本就可見） | `test_preview_deploy.py` 首次 `flyctl secrets set` |
+| `PI_WEBUI_PASSWORD` | 是，**per-preview 自動產生、不共用** | 使用者拍板 |
+| `OPENROUTER_API_KEY`（或 LLM 憑證，L-甲） | **是——agent 呼叫 LLM 必需** | 見殘餘風險 |
+
+做到「L-甲 不進機器」，無 VM 即不致命：機器上可洩漏的最敏感物退化為該站自己的 L-乙 憑證（半信任可見）。**這是把 L2 的硬隔離用部署隔離等價替換的主線。**
+
+### 替代二：in-process 縱深（本次實作，非根治）
+
+補 `filterBashEnv` 擋不到的「讀主行程 env」面（L0 只過濾 bash 子行程繼承的 env，擋不住 bash 讀主行程 `/proc/<pid>/environ`）：
+
+- **L0 命令圍欄** `guardBashCommand`／`wrapBashWithCommandGuard`（`secret-guard.ts`）：擋 `printenv`／裸 `env` 列舉／`/proc/<pid>/environ|cmdline` 讀取／`export -p`／`declare -p`／`compgen -v`／裸 `set`；放行 `env FOO=bar cmd`、`set -e` 等正當用途。掛進 `buildHostGuardedTools`（Fly customer-open 實際走）與 `buildSandboxGuardedTools`。
+- **L3 編碼變體遮蔽** `secretValueVariants`：L-甲 值的 base64／base64url／hex 一併遮，擋單值 `| base64` 繞過。
+
+⚠️ **deny-list 本質**：變數拼接（`p=printenv;$p`）、字元插入、整段 environ 一次編碼可繞過。**抬高門檻、非根治。**
+
+### 已接受殘餘風險（待選項 A 根治）
+
+`OPENROUTER_API_KEY`（或等價 LLM 憑證）**趕不出機器**（agent 要呼叫 LLM），且為**跨站共用一把**。customer 技能**會爬站外內容＋收 PDF**→ 間接 prompt injection 是**真實觸發面**（非理論）。故存殘餘鏈：injection →`cat /proc/<主行程>/environ`（變數拼接繞命令圍欄）→ 整段編碼繞 L3 → LLM key 外洩、**波及全體 preview**。損害限 LLM 額度、可 rotate。
+
+**根治方向（選項 A，未落地）**：LLM 走 per-preview proxy token（該站額度上限、獨立 rotate），把 `OPENROUTER_API_KEY` 從 L-甲 降級為 L-乙/L-丙。做完，本殘餘鏈的「波及全體」即消解。在此之前，此為**明示接受**的殘餘風險。
+
+### 測試補充（本次）
+
+- L0 命令圍欄：`secret-guard.test.mjs`（deny/allow 向量）、`secret-guard-bash-e2e.test.mjs`（真 SDK bash 驗 `buildHostGuardedTools` 擋 `/proc/1/environ`、放行正當命令）。
+- L3 編碼變體：`secret-guard.test.mjs`（base64/hex 遮蔽、L-乙 不誤傷）。
 
 ## 跨 repo 連動
 

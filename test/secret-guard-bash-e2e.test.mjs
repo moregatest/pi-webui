@@ -13,6 +13,7 @@ process.env.ZYTE_API_KEY = "CANARY_zyte_key_should_pass1"; // L-丙：白名單�
 
 const { createBashToolDefinition } = await import("@earendil-works/pi-coding-agent");
 const { buildBashSpawnHook, wrapToolWithRedaction } = await import("../dist/server/secret-guard.js");
+const { buildHostGuardedTools } = await import("../dist/server/guarded-tools.js");
 
 // 跑一個 bash 指令、收集最終 + 串流輸出。
 async function runBash(command) {
@@ -63,4 +64,25 @@ test("L3 端到端：bash 輸出若含 L-甲 機密『值』（非 env 來源）
 test("L3 端到端：L-乙 值不在遮蔽範圍（PC2_API_TOKEN 走 workspace .env）", async () => {
   const out = await runBash('echo "token=CANARY_scoped_token_lmnop999"');
   assert.ok(out.includes("CANARY_scoped_token_lmnop999"), "L-乙 值不在 SECRET_ENV_KEYS，不遮");
+});
+
+// ── L0 縱深：命令圍欄已掛進 production 工廠 buildHostGuardedTools（非測試自組）──
+function hostBash() {
+  const tools = buildHostGuardedTools(process.cwd(), process.cwd());
+  const bash = tools.find((t) => t?.name === "bash");
+  assert.ok(bash, "buildHostGuardedTools 應含 bash 工具");
+  return bash;
+}
+const textOf = (res) => (res?.content || []).map((b) => b?.text || "").join("\n");
+
+test("L0 縱深 端到端：buildHostGuardedTools 的 bash 擋 env 偵察（圍欄已掛進組裝鏈）", async () => {
+  const blocked = await hostBash().execute("t", { command: "cat /proc/1/environ" }, undefined, undefined, {});
+  assert.equal(blocked.isError, true);
+  assert.match(textOf(blocked), /偵察/, "應回偵察 block 訊息、不實際執行");
+});
+
+test("L0 縱深 端到端：buildHostGuardedTools 的 bash 放行正當命令（不誤傷）", async () => {
+  const out = await hostBash().execute("t", { command: "echo hello-world-ok" }, undefined, undefined, {});
+  assert.ok(!out.isError, "正當命令不該被擋");
+  assert.match(textOf(out), /hello-world-ok/);
 });

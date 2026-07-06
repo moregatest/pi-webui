@@ -19,6 +19,8 @@ import {
   REDACTION_PLACEHOLDER,
   wrapReadWithGuard,
   wrapToolWithRedaction,
+  guardBashCommand,
+  wrapBashWithCommandGuard,
 } from "../dist/server/secret-guard.js";
 
 // 一組跨層共用的假機密（模擬 process.env 中的 L-甲/L-乙）。
@@ -114,6 +116,65 @@ test("L0: buildBashSpawnHook 自 PI_WEBUI_BASH_ENV_ALLOW 讀 extraAllow", () => 
 test("L0: ENV_ALLOWLIST 不含任何 L-甲/L-乙 key（防回歸）", () => {
   for (const k of [...SECRET_ENV_KEYS, "PC2_API_TOKEN"]) {
     assert.ok(!ENV_ALLOWLIST.has(k), `${k} 不該在 ENV_ALLOWLIST`);
+  }
+});
+
+// ─────────────────── L0 縱深：guardBashCommand 命令圍欄 ───────────────────
+// 定位：L2（VM 硬邊界）在 Fly 無 KVM 缺席下的 in-process 縱深補強，抬高「直接讀
+// 主行程 /proc/environ + printenv/env 列舉」的門檻。deny-list 本質可被變數拼接/字元
+// 插入繞過（p=printenv;$p），非根治——根治仍靠部署隔離（L-甲 不進機器）。
+
+test("guardBashCommand: env 偵察命令一律 block（縱深、抬高門檻）", () => {
+  const recon = [
+    "printenv",
+    "printenv OPENROUTER_API_KEY",
+    "env",
+    "env | grep KEY",
+    "env|sort",
+    "env -0",
+    "cat /proc/self/environ",
+    "cat /proc/1/environ",
+    "cat /proc/12345/environ",
+    "cat /proc/thread-self/environ",
+    "strings /proc/self/environ",
+    "head -c 200 /proc/1/environ",
+    "grep -a OPENROUTER /proc/1/environ",
+    "xargs -0 < /proc/1/environ",
+    "od -c /proc/1/environ",
+    "cat /proc/self/cmdline",
+    "export -p",
+    "declare -p",
+    "typeset -p",
+    "compgen -v",
+    "set",
+  ];
+  for (const cmd of recon) {
+    assert.equal(guardBashCommand(cmd).block, true, `應 block: ${cmd}`);
+  }
+});
+
+test("guardBashCommand: 正當 customer 協作命令放行（不誤傷）", () => {
+  const ok = [
+    "ls -la",
+    "cat package.json",
+    "cat ./src/app.js",
+    "readyai-db query --lang en",
+    "readyai-screenshot https://preview.example.com",
+    "env FOO=bar readyai-db query", // env 設變數執行（非列舉）
+    "MYVAR=1 env node script.js", // env 執行命令（非列舉）
+    "env -i node script.js", // 清空環境執行（非列舉、不印到 stdout）
+    "set -e",
+    "set -o pipefail",
+    "set +x",
+    "set -- a b c",
+    "export FOO=bar",
+    "declare -a arr",
+    "grep environ ./notes.md", // 字面 environ、非 /proc
+    "echo hello",
+    "printf '%s' done",
+  ];
+  for (const cmd of ok) {
+    assert.equal(guardBashCommand(cmd).block, false, `不該 block: ${cmd}`);
   }
 });
 
@@ -242,6 +303,26 @@ test("L3: PC2_SERVICE_PWS(L-甲) 一定在遮蔽清單、PC2_API_TOKEN(L-乙) �
   assert.ok(!SECRET_ENV_KEYS.includes("PC2_API_TOKEN"));
 });
 
+test("L3: redactBlocks 也遮 L-甲 值的 base64 編碼變體（擋單值 | base64 繞過）", () => {
+  const b64 = Buffer.from(FAKE_ENV.OPENROUTER_API_KEY).toString("base64");
+  const red = redactBlocks([{ type: "text", text: `dump=${b64} tail` }], FAKE_ENV);
+  assert.ok(!red[0].text.includes(b64), "OPENROUTER 值的 base64 形式應被遮");
+  assert.ok(red[0].text.includes(REDACTION_PLACEHOLDER));
+});
+
+test("L3: redactBlocks 也遮 L-甲 值的 hex 編碼變體", () => {
+  const hex = Buffer.from(FAKE_ENV.PC2_SERVICE_PWS).toString("hex");
+  const red = redactBlocks([{ type: "text", text: `x ${hex} y` }], FAKE_ENV);
+  assert.ok(!red[0].text.includes(hex), "PC2_SERVICE_PWS 值的 hex 形式應被遮");
+  assert.ok(red[0].text.includes(REDACTION_PLACEHOLDER));
+});
+
+test("L3: 編碼變體遮蔽不誤傷 L-乙（PC2_API_TOKEN 的 base64 不遮）", () => {
+  const b64 = Buffer.from(FAKE_ENV.PC2_API_TOKEN).toString("base64");
+  const red = redactBlocks([{ type: "text", text: `t=${b64}` }], FAKE_ENV);
+  assert.ok(red[0].text.includes(b64), "L-乙 值的編碼形式不在遮蔽範圍");
+});
+
 // ───────────────────────── tool 包裝 ─────────────────────────
 
 test("wrapReadWithGuard: 越界 read 回 isError block，境內轉呼原 execute", async () => {
@@ -295,4 +376,25 @@ test("wrapToolWithRedaction: 遮 execute 結果與 onUpdate 串流 content", asy
   assert.equal(captured.length, 1);
   assert.ok(captured[0].content[0].text.includes(REDACTION_PLACEHOLDER));
   assert.ok(!captured[0].content[0].text.includes("or-secret-abcdef123456"));
+});
+
+test("wrapBashWithCommandGuard: 偵察命令回 isError block、正當命令轉呼原 execute", async () => {
+  let inner = 0;
+  const def = {
+    name: "bash",
+    execute: async (_id, params) => {
+      inner++;
+      return { content: [{ type: "text", text: `ran ${params.command}` }] };
+    },
+  };
+  const guarded = wrapBashWithCommandGuard(def);
+
+  const blocked = await guarded.execute("1", { command: "cat /proc/1/environ" }, undefined, undefined, {});
+  assert.equal(blocked.isError, true);
+  assert.match(blocked.content[0].text, /偵察/);
+  assert.equal(inner, 0, "偵察命令不應呼叫原 execute");
+
+  const ok = await guarded.execute("2", { command: "readyai-db query --lang en" }, undefined, undefined, {});
+  assert.equal(ok.content[0].text, "ran readyai-db query --lang en");
+  assert.equal(inner, 1);
 });

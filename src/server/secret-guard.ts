@@ -100,6 +100,72 @@ export function buildBashSpawnHook(
   });
 }
 
+// ─────────────── L0 縱深：bash 命令圍欄（deny env 偵察）───────────────
+//
+// 定位：L2（Gondolin VM 硬邊界）在 Fly 無 nested KVM 缺席下的 in-process 縱深補強。
+// filterBashEnv 只讓 bash「子行程繼承的 env」不含機密，擋不住 bash 去讀「主行程」的
+// /proc/<pid>/environ，或用 printenv/env/declare 列舉。本圍欄補這一面：deny 已知 env
+// 偵察手法，抬高被 prompt injection 誘導撈 L-甲 機密的門檻。
+//
+// ⚠️ deny-list 本質：可被變數拼接（p=printenv; $p）、字元插入（prin''tenv）、動態路徑
+// （c=/proc/1/environ; cat $c）繞過。此為「抬高門檻」非「根治」——根治靠部署隔離
+// （L-甲 共用機密不進 preview 機）與 L2（VM）。
+
+// 讀行程 env/cmdline：任何命令含此路徑字面即擋（涵蓋 cat/strings/head/grep/od/重導向讀）。
+const PROC_RECON_RE = /\/proc\/(\d+|self|thread-self)\/(environ|cmdline)\b/;
+// printenv 列舉。
+const PRINTENV_RE = /\bprintenv\b/;
+// 印所有變數含值/名的 builtin。
+const DUMP_BUILTIN_RE = /\b(export\s+-p|declare\s+-p|typeset\s+-p|compgen\s+-v)\b/;
+
+const ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/** 以 shell 命令分隔符切「命令段」（近似，供裸 env/set 判斷）。 */
+function splitCommandSegments(command: string): string[] {
+  return command
+    .split(/\|\||&&|[|;&\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** 命令段是否為「裸 env 列舉」（env 後無要執行的命令，僅賦值/選項）。`env FOO=b cmd` 非列舉。 */
+function isBareEnvEnumeration(segment: string): boolean {
+  const tokens = segment.split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < tokens.length && ASSIGN_RE.test(tokens[i])) i++; // 跳過前置賦值
+  if (tokens[i] !== "env") return false;
+  i++;
+  while (i < tokens.length) {
+    const t = tokens[i];
+    if (ASSIGN_RE.test(t) || t.startsWith("-")) { i++; continue; } // env 的賦值/選項
+    return false; // 之後仍有要執行的命令 → env <cmd>，非列舉
+  }
+  return true; // env 後僅賦值/選項/空 → 列印環境
+}
+
+/** 命令段是否為「裸 set 列舉」（set 後無 -/+ 選項）。`set -e`/`set -o`/`set --` 非列舉。 */
+function isBareSetEnumeration(segment: string): boolean {
+  const tokens = segment.split(/\s+/).filter(Boolean);
+  if (tokens[0] !== "set") return false;
+  if (tokens.length === 1) return true;
+  return !/^[-+]/.test(tokens[1]);
+}
+
+/**
+ * bash 命令偵察圍欄：偵測 env/機密偵察手法回 block。定位見上方 block 註解——縱深、非根治。
+ */
+export function guardBashCommand(command: unknown): GuardVerdict {
+  if (typeof command !== "string" || command.length === 0) return { block: false };
+  if (PROC_RECON_RE.test(command)) return { block: true, reason: "proc environ/cmdline recon" };
+  if (PRINTENV_RE.test(command)) return { block: true, reason: "printenv enumeration" };
+  if (DUMP_BUILTIN_RE.test(command)) return { block: true, reason: "env dump builtin" };
+  for (const seg of splitCommandSegments(command)) {
+    if (isBareEnvEnumeration(seg)) return { block: true, reason: "env enumeration" };
+    if (isBareSetEnumeration(seg)) return { block: true, reason: "set enumeration" };
+  }
+  return { block: false };
+}
+
 // ───────────────────────── L1：read workspace 圍欄 ─────────────────────────
 
 // /proc/<pid>/environ、/proc/self/environ、/proc/thread-self/environ 一律擋（env 面備援）。
@@ -217,7 +283,40 @@ export function collectSecretValues(
   return vals.sort((a, b) => b.length - a.length);
 }
 
-/** 對單一字串做機密值替換。 */
+/**
+ * 把單一機密值展開成要遮蔽的變體：原值 ＋ base64 ＋ base64url ＋ hex。
+ * 擋「取得單一機密值後編碼」的繞過（如 echo $VALUE | base64）。
+ * ⚠️ 不擋「整段 /proc/environ 一次 base64」——整段編碼的位元組對齊使單值 base64 未必為其子字串；
+ * 那條靠 guardBashCommand 擋 /proc/<pid>/environ 讀取源頭（兩者互補）。
+ */
+export function secretValueVariants(value: string): string[] {
+  if (typeof value !== "string" || value.length === 0) return [value];
+  const buf = Buffer.from(value, "utf8");
+  const b64 = buf.toString("base64");
+  const b64url = b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const variants = [value, b64, buf.toString("hex")];
+  if (b64url !== b64) variants.push(b64url);
+  return variants;
+}
+
+/**
+ * 蒐集所有要遮蔽的字串：L-甲 值 ＋ 其編碼變體，去重、長度>=8、長值優先
+ * （避免短值是長值子字串時先破壞長值）。
+ */
+function collectRedactionTargets(
+  env: NodeJS.ProcessEnv,
+  keys: readonly string[],
+): string[] {
+  const seen = new Set<string>();
+  for (const v of collectSecretValues(env, keys)) {
+    for (const variant of secretValueVariants(v)) {
+      if (variant.length >= 8) seen.add(variant);
+    }
+  }
+  return [...seen].sort((a, b) => b.length - a.length);
+}
+
+/** 對單一字串做機密值替換（含編碼變體）。 */
 export function redactText(
   text: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -225,7 +324,7 @@ export function redactText(
 ): string {
   if (typeof text !== "string" || text.length === 0) return text;
   let t = text;
-  for (const v of collectSecretValues(env, keys)) {
+  for (const v of collectRedactionTargets(env, keys)) {
     if (t.includes(v)) t = t.split(v).join(REDACTION_PLACEHOLDER);
   }
   return t;
@@ -241,7 +340,7 @@ export function redactBlocks<T extends ContentBlockLike>(
   keys: readonly string[] = SECRET_ENV_KEYS,
 ): T[] | unknown {
   if (!Array.isArray(content)) return content;
-  const secrets = collectSecretValues(env, keys);
+  const secrets = collectRedactionTargets(env, keys);
   if (secrets.length === 0) return content;
   let changed = false;
   const out = content.map((b) => {
@@ -338,6 +437,32 @@ export function wrapToolWithRedaction<T extends ToolDefinitionLike>(
         return { ...result, content: redactBlocks(result.content, env, keys) };
       }
       return result;
+    },
+  };
+}
+
+/**
+ * 包 bash tool：execute 前先跑 guardBashCommand，偵察類命令回 block 訊息（isError）、不執行；
+ * 否則轉呼原 execute。定位為 L0 縱深（見 guardBashCommand 上方註解）——非根治、抬高門檻。
+ */
+export function wrapBashWithCommandGuard<T extends ToolDefinitionLike>(def: T): T {
+  return {
+    ...def,
+    execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+      const command = params ? (params as { command?: unknown }).command : undefined;
+      const verdict = guardBashCommand(command);
+      if (verdict.block) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `命令遭拒:疑似環境/機密偵察 (${verdict.reason})。客戶協作只需 readyai-* 工具，不需列舉環境變數或讀取機密檔。`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      return def.execute(toolCallId, params, signal, onUpdate, ctx);
     },
   };
 }

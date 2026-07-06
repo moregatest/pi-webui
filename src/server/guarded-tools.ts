@@ -10,7 +10,12 @@ import {
   createWriteToolDefinition,
   createEditToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { buildBashSpawnHook, wrapReadWithGuard, wrapToolWithRedaction } from "./secret-guard.js";
+import {
+  buildBashSpawnHook,
+  wrapReadWithGuard,
+  wrapToolWithRedaction,
+  wrapBashWithCommandGuard,
+} from "./secret-guard.js";
 
 // Sandbox 只取我們會用到的 operations 工廠（避免硬相依 sandbox.ts 型別）。
 interface SandboxOpsLike {
@@ -23,6 +28,7 @@ interface SandboxOpsLike {
 /**
  * sandbox 模式（customer / customer-open / 開發者+sandbox）的 read/write/edit/bash：
  *   L0 sandbox bash spawnHook 過 env 白名單（堵 per-exec options.env）＋注入 READYAI_SANDBOX_MODE=1；
+ *   L0 縱深 bash 命令圍欄（擋 printenv/env 列舉、/proc/<pid>/environ 讀取）；
  *   L1 read 邊界圍欄；L3 read/bash 輸出遮蔽。write/edit 走 VM operations（不需遮）。
  */
 export function buildSandboxGuardedTools(
@@ -44,23 +50,28 @@ export function buildSandboxGuardedTools(
     ),
     createWriteToolDefinition(cwd, { operations: sandbox.createWriteOperations() as any }),
     createEditToolDefinition(cwd, { operations: sandbox.createEditOperations() as any }),
-    wrapToolWithRedaction(
-      createBashToolDefinition(cwd, {
-        operations: sandbox.createBashOperations() as any,
-        spawnHook: spawnHook as any,
-      }) as any,
+    wrapBashWithCommandGuard(
+      wrapToolWithRedaction(
+        createBashToolDefinition(cwd, {
+          operations: sandbox.createBashOperations() as any,
+          spawnHook: spawnHook as any,
+        }) as any,
+      ),
     ),
   ];
 }
 
 /**
- * 開發者 / staff / brand 等非 sandbox、非 customer 模式：用同名 custom tool 覆蓋 builtin
- * read/bash（SDK: customTools 同名覆蓋 builtin），掛 in-process L0+L1+L3。write/edit 維持 builtin。
+ * 開發者 / staff / brand 等非 sandbox、非 customer 模式，及 Fly 無 KVM 下 customer-open 走
+ * --allow-unsafe-customer 繞過 L2 時：用同名 custom tool 覆蓋 builtin read/bash（SDK: customTools
+ * 同名覆蓋 builtin），掛 in-process L0（env 白名單＋縱深命令圍欄）+L1+L3。write/edit 維持 builtin。
  */
 export function buildHostGuardedTools(cwd: string, workspaceRoot: string): unknown[] {
   const spawnHook = buildBashSpawnHook({ sandbox: false });
   return [
     wrapToolWithRedaction(wrapReadWithGuard(createReadToolDefinition(cwd) as any, cwd, workspaceRoot)),
-    wrapToolWithRedaction(createBashToolDefinition(cwd, { spawnHook: spawnHook as any }) as any),
+    wrapBashWithCommandGuard(
+      wrapToolWithRedaction(createBashToolDefinition(cwd, { spawnHook: spawnHook as any }) as any),
+    ),
   ];
 }
