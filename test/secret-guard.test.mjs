@@ -421,3 +421,36 @@ test("L3: LITELLM_API_KEY 的 base64 變體也被遮", () => {
   const t = redactText(`enc=${b64}`, FAKE_ENV);
   assert.equal(t, `enc=${REDACTION_PLACEHOLDER}`);
 });
+
+// final review 缺口：上面兩組只驗過 redactText 純函式，沒走過 wrapToolWithRedaction
+// 這個真接點（送 model 前的實際攔截點）。比照 :358 的 wrapToolWithRedaction 範本，
+// 換 LITELLM_API_KEY 當唯一哨兵，證明 execute 回傳與 onUpdate 串流都真的被遮。
+test("wrapToolWithRedaction: LITELLM_API_KEY（per-preview virtual key）經真實 tool 執行路徑（送 model）被遮", async () => {
+  const captured = [];
+  const def = {
+    name: "bash",
+    execute: async (_id, _params, _sig, onUpdate) => {
+      onUpdate?.({
+        content: [{ type: "text", text: `streaming key=${FAKE_ENV.LITELLM_API_KEY}` }],
+      });
+      return {
+        content: [{ type: "text", text: `final key=${FAKE_ENV.LITELLM_API_KEY}` }],
+      };
+    },
+  };
+  const wrapped = wrapToolWithRedaction(def, { env: FAKE_ENV });
+  const res = await wrapped.execute(
+    "1",
+    {},
+    undefined,
+    (partial) => captured.push(partial),
+    {},
+  );
+  // 最終結果（送 model）已遮
+  assert.ok(res.content[0].text.includes(REDACTION_PLACEHOLDER));
+  assert.ok(!res.content[0].text.includes(FAKE_ENV.LITELLM_API_KEY));
+  // 串流 partial 已遮
+  assert.equal(captured.length, 1);
+  assert.ok(captured[0].content[0].text.includes(REDACTION_PLACEHOLDER));
+  assert.ok(!captured[0].content[0].text.includes(FAKE_ENV.LITELLM_API_KEY));
+});

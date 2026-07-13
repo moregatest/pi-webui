@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 process.env.OPENROUTER_API_KEY = "or-canary-abcdef123456";
 process.env.PC2_SERVICE_PWS = "pc2pws-canary-secret-000";
 process.env.PC2_API_TOKEN = "scoped-token-canary-999"; // L-乙：不該被遮
+process.env.LITELLM_API_KEY = "sk-litellm-sentinel-canary-abcdef123456"; // per-preview virtual key（PRD story 12）：送 client 前必遮
 
 const { filterEvent, parseUiProfile } = await import("../dist/server/ui-profile.js");
 
@@ -46,6 +47,26 @@ test("L3 client: tool_execution_end.result.content 遮 L-甲", () => {
   const text = r.event.result.content[0].text;
   assert.ok(text.includes("«REDACTED»"));
   assert.ok(!text.includes("pc2pws-canary-secret-000"));
+});
+
+// final review 缺口：LITELLM_API_KEY 之前只在 secret-guard.test.mjs 驗過 redactText /
+// SECRET_ENV_KEYS 純函式，沒走過送 client 的真接點 filterEvent。比照 :16 的
+// tool_execution_update 範本，換 LITELLM_API_KEY 當哨兵，證明串流事件送 client 前確實被遮。
+test("L3 client: tool_execution_update.partialResult.content 遮 LITELLM_API_KEY（per-preview virtual key）", () => {
+  const event = {
+    type: "tool_execution_update",
+    toolCallId: "t5",
+    toolName: "bash",
+    args: { command: "printenv" },
+    partialResult: {
+      content: [{ type: "text", text: "key=sk-litellm-sentinel-canary-abcdef123456" }],
+    },
+  };
+  const r = filterEvent(event, devProfile);
+  assert.equal(r.kind, "event");
+  const text = r.event.partialResult.content[0].text;
+  assert.ok(text.includes("«REDACTED»"), "LITELLM_API_KEY 值應被遮");
+  assert.ok(!text.includes("sk-litellm-sentinel-canary-abcdef123456"), "LITELLM_API_KEY 值不得外洩到 client");
 });
 
 test("L3 client: 無機密內容 → event 不變（no-op）", () => {
