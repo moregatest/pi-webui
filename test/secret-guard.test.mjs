@@ -37,6 +37,9 @@ const FAKE_ENV = {
   PC2_SERVICE_PWS: "pc2-master-pw-secret-xyz",
   R2_ACCESS_KEY_ID: "R2ACCESSKEYID000001",
   R2_SECRET_ACCESS_KEY: "R2SECRETACCESSKEY0000001",
+  // L-乙 但在 process.env（per-preview virtual key；PRD story 12：L3 要遮、L0 不放行）
+  LITELLM_API_KEY: "sk-litellm-virtual-abcdef123456",
+  LITELLM_BASE_URL: "http://readyai-litellm-proxy.internal:4001",
   // L-乙（走 workspace .env，不進 bash env）
   PC2_API_TOKEN: "scoped-token-abcdef123456",
   PC2_SERVICE_HOST: "https://pc2.example.com",
@@ -397,4 +400,24 @@ test("wrapBashWithCommandGuard: 偵察命令回 isError block、正當命令轉�
   const ok = await guarded.execute("2", { command: "readyai-db query --lang en" }, undefined, undefined, {});
   assert.equal(ok.content[0].text, "ran readyai-db query --lang en");
   assert.equal(inner, 1);
+});
+
+// ───────────────────────── LITELLM_API_KEY（per-preview virtual key）─────────────────────────
+
+test("L0: LITELLM_API_KEY / LITELLM_BASE_URL 不在 bash env 白名單", () => {
+  const out = filterBashEnv(FAKE_ENV);
+  assert.equal(out.LITELLM_API_KEY, undefined);
+  assert.equal(out.LITELLM_BASE_URL, undefined);
+});
+
+test("L3: SECRET_ENV_KEYS 含 LITELLM_API_KEY，值被遮", () => {
+  assert.ok(SECRET_ENV_KEYS.includes("LITELLM_API_KEY"));
+  const t = redactText("key=sk-litellm-virtual-abcdef123456", FAKE_ENV);
+  assert.equal(t, `key=${REDACTION_PLACEHOLDER}`);
+});
+
+test("L3: LITELLM_API_KEY 的 base64 變體也被遮", () => {
+  const b64 = Buffer.from(FAKE_ENV.LITELLM_API_KEY).toString("base64");
+  const t = redactText(`enc=${b64}`, FAKE_ENV);
+  assert.equal(t, `enc=${REDACTION_PLACEHOLDER}`);
 });

@@ -248,10 +248,13 @@ export function guardReadPath(
  * 遮蔽清單只含 L-甲共用機密（這些在 process.env、customer 不該見）。
  * L-乙（PC2_API_TOKEN 等）走 workspace .env、不在 process.env，process.env[k] 拿不到值故不列入
  * （半信任下 customer 本就能 cat 自己 workspace .env，遮之無安全意義）。
+ * 例外：LITELLM_API_KEY 雖屬 L-乙（per-preview virtual key），但啟動時走 process.env（見
+ * customer-policy.ts REQUIRED_CUSTOMER_ENV），process.env[k] 拿得到值，故仍列入遮蔽。
  * 與 readyAI SECRET_KEY_PATTERN 同源；readyAI 新增機密 pattern 時同步這裡。
  */
 export const SECRET_ENV_KEYS: readonly string[] = [
-  "OPENROUTER_API_KEY",
+  "OPENROUTER_API_KEY",   // 過渡期：未遷移舊 preview 仍有，保留遮蔽
+  "LITELLM_API_KEY",      // L-乙 per-preview virtual key，但走 process.env，L3 遮得到（PRD #1 story 12）
   "PI_WEBUI_PASSWORD",
   "PC2_SERVICE_PWS",
   "R2_ACCESS_KEY_ID",

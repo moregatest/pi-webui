@@ -17,6 +17,8 @@ const SERVER = path.join(__dirname, "..", "dist", "server", "index.js");
 
 // OPENROUTER_API_KEY 哨兵值：用於偵測 key 是否洩漏給 client
 const SENTINEL_API_KEY = "SENTINEL_LEAK_CANARY_abc123";
+// LITELLM_API_KEY 哨兵值：per-preview virtual key，同樣偵測是否洩漏給 client（PRD story 12/14）
+const LITELLM_SENTINEL = "SENTINEL_litellm_virtual_key_0123456789";
 const CUSTOMER_PW = "customer-sec-test-pw";
 
 // 建立暫時工作目錄
@@ -41,7 +43,7 @@ function startServer(cwd, extraEnv = {}) {
           PI_WEBUI_MODEL: "dummy-model",
           OPENROUTER_API_KEY: SENTINEL_API_KEY,
           LITELLM_BASE_URL: "http://litellm.test.internal:4001",
-          LITELLM_API_KEY: "dummy-litellm-virtual-key",
+          LITELLM_API_KEY: LITELLM_SENTINEL,
           PC2_SERVICE_HOST: "http://localhost:9999",
           PC2_API_TOKEN: "dummy-token",
           PI_WEBUI_BASE_PATH: "/webui",
@@ -172,6 +174,12 @@ test("客戶模式：bash 訊息被閘門拒絕，API key 不洩漏", async (t) 
     !connectedStr.includes(SENTINEL_API_KEY),
     `connected payload 不應含 sentinel key，但收到：${connectedStr.slice(0, 500)}`,
   );
+  // 比照上方：litellm virtual key 同樣不該在 connected payload 出現
+  // （connected payload 靠 SCRUB_KEYS 建構端排除、不經 redactBlocks，SECRET_ENV_KEYS 對它無防護力，只能靠這裡的斷言抓回歸）
+  assert.ok(
+    !connectedStr.includes(LITELLM_SENTINEL),
+    `connected payload 不應含 litellm virtual key sentinel，但收到：${connectedStr.slice(0, 500)}`,
+  );
 
   // 送 bash 訊息（真實 inbound shape：type="bash", command=<指令>）
   const { packets, response } = await sendAndCollect(ws, {
@@ -189,6 +197,11 @@ test("客戶模式：bash 訊息被閘門拒絕，API key 不洩漏", async (t) 
   assert.ok(
     !allStr.includes(SENTINEL_API_KEY),
     `WS 訊息中出現了 sentinel API key（洩漏！）：${allStr.slice(0, 500)}`,
+  );
+  // 比照上面 OPENROUTER 哨兵斷言：litellm virtual key 同樣不得出現在任何收到的 WS 訊息中
+  assert.ok(
+    !allStr.includes(LITELLM_SENTINEL),
+    `WS 訊息中出現了 litellm virtual key sentinel（洩漏！）：${allStr.slice(0, 500)}`,
   );
 });
 
@@ -447,5 +460,10 @@ test("客戶模式：connected payload scrub（model/agentDir/sessionDir/homeDir
   assert.ok(
     !JSON.stringify(connectedPayload).includes(SENTINEL_API_KEY),
     "connected payload 不應含 sentinel API key",
+  );
+  // 比照上方：litellm virtual key 同樣不該在 connected payload 出現
+  assert.ok(
+    !JSON.stringify(connectedPayload).includes(LITELLM_SENTINEL),
+    "connected payload 不應含 litellm virtual key sentinel",
   );
 });
