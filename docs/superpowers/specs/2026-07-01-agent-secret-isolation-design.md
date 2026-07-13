@@ -348,6 +348,8 @@ readyAI customer 技能是 **bash 直呼 CLI**、走 `load_env_with_fallback()`�
 
 ### 已接受殘餘風險（待選項 A 根治）
 
+> **✅ 2026-07-13 選項 A 已落地**：preview 改走 per-preview litellm virtual key（設計見 readyai-fly-services `docs/superpowers/specs/2026-07-13-litellm-phase2-preview-landing-design.md`；readyAI `c8659e5..0af1e89` 串、pi-webui `1763a71`+`4a5e0ad`）。`OPENROUTER_API_KEY` 已撤出 preview 機（chinyenlabeler E2E 實測：machine secrets 無此鍵、agent bash 層三憑證 absent、key 綁 `models=["readyai"]`+budget 20/soft 5、R2 對話 log 按站分帳），本段殘餘鏈的「波及全體」已消解——leaked virtual key 僅單站、限額、私網才可達、可獨立作廢。以下原文保留為歷史脈絡。
+
 `OPENROUTER_API_KEY`（或等價 LLM 憑證）**趕不出機器**（agent 要呼叫 LLM），且為**跨站共用一把**。customer 技能**會爬站外內容＋收 PDF**→ 間接 prompt injection 是**真實觸發面**（非理論）。故存殘餘鏈：injection →`cat /proc/<主行程>/environ`（變數拼接繞命令圍欄）→ 整段編碼繞 L3 → LLM key 外洩、**波及全體 preview**。損害限 LLM 額度、可 rotate。
 
 **根治方向（選項 A，未落地）**：LLM 走 per-preview proxy token（該站額度上限、獨立 rotate），把 `OPENROUTER_API_KEY` 從 L-甲 降級為 L-乙/L-丙。做完，本殘餘鏈的「波及全體」即消解。在此之前，此為**明示接受**的殘餘風險。
