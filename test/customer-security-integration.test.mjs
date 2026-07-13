@@ -40,6 +40,8 @@ function startServer(cwd, extraEnv = {}) {
           PI_WEBUI_PASSWORD: CUSTOMER_PW,
           PI_WEBUI_MODEL: "dummy-model",
           OPENROUTER_API_KEY: SENTINEL_API_KEY,
+          LITELLM_BASE_URL: "http://litellm.test.internal:4001",
+          LITELLM_API_KEY: "dummy-litellm-virtual-key",
           PC2_SERVICE_HOST: "http://localhost:9999",
           PC2_API_TOKEN: "dummy-token",
           PI_WEBUI_BASE_PATH: "/webui",

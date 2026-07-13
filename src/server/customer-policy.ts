@@ -70,7 +70,7 @@ export function customerOpenSkillGuardWarning(
 }
 
 const REQUIRED_CUSTOMER_ENV = [
-  "PI_WEBUI_PASSWORD", "PI_WEBUI_MODEL", "OPENROUTER_API_KEY",
+  "PI_WEBUI_PASSWORD", "PI_WEBUI_MODEL", "LITELLM_BASE_URL", "LITELLM_API_KEY",
   "PC2_SERVICE_HOST", "PC2_API_TOKEN", "PI_WEBUI_BASE_PATH", "PI_PROJECT_CWD",
 ];
 /** customer 模式啟動前必備 env；回缺漏清單（非 customer 回空，不強制）。 */

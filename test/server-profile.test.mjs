@@ -164,7 +164,9 @@ test("--profile customer 無檔走內建 fallback", async (t) => {
   // --allow-unsafe-customer：本測試驗 profile fallback 與 uiProfile，CI 無 QEMU，需繞過
   // L2 的 effective-sandbox 要求（spec 2026-07-01）。
   const { child, url } = await startServer(cwd, ["--profile", "customer", "--allow-unsafe-customer"], {
-    PI_WEBUI_PASSWORD: CUSTOMER_PW, PI_WEBUI_MODEL: "m", OPENROUTER_API_KEY: "k",
+    PI_WEBUI_PASSWORD: CUSTOMER_PW, PI_WEBUI_MODEL: "m",
+    LITELLM_BASE_URL: "http://litellm.test.internal:4001",
+    LITELLM_API_KEY: "dummy-litellm-virtual-key",
     PC2_SERVICE_HOST: "h", PC2_API_TOKEN: "t", PI_WEBUI_BASE_PATH: "/webui", PI_PROJECT_CWD: cwd,
   });
   try {
