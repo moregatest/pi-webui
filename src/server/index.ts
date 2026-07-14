@@ -85,6 +85,7 @@ import {
 } from "./upload-config.js";
 import type { EffectiveUploadConfig } from "./upload-config.js";
 import { mkdirSync, createWriteStream, unlinkSync } from "node:fs";
+import { findFailedTurn, scrubTurnError } from "./turn-error.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -1804,6 +1805,7 @@ class NativePiSessionController {
     this.lastSelfActivity = 0;
     this.refreshTimer = undefined;
     this.refreshing = false;
+    this.lastReportedTurnError = null;
     this.eventLog = createEventLog();
     this.extUi = createExtUiBridge({
       send: (msg) => sendJson(this.ws, msg),
@@ -1928,6 +1930,25 @@ class NativePiSessionController {
     // it, so drop those events from the buffer.
     if (event.type === "agent_end") {
       this.eventLog.trimSettled();
+      this.reportFailedTurn();
+    }
+  }
+
+  // turn error → GlitchTip（preload 已 init 才有 global；監控失敗不影響宿主）
+  reportFailedTurn() {
+    try {
+      const Sentry = globalThis.__glitchtip_sentry;
+      if (!Sentry) return;
+      const failed = findFailedTurn(this.session?.messages || []);
+      if (!failed) return;
+      if (this.lastReportedTurnError === failed.message) return; // 同訊息去重
+      this.lastReportedTurnError = failed.message;
+      Sentry.captureException(new Error(`[turn-error] ${scrubTurnError(failed.message)}`), {
+        tags: { source: "turn-error" },
+        extra: { sessionId: this.runtime?.session?.sessionId },
+      });
+    } catch {
+      /* 監控不影響宿主 */
     }
   }
 
