@@ -2307,20 +2307,25 @@ class NativePiSessionController {
       // reconnect guard 判定抽到 session-guard.ts(純函式 shouldResumeStoredSession)。
       // 這裡只做 IO:讀 stored session 的 header cwd、canonicalize 路徑、算出對應 session 目錄。
       // 兩邊路徑都先 canonicalize 再比對,消滅 macOS /tmp→/private/tmp 的 symlink 誤判(D5)。
-      const sessionCwd = readSessionCwdSync(sessionFile);
+      // issue #5:先確認檔案存在,再讀 header cwd。不存在的 stale 檔一律不 resume,
+      // 否則 switchSession 會把 cwd fallback 到 process.cwd()(sandbox 下 bash 全掛)。
+      const sessionFileExists = existsSync(sessionFile);
+      const sessionCwd = sessionFileExists ? readSessionCwdSync(sessionFile) : null;
       const resolvedDir = canonicalize(
         resolveSessionDir(sessionCwd || this.cwd, { cliSessionDir, envSessionDir }),
       );
       const decision = shouldResumeStoredSession({
         requestedSessionFile: canonicalize(sessionFile),
+        sessionFileExists,
         sessionCwd,
         resolvedSessionDir: resolvedDir,
         sandboxEnabled: sandboxEnabled && !!sandbox,
         sandboxWorkspaceRoot: sandbox?.workspaceRoot ?? null,
       });
       if (!decision.resume) {
-        // 不接受(跨 sandbox workspace / 不在 project session 目錄內):不 switchSession,
-        // 直接 reset bootstrap 讓 client 用 server 端啟動時的 session。
+        // 不接受(檔不存在 / 跨 sandbox workspace / cwd 無法確認 / 不在 project session
+        // 目錄內):不 switchSession,直接 reset bootstrap 讓 client 用 server 端啟動時的
+        // session(維持 appCwd,不會掉回 process.cwd())。
         logger.info("ignoring stored session", { sessionFile, sessionCwd, reason: decision.reason });
         await this.sendBootstrap({ reset: true });
         return;
@@ -2330,7 +2335,11 @@ class NativePiSessionController {
         const switched = await this.runtime.switchSession(sessionFile);
         if (!switched?.cancelled) {
           await this.bindSession();
-          this.cwd = this.runtime.cwd; // P1:resume 後同步 controller cwd
+          // P1:resume 後同步 controller cwd。issue #5 期望2:cwd 絕不掉回 process.cwd();
+          // resume 存在檔正常帶 header cwd,但萬一 runtime 仍 fallback 到啟動目錄,
+          // 用 appCwd(= PI_PROJECT_CWD / sandbox workspaceRoot)兜底,永不用 process.cwd()。
+          const resumedCwd = this.runtime.cwd;
+          this.cwd = (resumedCwd && resumedCwd !== process.cwd()) ? resumedCwd : appCwd;
         }
       } catch (error) {
         logger.warn("client requested session unavailable", {

@@ -11,6 +11,7 @@ const OUT_DIR = "/other/.pi/sessions/1700000000_abc.jsonl";
 function input(overrides = {}) {
   return {
     requestedSessionFile: IN_DIR,
+    sessionFileExists: true,
     sessionCwd: "/ws",
     resolvedSessionDir: SESSION_DIR,
     sandboxEnabled: false,
@@ -72,20 +73,52 @@ test("shouldResumeStoredSession: sandboxEnabled 但 workspaceRoot=null → 略�
   assert.deepEqual(d, { resume: false, reason: "outside-session-dir" });
 });
 
-// ---- #5 已知洞(characterization,非期望行為)----
-// sandbox 下 client 帶 stale/missing session 檔時 readSessionCwdSync 回 null,
-// 使「跨 workspace」檢查因 `sessionCwd &&` 短路而被跳過;只要 stale 檔路徑仍落在
-// session 目錄內(例:rm 掉 <ws>/.pi/sessions/*.jsonl 後路徑前綴仍在該目錄),就會
-// resume=true → switchSession(missing) → cwd 掉回 process.cwd()(見 GitHub issue #5)。
-// 這裡固定「現況」以防意外變動;#5 修正後(resume 前補 existsSync gate)應改為 false。
-test("shouldResumeStoredSession: [#5 現況] sandbox + sessionCwd=null(missing 檔)+ 路徑在目錄內 → 目前仍 resume=true", () => {
+// ---- #5 修正:missing 檔一律不 resume(期望1) ----
+// stale/missing session 檔(client localStorage 指向已 rm / 換過 session-dir 的舊檔)
+// 若 resume,switchSession 會把 cwd fallback 到 process.cwd()(server 啟動目錄),
+// sandbox 下 bash 全回 "Path outside workspace"。故 sessionFileExists=false 一律擋,
+// 不管是否 sandbox、路徑是否在目錄內。
+
+test("shouldResumeStoredSession: [#5] missing 檔(sessionFileExists=false) → missing-file / 不 resume(非 sandbox)", () => {
+  const d = shouldResumeStoredSession(
+    input({ sessionFileExists: false, sessionCwd: null, requestedSessionFile: IN_DIR }),
+  );
+  assert.deepEqual(d, { resume: false, reason: "missing-file" });
+});
+
+test("shouldResumeStoredSession: [#5] missing 檔 + sandbox → missing-file(先於 sandbox 判定)", () => {
   const d = shouldResumeStoredSession(
     input({
+      sessionFileExists: false,
       sandboxEnabled: true,
       sandboxWorkspaceRoot: "/ws",
       sessionCwd: null,
       requestedSessionFile: IN_DIR,
     }),
+  );
+  assert.deepEqual(d, { resume: false, reason: "missing-file" });
+});
+
+// ---- #5 期望3:sandbox 下 sessionCwd 讀不到(檔在但 header 壞/無 cwd)也拒絕 ----
+// sandbox 無法確認 session 屬於 mount 的 workspace 就不 resume,避免 cwd 誤落 workspace 外。
+test("shouldResumeStoredSession: [#5] sandbox + 檔存在但 sessionCwd=null → sandbox-unverifiable-cwd", () => {
+  const d = shouldResumeStoredSession(
+    input({
+      sessionFileExists: true,
+      sandboxEnabled: true,
+      sandboxWorkspaceRoot: "/ws",
+      sessionCwd: null,
+      requestedSessionFile: IN_DIR,
+    }),
+  );
+  assert.deepEqual(d, { resume: false, reason: "sandbox-unverifiable-cwd" });
+});
+
+// 非 sandbox + 檔存在但 sessionCwd=null:無 workspace 限制,落到目錄判定(檔在目錄內 → ok,
+// cwd 由 caller fallback 到 appCwd)。
+test("shouldResumeStoredSession: 非 sandbox + 檔存在 + sessionCwd=null + 在目錄內 → ok", () => {
+  const d = shouldResumeStoredSession(
+    input({ sessionFileExists: true, sessionCwd: null, requestedSessionFile: IN_DIR }),
   );
   assert.deepEqual(d, { resume: true, reason: "ok" });
 });

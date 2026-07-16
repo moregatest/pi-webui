@@ -10,6 +10,9 @@ import { isWithinSessionDir } from "./session-dir.js";
 export interface ResumeGuardInput {
   // client 要求 resume 的 session 檔(已由 caller canonicalize);falsy 代表沒帶。
   requestedSessionFile: string | null | undefined;
+  // 檔案是否存在且可讀(caller 以 existsSync 判)。false 代表 client 帶的是 stale/missing
+  // 檔(localStorage 指向已 rm / 換過 session-dir 的舊 session)—— issue #5。
+  sessionFileExists: boolean;
   // 從 session header 讀出的 cwd;讀不到(檔案不存在/壞檔)時為 null。
   sessionCwd: string | null;
   // 依 sessionCwd(或 fallback cwd)算出、已 canonicalize 的 session 目錄。
@@ -22,7 +25,9 @@ export interface ResumeGuardInput {
 
 export type ResumeGuardReason =
   | "no-session-file"
+  | "missing-file"
   | "sandbox-cross-workspace"
+  | "sandbox-unverifiable-cwd"
   | "outside-session-dir"
   | "ok";
 
@@ -33,12 +38,20 @@ export interface ResumeGuardDecision {
 
 // 回 { resume:true } 才應 switchSession;resume:false 一律「不切、改走 bootstrap reset」。
 export function shouldResumeStoredSession(input: ResumeGuardInput): ResumeGuardDecision {
-  const { requestedSessionFile, sessionCwd, resolvedSessionDir, sandboxEnabled, sandboxWorkspaceRoot } = input;
+  const { requestedSessionFile, sessionFileExists, sessionCwd, resolvedSessionDir, sandboxEnabled, sandboxWorkspaceRoot } = input;
   if (!requestedSessionFile) return { resume: false, reason: "no-session-file" };
-  // sandbox:workspace 被 mount 鎖死,跨 workspace 的 session resume 一律拒絕,
-  // 否則 read/write/bash 工具會踩到 workspace 邊界被擋。
+  // issue #5:client 帶的 stale/missing 檔一律不 resume。switchSession 對不存在的檔會把
+  // session cwd fallback 到 server 的 process.cwd()(啟動目錄),sandbox 下 bash tool 的
+  // cwd 因此落在 mount workspace 外,每個指令都回 "Path outside workspace"。這道 gate
+  // 先於 sandbox / 目錄判定,涵蓋「檔不存在」的所有情境。
+  if (!sessionFileExists) return { resume: false, reason: "missing-file" };
+  // sandbox:workspace 被 mount 鎖死,必須能確認 session 屬於該 workspace 才 resume。
   if (sandboxEnabled && sandboxWorkspaceRoot) {
-    if (sessionCwd && resolve(sessionCwd) !== resolve(sandboxWorkspaceRoot)) {
+    // sessionCwd 讀不到(檔在但 header 壞/無 cwd):無法確認 workspace 歸屬 → 拒絕
+    // (期望3;否則走 resolvedSessionDir=fallback cwd 的目錄判定,可能誤放行)。
+    if (!sessionCwd) return { resume: false, reason: "sandbox-unverifiable-cwd" };
+    // 跨 workspace:read/write/bash 會踩到 workspace 邊界被擋 → 拒絕。
+    if (resolve(sessionCwd) !== resolve(sandboxWorkspaceRoot)) {
       return { resume: false, reason: "sandbox-cross-workspace" };
     }
   }
