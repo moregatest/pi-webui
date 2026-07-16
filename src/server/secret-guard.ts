@@ -113,6 +113,9 @@ export function buildBashSpawnHook(
 
 // 讀行程 env/cmdline：任何命令含此路徑字面即擋（涵蓋 cat/strings/head/grep/od/重導向讀）。
 const PROC_RECON_RE = /\/proc\/(\d+|self|thread-self)\/(environ|cmdline)\b/;
+// 讀 workspace .env（含 PC2_API_TOKEN）：命令含 .env / .env.<x> 字面即擋（縱深，主防線在 L1 read 圍欄）。
+// 排除範例檔（.env.example/.sample/.tpl/.dist）——慣例為假值、正當操作可能參照。
+const DOTENV_RECON_RE = /(^|[\s'"/=(])\.env(\.(?!example|sample|tpl|dist|md)[A-Za-z0-9_]+)?(?![\w.])/;
 // printenv 列舉。
 const PRINTENV_RE = /\bprintenv\b/;
 // 印所有變數含值/名的 builtin。
@@ -157,6 +160,7 @@ function isBareSetEnumeration(segment: string): boolean {
 export function guardBashCommand(command: unknown): GuardVerdict {
   if (typeof command !== "string" || command.length === 0) return { block: false };
   if (PROC_RECON_RE.test(command)) return { block: true, reason: "proc environ/cmdline recon" };
+  if (DOTENV_RECON_RE.test(command)) return { block: true, reason: ".env recon (含 workspace token)" };
   if (PRINTENV_RE.test(command)) return { block: true, reason: "printenv enumeration" };
   if (DUMP_BUILTIN_RE.test(command)) return { block: true, reason: "env dump builtin" };
   for (const seg of splitCommandSegments(command)) {
@@ -170,6 +174,10 @@ export function guardBashCommand(command: unknown): GuardVerdict {
 
 // /proc/<pid>/environ、/proc/self/environ、/proc/thread-self/environ 一律擋（env 面備援）。
 const PROC_ENVIRON_RE = /^\/proc\/(\d+|self|thread-self)\/environ$/;
+
+// workspace 內 .env 家族一律擋（含 PC2_API_TOKEN，客戶取得＝繞過協作介面直打站台 API）。
+// 排除範例檔（.env.example/.sample/.tpl/.dist——慣例假值）。basename 比對。
+const DOTENV_BASENAME_RE = /^\.env(\.(?!example$|sample$|tpl$|dist$)[A-Za-z0-9_]+)?$/;
 
 export interface GuardReadOptions {
   /** 額外放行的暫存目錄（預設 process.env.TMPDIR）；傳 null 明確關閉。 */
@@ -218,6 +226,8 @@ export function guardReadPath(
   const real = resolveRealForGuard(cwd, target);
   if (real === null) return { block: true, reason: "unresolvable path" };
   if (PROC_ENVIRON_RE.test(real)) return { block: true, reason: "proc environ" };
+  // .env 家族即使落在 workspace 內也擋（token 外洩缺口）——放在 workspace 邊界放行之前。
+  if (DOTENV_BASENAME_RE.test(path.basename(real))) return { block: true, reason: ".env（含 workspace token）" };
 
   let root: string;
   try {

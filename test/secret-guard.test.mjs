@@ -150,6 +150,15 @@ test("guardBashCommand: env 偵察命令一律 block（縱深、抬高門檻）"
     "typeset -p",
     "compgen -v",
     "set",
+    // .env 讀取（含 workspace token）——縱深補強
+    "cat .env",
+    "cat ./.env",
+    "grep PC2_API_TOKEN .env",
+    "head -c 200 .env",
+    "cat /var/www/html/customer-project/x.com/.env",
+    "cat .env.local",
+    "source .env",
+    "xargs < .env",
   ];
   for (const cmd of recon) {
     assert.equal(guardBashCommand(cmd).block, true, `應 block: ${cmd}`);
@@ -175,6 +184,10 @@ test("guardBashCommand: 正當 customer 協作命令放行（不誤傷）", () =
     "grep environ ./notes.md", // 字面 environ、非 /proc
     "echo hello",
     "printf '%s' done",
+    "cat .env.example", // 範例檔（假值）放行
+    "cat .env.tpl", // 模板檔放行
+    "readyai-db query --env prod", // --env 選項非 .env 檔
+    "cat environment.md", // environment 非 .env
   ];
   for (const cmd of ok) {
     assert.equal(guardBashCommand(cmd).block, false, `不該 block: ${cmd}`);
@@ -191,7 +204,10 @@ test("L1: read 圍欄 — workspace 內放行、外部/proc/symlink 擋", () => 
     fs.writeFileSync(path.join(realRoot, "app.js"), "x");
     fs.mkdirSync(path.join(realRoot, "sub"));
     fs.writeFileSync(path.join(realRoot, "sub", "b.txt"), "y");
-    fs.writeFileSync(path.join(realRoot, ".env"), "PC2_API_TOKEN=scoped"); // workspace 自身 .env 應放行
+    fs.writeFileSync(path.join(realRoot, ".env"), "PC2_API_TOKEN=scoped"); // workspace 自身 .env：改為擋（token 外洩缺口）
+    fs.writeFileSync(path.join(realRoot, ".env.local"), "X=1"); // .env* 家族一併擋
+    fs.mkdirSync(path.join(realRoot, "sub2"));
+    fs.writeFileSync(path.join(realRoot, "sub2", ".env"), "Y=1"); // 子目錄 .env 也擋
     const secret = path.join(fs.realpathSync(outside), "id_rsa");
     fs.writeFileSync(secret, "PRIVATE");
 
@@ -204,7 +220,9 @@ test("L1: read 圍欄 — workspace 內放行、外部/proc/symlink 擋", () => 
     // workspace 內
     assert.equal(guardReadPath(realRoot, realRoot, "app.js").block, false);
     assert.equal(guardReadPath(realRoot, realRoot, "sub/b.txt").block, false);
-    assert.equal(guardReadPath(realRoot, realRoot, ".env").block, false, "workspace 自身 .env（L-乙）放行");
+    assert.equal(guardReadPath(realRoot, realRoot, ".env").block, true, "workspace 自身 .env 擋（含 PC2_API_TOKEN，客戶取得＝繞過協作介面直打 API）");
+    assert.equal(guardReadPath(realRoot, realRoot, ".env.local").block, true, ".env* 家族一併擋");
+    assert.equal(guardReadPath(realRoot, realRoot, "sub2/.env").block, true, "子目錄 .env 也擋");
     assert.equal(guardReadPath(realRoot, realRoot, realRoot).block, false);
 
     // workspace 外（絕對路徑；隔離 TMPDIR 例外）
