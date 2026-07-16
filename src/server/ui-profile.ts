@@ -340,6 +340,24 @@ function redactAssistantMessageEvent(ame: any, profile: UiProfile): any {
   return out;
 }
 
+// message_update 以外、仍挾帶完整訊息的 event(message_start/message_end/turn_end/
+// agent_end…):它們的 event.message.content(單則)/ event.messages[](陣列快照)同樣含
+// thinking / tool block。只過濾 message_update 會漏(e2e 實測 message_end/turn_end/agent_end
+// 三種都洩漏 thinking 全文)。單則走 redactAssistantMessage 剝 block;陣列走 filterMessageHistory
+// (drop toolResult/bashExecution role + 剝 block)。無變動時回原 event。
+function redactEventMessages(event: any, profile: UiProfile): any {
+  let out = event;
+  if (out.message && typeof out.message === "object" && Array.isArray(out.message.content)) {
+    const red = redactAssistantMessage(out.message, profile);
+    if (red !== out.message) out = { ...out, message: red };
+  }
+  if (Array.isArray(out.messages)) {
+    const red = filterMessageHistory(out.messages, profile);
+    if (red !== out.messages) out = { ...out, messages: red };
+  }
+  return out;
+}
+
 export function filterEvent(event: any, profile: UiProfile): FilterResult {
   if (!event || typeof event !== "object") return { kind: "event", event };
 
@@ -405,6 +423,13 @@ export function filterEvent(event: any, profile: UiProfile): FilterResult {
       if (redAme !== ame) outEvent = { ...outEvent, assistantMessageEvent: redAme };
     }
     return { kind: "event", event: outEvent };
+  }
+
+  // message_update / tool_execution_* 以外、仍帶 message / messages 的 event
+  // (message_start/message_end/turn_end/agent_end…)也要剝挾帶的 thinking / tool block。
+  if (profile.hideThinking || profile.hideToolCalls) {
+    const red = redactEventMessages(event, profile);
+    if (red !== event) return { kind: "event", event: red };
   }
 
   return { kind: "event", event };

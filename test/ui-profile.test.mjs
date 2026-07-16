@@ -549,6 +549,54 @@ test("filterEvent: 只 hideThinking 時 toolcall_delta 不 drop,但其 partial t
   assert.deepEqual(r.event.assistantMessageEvent.partial.content, [{ type: "toolCall", name: "bash" }]);
 });
 
+//
+// filterEvent - message_end / turn_end / agent_end 的 message/messages 剝除
+// (§四-1 e2e 抓到:只過濾 message_update 會漏這幾個 turn-結束事件挾帶的完整訊息)
+//
+
+test("filterEvent: hideThinking → message_end 的 message.content 剝 thinking", () => {
+  const p = parseUiProfile({ hideThinking: true }, {});
+  const e = { type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "secret" }, { type: "text", text: "ok" }] } };
+  const r = filterEvent(e, p);
+  assert.deepEqual(r.event.message.content, [{ type: "text", text: "ok" }]);
+  assert.equal(e.message.content.length, 2, "原物件不被改動");
+});
+
+test("filterEvent: hideToolCalls → turn_end 的 message.content 剝 toolCall", () => {
+  const p = parseUiProfile({ hideToolCalls: true }, {});
+  const e = { type: "turn_end", message: { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: {} }, { type: "text", text: "done" }] } };
+  const r = filterEvent(e, p);
+  assert.deepEqual(r.event.message.content, [{ type: "text", text: "done" }]);
+});
+
+test("filterEvent: customer preset → agent_end 的 messages[] 剝 thinking/tool + drop toolResult role", () => {
+  const p = parseUiProfile({ uiProfile: "customer" }, {});
+  const e = {
+    type: "agent_end",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "hi" }] },
+      { role: "assistant", content: [{ type: "thinking", thinking: "s" }, { type: "toolCall", name: "bash" }, { type: "text", text: "a" }] },
+      { role: "toolResult", toolName: "bash", content: "SECRET_OUT" },
+    ],
+  };
+  const r = filterEvent(e, p);
+  assert.equal(r.event.messages.length, 2, "toolResult role 整則 drop");
+  assert.deepEqual(r.event.messages[1].content, [{ type: "text", text: "a" }]);
+  // 原始 tool 輸出不得殘留在任一則
+  assert.ok(!JSON.stringify(r.event.messages).includes("SECRET_OUT"));
+});
+
+test("filterEvent: 無 hide flag → message_end / agent_end pass-through 原 event", () => {
+  const p = parseUiProfile({}, {});
+  for (const e of [
+    { type: "message_end", message: { content: [{ type: "thinking", thinking: "x" }] } },
+    { type: "agent_end", messages: [{ role: "assistant", content: [{ type: "thinking", thinking: "x" }] }] },
+  ]) {
+    const r = filterEvent(e, p);
+    assert.equal(r.event, e);
+  }
+});
+
 test("filterEvent: agent_start / compaction_* / extension_error / auto_retry_start 全 pass-through", () => {
   const p = parseUiProfile({ uiProfile: "customer" }, {});
   const events = [
