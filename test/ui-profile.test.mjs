@@ -165,6 +165,87 @@ test("parseUiProfile: --brand-logo 指向目錄 → throw", () => {
 });
 
 //
+// parseUiProfile - brand favicon(需求2)
+//
+
+test("parseUiProfile: 預設 faviconPath 為 null", () => {
+  const p = parseUiProfile({}, {});
+  assert.equal(p.brand.faviconPath, null);
+});
+
+test("parseUiProfile: --brand-favicon 檔案存在 → 設定 faviconPath", () => {
+  const tmp = makeTmp();
+  try {
+    const fav = join(tmp, "fav.svg");
+    writeFileSync(fav, "<svg/>");
+    const p = parseUiProfile({ brandFavicon: fav }, {});
+    assert.equal(p.brand.faviconPath, fav);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseUiProfile: PI_WEBUI_BRAND_FAVICON env 等效", () => {
+  const tmp = makeTmp();
+  try {
+    const fav = join(tmp, "fav.png");
+    writeFileSync(fav, "x");
+    const p = parseUiProfile({}, { PI_WEBUI_BRAND_FAVICON: fav });
+    assert.equal(p.brand.faviconPath, fav);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseUiProfile: --brand-favicon 檔案不存在 → throw", () => {
+  assert.throws(
+    () => parseUiProfile({ brandFavicon: "/tmp/definitely-not-real-favicon.svg" }, {}),
+    /file not found/,
+  );
+});
+
+test("parseUiProfile: profileFile.brand.favicon → faviconPath", () => {
+  const p = parseUiProfile({}, {}, { brand: { favicon: "./assets/fav.svg" } });
+  assert.equal(p.brand.faviconPath, "./assets/fav.svg");
+});
+
+//
+// parseUiProfile - chat_layout(需求3)
+//
+
+test("parseUiProfile: 預設 chatLayout 為 'log'", () => {
+  const p = parseUiProfile({}, {});
+  assert.equal(p.chatLayout, "log");
+});
+
+test("parseUiProfile: customer preset → chatLayout 'bubble'", () => {
+  const p = parseUiProfile({ uiProfile: "customer" }, {});
+  assert.equal(p.chatLayout, "bubble");
+});
+
+test("parseUiProfile: profileFile.ui.chat_layout 套用", () => {
+  const p = parseUiProfile({}, {}, { ui: { chat_layout: "bubble" } });
+  assert.equal(p.chatLayout, "bubble");
+});
+
+test("parseUiProfile: --chat-layout CLI 勝過 profileFile", () => {
+  const p = parseUiProfile({ chatLayout: "log" }, {}, { ui: { chat_layout: "bubble" } });
+  assert.equal(p.chatLayout, "log");
+});
+
+test("parseUiProfile: PI_WEBUI_CHAT_LAYOUT env 套用", () => {
+  const p = parseUiProfile({}, { PI_WEBUI_CHAT_LAYOUT: "bubble" });
+  assert.equal(p.chatLayout, "bubble");
+});
+
+test("parseUiProfile: --chat-layout 非法值 → throw", () => {
+  assert.throws(
+    () => parseUiProfile({ chatLayout: "fancy" }, {}),
+    /must be "bubble" or "log"/,
+  );
+});
+
+//
 // filterEvent - 非客戶模式 pass-through
 //
 
@@ -315,6 +396,157 @@ test("filterEvent: message_update 但 content 不是陣列 → pass-through", ()
   const e = { type: "message_update", message: {} };
   const r = filterEvent(e, p);
   assert.deepEqual(r, { kind: "event", event: e });
+});
+
+//
+// filterEvent - message_update.assistantMessageEvent(SDK streaming delta;§四-1)
+//
+
+test("filterEvent: hideThinking → thinking_delta 事件整個 drop(不外洩 + 保持 typing)", () => {
+  const p = parseUiProfile({ hideThinking: true }, {});
+  const e = {
+    type: "message_update",
+    assistantMessageEvent: {
+      type: "thinking_delta",
+      contentIndex: 0,
+      delta: "internal reasoning",
+      partial: { content: [{ type: "thinking", thinking: "internal reasoning" }] },
+    },
+    message: { content: [{ type: "thinking", thinking: "internal reasoning" }] },
+  };
+  assert.equal(filterEvent(e, p), null);
+});
+
+test("filterEvent: hideThinking → thinking_start / thinking_end 也 drop", () => {
+  const p = parseUiProfile({ hideThinking: true }, {});
+  for (const type of ["thinking_start", "thinking_end"]) {
+    const e = { type: "message_update", assistantMessageEvent: { type, contentIndex: 0, partial: {} } };
+    assert.equal(filterEvent(e, p), null, `${type} should drop`);
+  }
+});
+
+test("filterEvent: hideToolCalls → toolcall_start/delta/end 事件 drop", () => {
+  const p = parseUiProfile({ hideToolCalls: true }, {});
+  const cases = [
+    { type: "toolcall_start", contentIndex: 1, partial: {} },
+    { type: "toolcall_delta", contentIndex: 1, delta: '{"path":"/etc/passwd"}', partial: {} },
+    { type: "toolcall_end", contentIndex: 1, toolCall: { type: "toolCall", name: "bash", arguments: { cmd: "printenv" } }, partial: {} },
+  ];
+  for (const ame of cases) {
+    const e = { type: "message_update", assistantMessageEvent: ame };
+    assert.equal(filterEvent(e, p), null, `${ame.type} should drop`);
+  }
+});
+
+test("filterEvent: text_delta 保留,但 partial 內 thinking 全文被剝(partial 挾帶洩漏)", () => {
+  const p = parseUiProfile({ hideThinking: true }, {});
+  const e = {
+    type: "message_update",
+    assistantMessageEvent: {
+      type: "text_delta",
+      contentIndex: 1,
+      delta: "答案是",
+      // partial 累積:含前面已完成的 thinking 全文
+      partial: {
+        content: [
+          { type: "thinking", thinking: "使用者其實想問 X,我推理如下…" },
+          { type: "text", text: "答案是" },
+        ],
+      },
+    },
+    message: { content: [{ type: "text", text: "答案是" }] },
+  };
+  const r = filterEvent(e, p);
+  assert.equal(r.kind, "event");
+  // delta 本體保留(文字要出得來)
+  assert.equal(r.event.assistantMessageEvent.delta, "答案是");
+  // partial 內 thinking 已被剝除,只剩 text
+  assert.deepEqual(r.event.assistantMessageEvent.partial.content, [{ type: "text", text: "答案是" }]);
+  // 原物件不被改動
+  assert.equal(e.assistantMessageEvent.partial.content.length, 2);
+});
+
+test("filterEvent: text_delta partial 內 toolCall 被剝(hideToolCalls)", () => {
+  const p = parseUiProfile({ hideToolCalls: true }, {});
+  const e = {
+    type: "message_update",
+    assistantMessageEvent: {
+      type: "text_delta",
+      contentIndex: 2,
+      delta: "done",
+      partial: {
+        content: [
+          { type: "toolCall", name: "bash", arguments: { cmd: "cat .env" } },
+          { type: "toolResult", toolName: "bash", content: "SECRET=xxx" },
+          { type: "text", text: "done" },
+        ],
+      },
+    },
+  };
+  const r = filterEvent(e, p);
+  assert.deepEqual(r.event.assistantMessageEvent.partial.content, [{ type: "text", text: "done" }]);
+});
+
+test("filterEvent: done 事件的 message(完整訊息)被剝 thinking + toolCall", () => {
+  const p = parseUiProfile({ uiProfile: "customer" }, {});
+  const e = {
+    type: "message_update",
+    assistantMessageEvent: {
+      type: "done",
+      reason: "stop",
+      message: {
+        content: [
+          { type: "thinking", thinking: "secret reasoning" },
+          { type: "toolCall", name: "bash", arguments: {} },
+          { type: "text", text: "回覆" },
+        ],
+      },
+    },
+  };
+  const r = filterEvent(e, p);
+  assert.deepEqual(r.event.assistantMessageEvent.message.content, [{ type: "text", text: "回覆" }]);
+});
+
+test("filterEvent: error 事件的 error(AssistantMessage)被剝 thinking", () => {
+  const p = parseUiProfile({ hideThinking: true }, {});
+  const e = {
+    type: "message_update",
+    assistantMessageEvent: {
+      type: "error",
+      reason: "error",
+      error: { content: [{ type: "thinking", thinking: "leak" }, { type: "text", text: "boom" }] },
+    },
+  };
+  const r = filterEvent(e, p);
+  assert.deepEqual(r.event.assistantMessageEvent.error.content, [{ type: "text", text: "boom" }]);
+});
+
+test("filterEvent: fail-closed — content 非 array 但帶 thinking_delta 仍 drop(reviewer P1-3)", () => {
+  const p = parseUiProfile({ hideThinking: true }, {});
+  const e = {
+    type: "message_update",
+    message: {}, // content 非 array,舊碼會在此 pass-through 原 event
+    assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "leak", partial: {} },
+  };
+  assert.equal(filterEvent(e, p), null);
+});
+
+test("filterEvent: 只 hideThinking 時 toolcall_delta 不 drop,但其 partial thinking 仍被剝", () => {
+  const p = parseUiProfile({ hideThinking: true }, {}); // 只 hideThinking
+  const e = {
+    type: "message_update",
+    assistantMessageEvent: {
+      type: "toolcall_delta",
+      contentIndex: 1,
+      delta: '{"x":1}',
+      partial: { content: [{ type: "thinking", thinking: "leak" }, { type: "toolCall", name: "bash" }] },
+    },
+  };
+  const r = filterEvent(e, p);
+  // toolcall_delta 在只 hideThinking 下不 drop(tool 細節本就可見)
+  assert.equal(r.kind, "event");
+  // 但 partial 內 thinking 被剝,toolCall 保留(hideToolCalls=false)
+  assert.deepEqual(r.event.assistantMessageEvent.partial.content, [{ type: "toolCall", name: "bash" }]);
 });
 
 test("filterEvent: agent_start / compaction_* / extension_error / auto_retry_start 全 pass-through", () => {

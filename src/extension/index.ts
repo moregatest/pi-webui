@@ -110,7 +110,9 @@ interface StartOptions {
 	safeErrors?: boolean;
 	brandName?: string;
 	brandLogo?: string;
+	brandFavicon?: string;
 	brandColor?: string;
+	chatLayout?: string;
 	profile?: string;
 	uiProfile?: string;
 	uploadExt?: string;
@@ -163,7 +165,9 @@ function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 		if (opts.safeErrors) serverArgs.push("--safe-errors");
 		if (opts.brandName) serverArgs.push("--brand-name", opts.brandName);
 		if (opts.brandLogo) serverArgs.push("--brand-logo", opts.brandLogo);
+		if (opts.brandFavicon) serverArgs.push("--brand-favicon", opts.brandFavicon);
 		if (opts.brandColor) serverArgs.push("--brand-color", opts.brandColor);
+		if (opts.chatLayout) serverArgs.push("--chat-layout", opts.chatLayout);
 		if (opts.profile) serverArgs.push("--profile", opts.profile);
 		if (opts.uiProfile) serverArgs.push("--ui-profile", opts.uiProfile);
 		if (opts.uploadExt) serverArgs.push("--upload-ext", opts.uploadExt);
@@ -310,8 +314,12 @@ function parseStartFlags(tokens: string[]): StartOptions {
 		else if (t.startsWith("--brand-name=")) opts.brandName = t.slice("--brand-name=".length);
 		else if (t === "--brand-logo") opts.brandLogo = valueOf(++i, t);
 		else if (t.startsWith("--brand-logo=")) opts.brandLogo = t.slice("--brand-logo=".length);
+		else if (t === "--brand-favicon") opts.brandFavicon = valueOf(++i, t);
+		else if (t.startsWith("--brand-favicon=")) opts.brandFavicon = t.slice("--brand-favicon=".length);
 		else if (t === "--brand-color") opts.brandColor = valueOf(++i, t);
 		else if (t.startsWith("--brand-color=")) opts.brandColor = t.slice("--brand-color=".length);
+		else if (t === "--chat-layout") opts.chatLayout = valueOf(++i, t);
+		else if (t.startsWith("--chat-layout=")) opts.chatLayout = t.slice("--chat-layout=".length);
 		else if (t === "--profile") opts.profile = valueOf(++i, t);
 		else if (t.startsWith("--profile=")) opts.profile = t.slice("--profile=".length);
 		else if (t === "--ui-profile") opts.uiProfile = valueOf(++i, t);
@@ -513,8 +521,20 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		default: "",
 	});
 
+	pi.registerFlag?.("webui-brand-favicon", {
+		description: "file served at GET /favicon.svg (replaces the built-in pi favicon). Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
 	pi.registerFlag?.("webui-brand-color", {
 		description: "brand accent color (#rgb or #rrggbb) for readyai-webui. Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
+	pi.registerFlag?.("webui-chat-layout", {
+		description: "message layout for readyai-webui: bubble (Claude-style) or log. Implies --webui.",
 		type: "string",
 		default: "",
 	});
@@ -643,7 +663,9 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		let safeErrors: boolean;
 		let brandName: string;
 		let brandLogo: string;
+		let brandFavicon: string;
 		let brandColor: string;
+		let chatLayout: string;
 		let profile: string;
 		let uiProfile: string;
 		let uploadExt: string;
@@ -679,7 +701,9 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			safeErrors = !!pi.getFlag?.("webui-safe-errors");
 			brandName = String(pi.getFlag?.("webui-brand-name") || "").trim();
 			brandLogo = String(pi.getFlag?.("webui-brand-logo") || "").trim();
+			brandFavicon = String(pi.getFlag?.("webui-brand-favicon") || "").trim();
 			brandColor = String(pi.getFlag?.("webui-brand-color") || "").trim();
+			chatLayout = String(pi.getFlag?.("webui-chat-layout") || "").trim();
 			profile = String(pi.getFlag?.("webui-profile") || "").trim();
 			uiProfile = String(pi.getFlag?.("webui-ui-profile") || "").trim();
 			uploadExt = String(pi.getFlag?.("webui-upload-ext") || "").trim();
@@ -715,7 +739,9 @@ export default function webuiExtension(pi: ExtensionAPI) {
 				safeErrors ||
 				brandName.length > 0 ||
 				brandLogo.length > 0 ||
+				brandFavicon.length > 0 ||
 				brandColor.length > 0 ||
+				chatLayout.length > 0 ||
 				profile.length > 0 ||
 				uiProfile.length > 0 ||
 				uploadExt.length > 0 ||
@@ -760,7 +786,9 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			safeErrors: safeErrors || undefined,
 			brandName: brandName || undefined,
 			brandLogo: brandLogo || undefined,
+			brandFavicon: brandFavicon || undefined,
 			brandColor: brandColor || undefined,
+			chatLayout: chatLayout || undefined,
 			profile: profile || undefined,
 			uiProfile: uiProfile || undefined,
 			uploadExt: uploadExt || undefined,

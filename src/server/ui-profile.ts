@@ -26,9 +26,12 @@ export interface UiProfile {
   hideModel: boolean;
   safeErrors: boolean;
   exposeToolArgs: boolean;
+  // 對話版型:bubble(Claude 式左右氣泡)/ log(工程師視圖,預設)。
+  chatLayout: "bubble" | "log";
   brand: {
     name: string | null;
     logoPath: string | null;
+    faviconPath: string | null;
     mode: "dark" | "light" | null;
     tokens: {
       bg?: string;
@@ -54,6 +57,7 @@ const PRESETS: Record<string, Partial<Omit<UiProfile, "brand">>> = {
     hideSessionPicker: true,
     hideModel: true,
     safeErrors: true,
+    chatLayout: "bubble",
   },
 };
 
@@ -68,9 +72,11 @@ export interface ParseUiProfileInput {
   hideModel?: boolean;
   safeErrors?: boolean;
   exposeToolArgs?: boolean;
+  chatLayout?: string;
   uiProfile?: string;
   brandName?: string;
   brandLogo?: string;
+  brandFavicon?: string;
   brandColor?: string;
 }
 
@@ -92,9 +98,11 @@ export function parseUiProfile(
     hideModel: false,
     safeErrors: false,
     exposeToolArgs: false,
+    chatLayout: "log",
     brand: {
       name: null,
       logoPath: null,
+      faviconPath: null,
       mode: null,
       tokens: {},
       cssPath: null,
@@ -113,12 +121,14 @@ export function parseUiProfile(
     if (ui.hide_model !== undefined) profile.hideModel = ui.hide_model;
     if (ui.safe_errors !== undefined) profile.safeErrors = ui.safe_errors;
     if (ui.expose_tool_args !== undefined) profile.exposeToolArgs = ui.expose_tool_args;
+    if (ui.chat_layout !== undefined) profile.chatLayout = ui.chat_layout;
   }
 
   if (profileFile?.brand) {
     const b = profileFile.brand;
     if (b.name !== undefined) profile.brand.name = b.name;
     if (b.logo !== undefined) profile.brand.logoPath = b.logo;
+    if (b.favicon !== undefined) profile.brand.faviconPath = b.favicon;
     if (b.mode !== undefined) profile.brand.mode = b.mode;
     if (b.css !== undefined) profile.brand.cssPath = b.css;
     for (const k of ["bg", "panel", "text", "accent", "border", "muted"] as const) {
@@ -186,6 +196,15 @@ export function parseUiProfile(
     profile.exposeToolArgs = true;
   }
 
+  // chat_layout:enum 旗標(非 bool);CLI > env > profile。空字串視同未設定。
+  const chatLayout = cli.chatLayout ?? env.PI_WEBUI_CHAT_LAYOUT ?? null;
+  if (chatLayout && chatLayout.trim()) {
+    if (chatLayout !== "bubble" && chatLayout !== "log") {
+      throw new Error(`chat-layout: must be "bubble" or "log", got: ${chatLayout}`);
+    }
+    profile.chatLayout = chatLayout;
+  }
+
   // brand string-value 旗標:CLI > env;空字串視同未設定。
   const name = cli.brandName ?? env.PI_WEBUI_BRAND_NAME ?? null;
   if (name && name.trim()) profile.brand.name = name;
@@ -207,6 +226,17 @@ export function parseUiProfile(
       throw new Error(`brand-logo: not a file: ${logo}`);
     }
     profile.brand.logoPath = logo;
+  }
+
+  const favicon = cli.brandFavicon ?? env.PI_WEBUI_BRAND_FAVICON ?? null;
+  if (favicon && favicon.trim()) {
+    if (!existsSync(favicon)) {
+      throw new Error(`brand-favicon: file not found: ${favicon}`);
+    }
+    if (!statSync(favicon).isFile()) {
+      throw new Error(`brand-favicon: not a file: ${favicon}`);
+    }
+    profile.brand.faviconPath = favicon;
   }
 
   return profile;
@@ -266,6 +296,50 @@ function redactToolEventForClient(event: any): any {
   return event;
 }
 
+// 一個 AssistantMessage content block 在當前 profile 下是否保留(false = 剝除)。
+// thinking(hideThinking)、tool_call/tool_result(含 SDK camelCase)(hideToolCalls)
+// 為敏感 block。message_update 的 message.content 與 assistantMessageEvent.partial
+// 共用同一判斷。
+function keepContentBlock(b: any, profile: UiProfile): boolean {
+  if (!b || typeof b !== "object") return true;
+  if (b.type === "thinking" && profile.hideThinking) return false;
+  if (
+    (b.type === "tool_call" ||
+      b.type === "tool_result" ||
+      b.type === "toolCall" ||
+      b.type === "toolResult") &&
+    profile.hideToolCalls
+  )
+    return false;
+  return true;
+}
+
+// 剝一個 AssistantMessage(帶 content 陣列)內的敏感 block;無變動時回原物件
+// (供上游做 identity 比較,避免無謂複製)。
+function redactAssistantMessage(msg: any, profile: UiProfile): any {
+  if (!msg || typeof msg !== "object" || !Array.isArray(msg.content)) return msg;
+  const filtered = msg.content.filter((b: any) => keepContentBlock(b, profile));
+  if (filtered.length === msg.content.length) return msg;
+  return { ...msg, content: filtered };
+}
+
+// AssistantMessageEvent 的 partial / message / error 三個欄位都是「累積至今的完整
+// AssistantMessage」,會挾帶前面已產生的 thinking 全文與 toolCall 參數 —— 即使該 delta
+// 本身是安全的 text_delta,partial 仍會把 thinking 帶出去。client 端 applyDelta 只讀
+// delta / toolCall / contentIndex,不讀這三個欄位,故一律剝除其中的敏感 block。
+// 無變動時回原物件。
+function redactAssistantMessageEvent(ame: any, profile: UiProfile): any {
+  let out = ame;
+  for (const key of ["partial", "message", "error"] as const) {
+    const v = out[key];
+    if (v && typeof v === "object") {
+      const red = redactAssistantMessage(v, profile);
+      if (red !== v) out = { ...out, [key]: red };
+    }
+  }
+  return out;
+}
+
 export function filterEvent(event: any, profile: UiProfile): FilterResult {
   if (!event || typeof event !== "object") return { kind: "event", event };
 
@@ -295,32 +369,42 @@ export function filterEvent(event: any, profile: UiProfile): FilterResult {
     };
   }
 
-  // message_update:過濾 message.content 陣列中的 thinking / tool_* block
-  // SDK 內部 block type 用 camelCase(toolCall / toolResult),早期 client 端
-  // normalize 後是 snake_case;兩種都接受,避免漏過濾
+  // message_update:兩路洩漏都要堵 —— (a) SDK streaming delta(assistantMessageEvent)
+  // 與 (b) message.content 快照。SDK block type 用 camelCase(toolCall/toolResult),
+  // 早期 client normalize 後是 snake_case;兩種都接受,避免漏過濾。
   if (event.type === "message_update") {
     if (!profile.hideThinking && !profile.hideToolCalls)
       return { kind: "event", event };
-    const content = event.message?.content;
-    if (!Array.isArray(content)) return { kind: "event", event };
-    const filtered = content.filter((b: any) => {
-      if (!b || typeof b !== "object") return true;
-      if (b.type === "thinking" && profile.hideThinking) return false;
-      if (
-        (b.type === "tool_call" ||
-          b.type === "tool_result" ||
-          b.type === "toolCall" ||
-          b.type === "toolResult") &&
-        profile.hideToolCalls
-      )
-        return false;
-      return true;
-    });
-    if (filtered.length === content.length) return { kind: "event", event };
-    return {
-      kind: "event",
-      event: { ...event, message: { ...event.message, content: filtered } },
-    };
+
+    const ame = event.assistantMessageEvent;
+    const ameType = ame && typeof ame === "object" ? ame.type : undefined;
+
+    // (a) 被隱藏類型的 delta 整個 drop:既防洩漏,又讓 client 收不到此 delta →
+    //     showTyping 保持 true,消除 thinking 階段的 typing 空窗(spec §三缺口2)。
+    //     content 是否為陣列都一樣 drop —— fail-closed,不因結構不認得而放行。
+    const hiddenDelta =
+      (profile.hideThinking &&
+        (ameType === "thinking_start" ||
+          ameType === "thinking_delta" ||
+          ameType === "thinking_end")) ||
+      (profile.hideToolCalls &&
+        (ameType === "toolcall_start" ||
+          ameType === "toolcall_delta" ||
+          ameType === "toolcall_end"));
+    if (hiddenDelta) return null;
+
+    // (b) 保留的事件(text_*/start/done/error):剝 message.content 快照 +
+    //     assistantMessageEvent.partial/message/error 內挾帶的 thinking/tool block。
+    let outEvent = event;
+    if (Array.isArray(event.message?.content)) {
+      const redMsg = redactAssistantMessage(event.message, profile);
+      if (redMsg !== event.message) outEvent = { ...outEvent, message: redMsg };
+    }
+    if (ame && typeof ame === "object") {
+      const redAme = redactAssistantMessageEvent(ame, profile);
+      if (redAme !== ame) outEvent = { ...outEvent, assistantMessageEvent: redAme };
+    }
+    return { kind: "event", event: outEvent };
   }
 
   return { kind: "event", event };

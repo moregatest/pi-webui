@@ -41,6 +41,49 @@ test("loadProfile name=customer 檔不存在回內建 fallback", (t) => {
   assert.equal(profile.ui?.hide_model, true);
   assert.equal(profile.ui?.safe_errors, true);
   assert.equal(profile.ui?.expose_tool_args, false);
+  // 需求3:customer fallback 預設 bubble 版型
+  assert.equal(profile.ui?.chat_layout, "bubble");
+});
+
+test("loadProfile [ui].chat_layout 合法值 bubble/log", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(path.join(profilesDir, "a.toml"), `[ui]\nchat_layout = "bubble"\n`);
+  assert.equal(loadProfile("a", tmp).ui?.chat_layout, "bubble");
+  fs.writeFileSync(path.join(profilesDir, "b.toml"), `[ui]\nchat_layout = "log"\n`);
+  assert.equal(loadProfile("b", tmp).ui?.chat_layout, "log");
+});
+
+test("loadProfile [ui].chat_layout 非法值 → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(path.join(profilesDir, "x.toml"), `[ui]\nchat_layout = "fancy"\n`);
+  assert.throws(() => loadProfile("x", tmp), /\[ui\]\.chat_layout/);
+});
+
+test("loadProfile [brand].favicon 存在 → 通過;不存在 → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(path.join(tmp, "fav.svg"), "<svg/>");
+  fs.writeFileSync(path.join(profilesDir, "ok.toml"), `[brand]\nfavicon = "fav.svg"\n`);
+  assert.equal(loadProfile("ok", tmp).brand?.favicon, "fav.svg");
+  fs.writeFileSync(path.join(profilesDir, "bad.toml"), `[brand]\nfavicon = "nope.svg"\n`);
+  assert.throws(() => loadProfile("bad", tmp), /\[brand\]\.favicon/);
+});
+
+test("loadProfile [brand].favicon 逃出 cwd → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(path.join(profilesDir, "x.toml"), `[brand]\nfavicon = "../../etc/hosts"\n`);
+  assert.throws(() => loadProfile("x", tmp), /\[brand\]\.favicon/);
 });
 
 test("loadProfile name=staff 檔不存在 throw", (t) => {

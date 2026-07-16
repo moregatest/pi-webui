@@ -491,6 +491,10 @@ function reconcileBlocks(body, blocks, prevBlocks, { highlightText }) {
 function buildMessageElement(kind, title, blocks, { highlight = true } = {}) {
   const el = document.createElement("section");
   el.className = `message ${kind}`;
+  // a11y:bubble 版型下 h3 角色標題被 CSS 視覺隱藏,靠 section 的 role/aria-label
+  // 保留「誰說的」給螢幕閱讀器(需求3 V5)。
+  el.setAttribute("role", "group");
+  el.setAttribute("aria-label", title);
   el.innerHTML = `<h3>${escapeHtml(title)}</h3><div class="message-body"></div>`;
   reconcileBlocks(el.querySelector(".message-body"), blocks, null, { highlightText: highlight });
   return el;
@@ -503,6 +507,8 @@ function updateMessageBody(el, blocks, prevBlocks, { highlight = true } = {}) {
 function buildTypingElement() {
   const el = document.createElement("section");
   el.className = "message assistant";
+  el.setAttribute("role", "group");
+  el.setAttribute("aria-label", "Assistant");
   el.innerHTML = `<h3>Assistant</h3><div class="message-body"><span class="thinking-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span></div>`;
   return el;
 }
@@ -568,9 +574,12 @@ function renderLog() {
     } else if (it.source === "extra") {
       const item = it.item;
       const isLive = liveItems.has(item);
-      // issue #2 B:渲染後無可見內容的 assistant 不掛裸 header。streaming 中的
-      // live assistant 例外(內容隨 delta 進來),其餘空 assistant 直接跳過。
-      if (item.kind === "assistant" && !isLive && !hasVisibleContent(item.blocks, uiProfile)) continue;
+      // issue #2 B + §四-2:渲染後無可見內容的 assistant 不掛裸 header / 空 bubble,
+      // 含 streaming 中的 live assistant。§四-1 讓 hideThinking/hideToolCalls 下
+      // thinking/tool delta 不再建立 liveAssistant(改由 server drop),空窗期間 typing
+      // indicator 頂著,故空 live 直接跳過不會造成「無回饋」,反而消掉 bubble 版型下
+      // 的空殼氣泡。有文字時(text_delta)才建 live,一律有可見內容。
+      if (item.kind === "assistant" && !hasVisibleContent(item.blocks, uiProfile)) continue;
       const cached = extraEls.get(item);
       if (!cached) {
         el = buildMessageElement(item.kind, item.title, item.blocks, { highlight: !isLive });
@@ -775,6 +784,14 @@ function applyBranding(brand) {
   }
 }
 
+// 對話版型:server 送 uiProfile.chatLayout("bubble" | "log")。寫成 <html> 的
+// data-chat-layout 屬性,由 styles.css 依此切 bubble(左右氣泡)/ log(工程師視圖)。
+// 舊版 server 沒送就維持預設 log。
+function applyChatLayout() {
+  const layout = uiProfile?.chatLayout === "bubble" ? "bubble" : "log";
+  document.documentElement.setAttribute("data-chat-layout", layout);
+}
+
 function connect() {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   const url = `${protocol}://${location.host}${BASE}/ws`;
@@ -823,6 +840,7 @@ function connect() {
         // hideModel 沿用既有變數;優先取 uiProfile.hideModel,fallback 到舊欄位。
         hideModel = !!(uiProfile?.hideModel ?? packet.payload.hideModel);
         applyBranding(uiProfile.brand);
+        applyChatLayout();
         renderSandboxChip();
         renderTunnelChip();
         logger.info("connected", {

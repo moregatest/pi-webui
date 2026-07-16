@@ -11,6 +11,7 @@ export interface ToolLabelEntry {
 export interface BrandConfig {
   name?: string;
   logo?: string;
+  favicon?: string;   // 瀏覽器分頁 icon;未設時 fallback 到內建 public/favicon.svg
   mode?: "dark" | "light";
   bg?: string;
   panel?: string;
@@ -31,6 +32,9 @@ export interface UiFlags {
   hide_model?: boolean;
   safe_errors?: boolean;
   expose_tool_args?: boolean;
+  // 對話版型:"bubble"=Claude 式左右氣泡(user 右/assistant 左、隱藏角色標題);
+  // "log"=工程師視圖(標題 + 左框線,預設)。customer fallback 用 bubble。
+  chat_layout?: "bubble" | "log";
 }
 
 export interface SandboxConfig {
@@ -92,7 +96,7 @@ function validateBrand(brand: BrandConfig | undefined, cwd: string): void {
     }
   }
 
-  for (const field of ["logo", "css"] as const) {
+  for (const field of ["logo", "css", "favicon"] as const) {
     const rel = brand[field];
     if (rel !== undefined) {
       const abs = path.resolve(cwd, rel);
@@ -107,16 +111,24 @@ function validateBrand(brand: BrandConfig | undefined, cwd: string): void {
   }
 }
 
+function validateUi(ui: UiFlags | undefined): void {
+  if (!ui) return;
+  if (ui.chat_layout !== undefined && !CHAT_LAYOUTS.has(ui.chat_layout)) {
+    throw new Error(`[ui].chat_layout: 必須是 "bubble" 或 "log",收到 "${ui.chat_layout}"`);
+  }
+}
+
 const ALLOWED_TOP = new Set(["meta", "ui", "brand", "skills", "commands", "defaults", "tool_labels", "sandbox", "uploads"]);
 const ALLOWED_UI = new Set([
   "hide_thinking", "hide_tool_calls", "show_tool_progress",
   "hide_status_chips", "hide_session_picker", "hide_model",
-  "safe_errors", "expose_tool_args",
+  "safe_errors", "expose_tool_args", "chat_layout",
 ]);
 const ALLOWED_BRAND = new Set([
-  "name", "logo", "mode", "bg", "panel", "text",
+  "name", "logo", "favicon", "mode", "bg", "panel", "text",
   "accent", "border", "muted", "css", "color",
 ]);
+const CHAT_LAYOUTS = new Set(["bubble", "log"]);
 
 function validateUnknown(parsed: Record<string, unknown>): void {
   for (const key of Object.keys(parsed)) {
@@ -276,6 +288,7 @@ const CUSTOMER_FALLBACK: ProfileFile = Object.freeze({
     hide_model: true,
     safe_errors: true,
     expose_tool_args: false,
+    chat_layout: "bubble",
   }),
 }) as ProfileFile;
 
@@ -295,6 +308,7 @@ export function loadProfile(name: string, cwd: string): ProfileFile {
   validateUnknown(parsed as Record<string, unknown>);
   const profile = parsed as ProfileFile;
   validateBrand(profile.brand, cwd);
+  validateUi(profile.ui);
   validatePlaceholders(profile.tool_labels);
   validateSandbox(profile.sandbox);
   validateUploads(profile.uploads);

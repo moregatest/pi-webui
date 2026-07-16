@@ -1115,3 +1115,73 @@ body.drag-active .composer-wrapper {
 .toast.error {
   border-left-color: var(--error);
 }
+
+/* ── Bubble 對話版型(需求3;data-chat-layout="bubble") ──────────────
+   Claude 式:user 靠右有底色氣泡、assistant 靠左純文字,角色標題(h3)視覺
+   隱藏但保留給螢幕閱讀器。只作用於 user/assistant;error/tool/system/custom
+   維持標題式呈現(customer 模式本就看不到 tool/system)。 */
+
+/* h3 視覺隱藏(clip 而非 display:none,保留 screen-reader 可讀性) */
+:root[data-chat-layout="bubble"] .message.user > h3,
+:root[data-chat-layout="bubble"] .message.assistant > h3 {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 氣泡本體:fit-content + max-width 讓 section 縮到內容寬,再用 margin auto 靠邊。
+   min-width:0 讓內部長 code/table 能在自身 overflow 內捲,不撐破氣泡。 */
+:root[data-chat-layout="bubble"] .message.user,
+:root[data-chat-layout="bubble"] .message.assistant {
+  width: fit-content;
+  max-width: min(85%, 640px);
+  min-width: 0;
+}
+
+:root[data-chat-layout="bubble"] .message.user {
+  margin-left: auto;   /* 靠右 */
+}
+
+:root[data-chat-layout="bubble"] .message.assistant {
+  margin-right: auto;  /* 靠左 */
+}
+
+/* user 氣泡:底色 + 圓角 + padding,去掉 log 版型的左框線 */
+:root[data-chat-layout="bubble"] .message.user > .message-body {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.5rem 0.8rem;
+  min-width: 0;
+}
+
+/* assistant:純文字,去左框線與左 padding(靠位置 + 無底色和 user 區分) */
+:root[data-chat-layout="bubble"] .message.assistant > .message-body {
+  border-left: none;
+  padding-left: 0;
+  min-width: 0;
+}
+
+/* 氣泡內首尾段落不留多餘外距,讓 padding 決定內距 */
+:root[data-chat-layout="bubble"] .message.user > .message-body > p:first-child,
+:root[data-chat-layout="bubble"] .message.assistant > .message-body > p:first-child {
+  margin-top: 0;
+}
+:root[data-chat-layout="bubble"] .message.user > .message-body > p:last-child,
+:root[data-chat-layout="bubble"] .message.assistant > .message-body > p:last-child {
+  margin-bottom: 0;
+}
+
+/* 氣泡內長 code block / 表格:限制在氣泡寬度內、自身橫向捲動,不撐破版面 */
+:root[data-chat-layout="bubble"] .message.user > .message-body pre,
+:root[data-chat-layout="bubble"] .message.assistant > .message-body pre {
+  max-width: 100%;
+}

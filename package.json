@@ -31,7 +31,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc && node -e \"require('fs').chmodSync('dist/server/index.js', 0o755)\"",
+    "build": "tsc && node -e \"require('fs').chmodSync('dist/server/index.js', 0o755)\" && node scripts/gen-build-info.mjs",
     "prepack": "npm run build",
     "start": "node dist/server/index.js",
     "test": "npm run build && node --test test/*.test.mjs"

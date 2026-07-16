@@ -86,6 +86,8 @@ command-line flags:
 | `--brand-name <text>` | inject into `<title>` and the header. |
 | `--brand-color <#hex>` | accent color; sets the `--brand-color` CSS variable. `#rgb` or `#rrggbb`. |
 | `--brand-logo <path>` | replace `/brand/logo` route with this file (svg / png / jpg / gif / webp). path must exist or boot fails. |
+| `--brand-favicon <path>` | replace the built-in pi favicon served at `/favicon.svg` (svg / png / ico / gif / jpg / webp). path must exist or boot fails. alias: `PI_WEBUI_BRAND_FAVICON`; profile `[brand].favicon` as fallback. |
+| `--chat-layout <mode>` | message layout: `bubble` (Claude-style: user right / assistant left, role labels hidden) or `log` (engineer view with titles, default). alias: `PI_WEBUI_CHAT_LAYOUT`; profile `[ui].chat_layout` as fallback. `customer` fallback defaults to `bubble`. |
 | `--ui-profile <preset>` | preset that expands to a set of the above flags. currently supported: `customer` (= `--hide-thinking --hide-tool-calls --show-tool-progress --hide-status-chips --hide-session-picker --hide-model --safe-errors`). individual flags can still be set alongside; they only ever flip in the same direction (no "un-hide"). |
 | `--upload-ext <list>` | 取代預設一般檔案上傳白名單(逗號分隔,不帶點)。預設清單:`jpg,jpeg,png,gif,svg,pdf,rar,zip,flv,txt,doc,docx,xls,xlsx,dwg`。alias: `PI_WEBUI_UPLOAD_EXT`;profile `[uploads].allowed_extensions` 為 fallback。 |
 | `--upload-ext-add <list>` | 在現有清單之上加增副檔名(預設 + profile + `--upload-ext`)。alias: `PI_WEBUI_UPLOAD_EXT_ADD`。 |
@@ -123,6 +125,8 @@ environment variables:
 | `PI_WEBUI_BRAND_NAME` | (unset) | brand name injected into title / header (same as `--brand-name`) |
 | `PI_WEBUI_BRAND_COLOR` | (unset) | accent color hex (same as `--brand-color`) |
 | `PI_WEBUI_BRAND_LOGO` | (unset) | logo file path served at `/brand/logo` (same as `--brand-logo`) |
+| `PI_WEBUI_BRAND_FAVICON` | (unset) | favicon file path served at `/favicon.svg` (same as `--brand-favicon`) |
+| `PI_WEBUI_CHAT_LAYOUT` | (unset) | message layout `bubble` / `log` (same as `--chat-layout`) |
 | `PI_WEBUI_UI_PROFILE` | (unset) | preset name (`customer`); same as `--ui-profile` |
 | `PI_WEBUI_PROFILE` | (unset) | profile name (loads `.pi/profiles/<name>.toml`); same as `--profile` |
 | `PI_WEBUI_UPLOAD_EXT` | (unset) | 取代預設上傳副檔名白名單(逗號分隔) |
@@ -157,6 +161,7 @@ when launched via the pi extension, equivalent pi flags are available:
 `--webui-show-tool-progress`, `--webui-hide-status-chips`,
 `--webui-hide-session-picker`, `--webui-safe-errors`,
 `--webui-brand-name`, `--webui-brand-color`, `--webui-brand-logo`,
+`--webui-brand-favicon`, `--webui-chat-layout`,
 `--webui-ui-profile`, `--webui-profile`,
 `--webui-upload-ext`, `--webui-upload-ext-add`, `--webui-upload-subdir`,
 `--webui-upload-max-bytes`, `--webui-upload-max-files`.
@@ -433,10 +438,12 @@ hide_session_picker = true         # disable session picker
 hide_model          = true         # hide model name
 safe_errors         = true         # wrap server_error as generic + ticket
 expose_tool_args    = false        # allow {tool_arg.*} placeholders (UNSAFE)
+chat_layout         = "bubble"     # bubble (Claude-style) | log (engineer view, default)
 
 [brand]
 name   = "Acme Bot"
 logo   = "./assets/logo.svg"       # path relative to cwd
+favicon = "./assets/favicon.svg"   # browser tab icon; replaces built-in pi favicon (path relative to cwd)
 mode   = "light"                   # dark | light
 bg     = "#fafafa"                 # CSS --bg
 panel  = "#ffffff"                 # CSS --panel

@@ -43,7 +43,7 @@
         width: 100%;
         padding: 10px;
         font-size: 14px;
-        background: #3b82f6;
+        background: var(--accent, #3b82f6);
         color: white;
         border: 0;
         border-radius: 4px;
@@ -61,7 +61,7 @@
   <body>
     <div class="login-shell">
       <form class="login-card" id="login-form">
-        <h1>readyai-webui</h1>
+        <h1 id="brand-h1">readyai-webui</h1>
         <input
           type="password"
           id="password"
@@ -75,6 +75,11 @@
       </form>
     </div>
     <script>
+      // 品牌名由 server 注入 window.__BRAND_NAME__(見 serveStatic);有值就換掉 h1,
+      // 對外部署第一眼不露內部品牌 readyai-webui。
+      if (window.__BRAND_NAME__) {
+        document.getElementById("brand-h1").textContent = window.__BRAND_NAME__;
+      }
       const form = document.getElementById("login-form");
       const pw = document.getElementById("password");
       const btn = document.getElementById("submit");

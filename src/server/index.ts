@@ -215,8 +215,12 @@ function printHelp() {
     "                              alias: PI_WEBUI_BRAND_NAME env var.",
     "  --brand-logo <path>         file served at GET /brand/logo (svg/png/jpg by ext).",
     "                              alias: PI_WEBUI_BRAND_LOGO env var.",
+    "  --brand-favicon <path>      file served at GET /favicon.svg (svg/png/ico by ext);",
+    "                              replaces the built-in pi favicon. alias: PI_WEBUI_BRAND_FAVICON.",
     "  --brand-color <hex>         #rgb or #rrggbb; sets CSS --brand-color custom property.",
     "                              alias: PI_WEBUI_BRAND_COLOR env var.",
+    "  --chat-layout <mode>        message layout: bubble (Claude-style) or log (default).",
+    "                              alias: PI_WEBUI_CHAT_LAYOUT env var.",
     "  --profile <name>            load .pi/profiles/<name>.toml (name=customer with no file uses builtin fallback).",
     "                              alias: PI_WEBUI_PROFILE env var.",
     "  --ui-profile <name>         apply a preset bundle. supported: customer (= hide-thinking",
@@ -346,8 +350,12 @@ function parseArgs(argv) {
     else if (a.startsWith("--brand-name=")) out.brandName = a.slice("--brand-name=".length);
     else if (a === "--brand-logo") out.brandLogo = argv[++i];
     else if (a.startsWith("--brand-logo=")) out.brandLogo = a.slice("--brand-logo=".length);
+    else if (a === "--brand-favicon") out.brandFavicon = argv[++i];
+    else if (a.startsWith("--brand-favicon=")) out.brandFavicon = a.slice("--brand-favicon=".length);
     else if (a === "--brand-color") out.brandColor = argv[++i];
     else if (a.startsWith("--brand-color=")) out.brandColor = a.slice("--brand-color=".length);
+    else if (a === "--chat-layout") out.chatLayout = argv[++i];
+    else if (a.startsWith("--chat-layout=")) out.chatLayout = a.slice("--chat-layout=".length);
     else if (a === "--password") out.password = argv[++i];
     else if (a.startsWith("--password=")) out.password = a.slice("--password=".length);
     else if (a === "--trust-proxy") out.trustProxy = true;
@@ -426,6 +434,16 @@ const port = listenFromArg?.port ?? Number(process.env.PI_WEBUI_PORT || DEFAULT_
 // after build the script lives at dist/server/index.js; public/ stays at the
 // package root, so walk up two levels from import.meta.url.
 const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "public");
+// build-info.json 由 scripts/gen-build-info.mjs 在 build 時產於 dist/(index.js 在
+// dist/server/,上一層 = dist/)。讀失敗(未 build / 無 git)給 unknown fallback。
+const BUILD_INFO = (() => {
+  try {
+    const p = resolve(dirname(fileURLToPath(import.meta.url)), "..", "build-info.json");
+    return JSON.parse(readFileSync(p, "utf8"));
+  } catch {
+    return { name: "readyai-webui", version: "unknown", commit: "unknown", dirty: false, builtAt: null };
+  }
+})();
 const appCwd = resolve(process.env.PI_PROJECT_CWD || process.cwd());
 // artifact 目錄：存截圖 PNG，位於非 docroot 的 .artifacts/（不會被 push-back 帶進正式站）。
 // 可由環境變數 PI_WEBUI_ARTIFACTS_DIR 覆蓋；預設 <appCwd>/.artifacts。
@@ -624,6 +642,7 @@ function serializeUiProfile(profile: UiProfile) {
     hideSessionPicker: profile.hideSessionPicker,
     hideModel: profile.hideModel,
     safeErrors: profile.safeErrors,
+    chatLayout: profile.chatLayout,
     brand: {
       name: profile.brand.name,
       logoUrl: profile.brand.logoPath ? `${SERVER_BASE_PATH}/brand/logo` : null,
@@ -1154,6 +1173,9 @@ function isAuthPublic(pathname, method) {
   // brand logo 要在 login 頁面也能顯示
   if (pathname === "/brand/logo" && method === "GET") return true;
   if (pathname === "/brand/theme.css" && method === "GET") return true;
+  // /version:部署版本探針(§六-3 / V6)。公開,方便 redeploy 後無認證 CI 核對 SHA;
+  // 只回 commit/dirty/builtAt,非機密。
+  if (pathname === "/version" && method === "GET") return true;
   return false;
 }
 
@@ -1222,6 +1244,20 @@ const BRAND_LOGO_MIME: Record<string, string> = {
   ".gif": "image/gif",
   ".webp": "image/webp",
 };
+
+// favicon 允許的副檔名→MIME(比 logo 多 .ico);未命中回 octet-stream。
+const FAVICON_MIME: Record<string, string> = {
+  ...BRAND_LOGO_MIME,
+  ".ico": "image/x-icon",
+};
+
+// 注入 HTML 前的最小文字轉義(brand.name 進 <title> 用);& 必須先換。
+function escapeHtmlText(s: string): string {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
 
 function serveBrandLogo(req, res) {
   const logoPath = effectiveUiProfile.brand.logoPath;
@@ -1400,6 +1436,14 @@ function handleUpload(req, res) {
 function serveStatic(req, res) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   let pathname = url.pathname;
+  if (pathname === "/version") {
+    res.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-cache, no-store, must-revalidate",
+    });
+    res.end(JSON.stringify(BUILD_INFO));
+    return;
+  }
   if (pathname === "/brand/logo") {
     serveBrandLogo(req, res);
     return;
@@ -1416,6 +1460,20 @@ function serveStatic(req, res) {
       res.writeHead(404).end();
     }
     return;
+  }
+  // favicon:設了 brand favicon 就 serve 它取代內建 π 圖(對外不露 pi 品牌);
+  // 未設則 fall through 到一般 static → public/favicon.svg。
+  if (pathname === "/favicon.svg") {
+    const fav = effectiveUiProfile.brand.faviconPath;
+    if (fav) {
+      const type = FAVICON_MIME[extname(fav).toLowerCase()] || "application/octet-stream";
+      res.writeHead(200, {
+        "content-type": type,
+        "cache-control": "no-cache, no-store, must-revalidate",
+      });
+      createReadStream(fav).pipe(res);
+      return;
+    }
   }
   if (pathname === "/") pathname = "/index.html";
   else if (pathname === "/login") pathname = "/login.html";
@@ -1434,8 +1492,17 @@ function serveStatic(req, res) {
     // <base> 必須是 <head> 首個子元素，才能 rebase 其後所有相對 asset（見 spec P1-a）；
     // 不可注在 </head> 前（會落在 head 尾端，對前面的 <link>/<script> 無效）。
     html = html.replace(/<head(\s[^>]*)?>/i, (m) => `${m}<base href="${baseHref}">`);
-    // __BASE__ 只設 JS 變數，位置不敏感，維持注在 </head> 前。
-    html = html.replace("</head>", `<script>window.__BASE__=${JSON.stringify(base)}</script></head>`);
+    // 品牌名:設了就替換 <title> 初值(消除首屏閃 readyai-webui),並以 __BRAND_NAME__
+    // 注入給 login.html 的 h1(index.html 的 header 由 WS applyBranding 填,首屏靠 title)。
+    const brandName = effectiveUiProfile.brand.name || "";
+    if (brandName) {
+      html = html.replace(/<title>[\s\S]*?<\/title>/i, `<title>${escapeHtmlText(brandName)}</title>`);
+    }
+    // __BASE__ / __BRAND_NAME__ 只設 JS 變數，位置不敏感，維持注在 </head> 前。
+    html = html.replace(
+      "</head>",
+      `<script>window.__BASE__=${JSON.stringify(base)};window.__BRAND_NAME__=${JSON.stringify(brandName)}</script></head>`,
+    );
     res.writeHead(200, {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-cache, no-store, must-revalidate",
