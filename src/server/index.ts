@@ -73,7 +73,7 @@ import type { UiProfile } from "./ui-profile.js";
 import { loadProfile } from "./profile-loader.js";
 import type { ProfileFile } from "./profile-loader.js";
 import { loadBrandCss } from "./brand-overlay.js";
-import { isCustomerMode, isCustomerOpenMode, isBlockedCustomerMessage, scrubForCustomer, missingCustomerSecrets, customerOpenSkillGuardWarning } from "./customer-policy.js";
+import { isCustomerMode, isCustomerOpenMode, isBlockedCustomerMessage, scrubForCustomer, missingCustomerSecrets, customerOpenSkillGuardWarning, enforceCustomerUiProfile } from "./customer-policy.js";
 import { resolveCustomerInjection, shouldInjectHostGuards } from "./customer-injection.js";
 import { buildSandboxGuardedTools, buildHostGuardedTools } from "./guarded-tools.js";
 import { modelNotFoundNotice } from "./model-notice.js";
@@ -571,6 +571,8 @@ try {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exit(2);
 }
+// customer 模式強制 custom 訊息出口 fail-closed(#102)——不依賴存量機舊版 customer.toml。
+effectiveUiProfile = enforceCustomerUiProfile(effectiveUiProfile, isCustomerMode(profileName, profileFile));
 // 載入 brand css overlay 檔案(若 profile 有指定);失敗 fail-fast。
 // cssPath 來自 profile-loader.validateBrand,已驗過 cwd containment;
 // 這裡再 assert 一次防未來新增 CLI/env 入口時繞過 — defense in depth。

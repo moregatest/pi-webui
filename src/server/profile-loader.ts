@@ -32,6 +32,7 @@ export interface UiFlags {
   hide_model?: boolean;
   safe_errors?: boolean;
   expose_tool_args?: boolean;
+  restrict_custom_messages?: boolean;
   // 對話版型:"bubble"=Claude 式左右氣泡(user 右/assistant 左、隱藏角色標題);
   // "log"=工程師視圖(標題 + 左框線,預設)。customer fallback 用 bubble。
   chat_layout?: "bubble" | "log";
@@ -122,7 +123,7 @@ const ALLOWED_TOP = new Set(["meta", "ui", "brand", "skills", "commands", "defau
 const ALLOWED_UI = new Set([
   "hide_thinking", "hide_tool_calls", "show_tool_progress",
   "hide_status_chips", "hide_session_picker", "hide_model",
-  "safe_errors", "expose_tool_args", "chat_layout",
+  "safe_errors", "expose_tool_args", "chat_layout", "restrict_custom_messages",
 ]);
 const ALLOWED_BRAND = new Set([
   "name", "logo", "favicon", "mode", "bg", "panel", "text",
@@ -288,6 +289,7 @@ const CUSTOMER_FALLBACK: ProfileFile = Object.freeze({
     hide_model: true,
     safe_errors: true,
     expose_tool_args: false,
+    restrict_custom_messages: true,
     chat_layout: "bubble",
   }),
 }) as ProfileFile;

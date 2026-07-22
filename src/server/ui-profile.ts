@@ -26,6 +26,9 @@ export interface UiProfile {
   hideModel: boolean;
   safeErrors: boolean;
   exposeToolArgs: boolean;
+  // custom(extension pi.sendMessage 注入)訊息出口 fail-closed(#102):
+  // 僅 readyai_customer_ 前綴放行並轉 assistant 泡泡,其餘整則 drop。
+  restrictCustomMessages: boolean;
   // 對話版型:bubble(Claude 式左右氣泡)/ log(工程師視圖,預設)。
   chatLayout: "bubble" | "log";
   brand: {
@@ -57,6 +60,7 @@ const PRESETS: Record<string, Partial<Omit<UiProfile, "brand">>> = {
     hideSessionPicker: true,
     hideModel: true,
     safeErrors: true,
+    restrictCustomMessages: true,
     chatLayout: "bubble",
   },
 };
@@ -98,6 +102,7 @@ export function parseUiProfile(
     hideModel: false,
     safeErrors: false,
     exposeToolArgs: false,
+    restrictCustomMessages: false,
     chatLayout: "log",
     brand: {
       name: null,
@@ -121,6 +126,7 @@ export function parseUiProfile(
     if (ui.hide_model !== undefined) profile.hideModel = ui.hide_model;
     if (ui.safe_errors !== undefined) profile.safeErrors = ui.safe_errors;
     if (ui.expose_tool_args !== undefined) profile.exposeToolArgs = ui.expose_tool_args;
+    if (ui.restrict_custom_messages !== undefined) profile.restrictCustomMessages = ui.restrict_custom_messages;
     if (ui.chat_layout !== undefined) profile.chatLayout = ui.chat_layout;
   }
 
@@ -296,6 +302,22 @@ function redactToolEventForClient(event: any): any {
   return event;
 }
 
+// custom(role="custom"、extension pi.sendMessage 注入)訊息在 customer 出口的政策
+// (#102):fail-closed——僅 customType 帶 readyai_customer_ 前綴者放行,且轉成
+// assistant 訊息(客戶介面渲染為一般助理泡泡,不露 "Custom: <type>" 內部標頭,
+// 且 convertToLlm 對 custom 也是轉一般訊息,語意一致);其餘(readyai_bootstrap_notice
+// 等內部工程訊息)整則 drop。非 restrict 模式原樣通過。
+const CUSTOMER_VISIBLE_CUSTOM_PREFIX = "readyai_customer_";
+
+function transformCustomMessage(msg: any, profile: UiProfile): any {
+  if (!profile.restrictCustomMessages || !msg || msg.role !== "custom") return msg;
+  if (!String(msg.customType ?? "").startsWith(CUSTOMER_VISIBLE_CUSTOM_PREFIX)) return null;
+  const content = typeof msg.content === "string"
+    ? [{ type: "text", text: msg.content }]
+    : msg.content;
+  return { role: "assistant", content, timestamp: msg.timestamp };
+}
+
 // 一個 AssistantMessage content block 在當前 profile 下是否保留(false = 剝除)。
 // thinking(hideThinking)、tool_call/tool_result(含 SDK camelCase)(hideToolCalls)
 // 為敏感 block。message_update 的 message.content 與 assistantMessageEvent.partial
@@ -360,6 +382,15 @@ function redactEventMessages(event: any, profile: UiProfile): any {
 
 export function filterEvent(event: any, profile: UiProfile): FilterResult {
   if (!event || typeof event !== "object") return { kind: "event", event };
+
+  // custom 訊息出口政策(#102):挾帶單則 custom message 的 event(message_start/
+  // message_end…)——drop 整個 event 或把 message 轉 assistant;messages[] 快照
+  // 由下方 redactEventMessages → filterMessageHistory 一併處理。
+  if (profile.restrictCustomMessages && event.message?.role === "custom") {
+    const t = transformCustomMessage(event.message, profile);
+    if (t === null) return null;
+    event = { ...event, message: t };
+  }
 
   // tool_execution_*:整個 event drop 或轉 tool_progress
   if (
@@ -427,7 +458,7 @@ export function filterEvent(event: any, profile: UiProfile): FilterResult {
 
   // message_update / tool_execution_* 以外、仍帶 message / messages 的 event
   // (message_start/message_end/turn_end/agent_end…)也要剝挾帶的 thinking / tool block。
-  if (profile.hideThinking || profile.hideToolCalls) {
+  if (profile.hideThinking || profile.hideToolCalls || profile.restrictCustomMessages) {
     const red = redactEventMessages(event, profile);
     if (red !== event) return { kind: "event", event: red };
   }
@@ -444,13 +475,21 @@ export function filterEvent(event: any, profile: UiProfile): FilterResult {
 //     thinking / tool_* block(SDK 用 camelCase,舊路徑也可能是 snake_case)
 // hide flag 都沒開時直接回原陣列(無謂複製)。
 export function filterMessageHistory(messages: any[], profile: UiProfile): any[] {
-  if (!profile.hideThinking && !profile.hideToolCalls) return messages;
+  if (!profile.hideThinking && !profile.hideToolCalls && !profile.restrictCustomMessages) return messages;
   if (!Array.isArray(messages)) return messages;
   const out: any[] = [];
   for (const msg of messages) {
     if (!msg) {
       out.push(msg);
       continue;
+    }
+    if (msg.role === "custom") {
+      const t = transformCustomMessage(msg, profile);
+      if (t === null) continue;
+      if (t !== msg) {
+        out.push(t);
+        continue;
+      }
     }
     if (
       profile.hideToolCalls &&

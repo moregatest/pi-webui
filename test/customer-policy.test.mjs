@@ -76,3 +76,16 @@ test("guard: plain customer 無 SKILLS_OPEN → null（非 open，skills 本來�
 test("guard: 非 customer profile → null", () => {
   assert.equal(customerOpenSkillGuardWarning("staff", { PI_WEBUI_SKILLS_OPEN: "1" }, undefined), null);
 });
+
+// #102:customer 模式強制 custom 訊息出口 fail-closed(不依賴存量機舊版 customer.toml)
+test("enforceCustomerUiProfile: customer 強制 restrictCustomMessages=true", async () => {
+  const { enforceCustomerUiProfile } = await import("../dist/server/customer-policy.js");
+  const p = enforceCustomerUiProfile({ restrictCustomMessages: false }, true);
+  assert.equal(p.restrictCustomMessages, true);
+});
+
+test("enforceCustomerUiProfile: 非 customer 不動 profile", async () => {
+  const { enforceCustomerUiProfile } = await import("../dist/server/customer-policy.js");
+  const p = enforceCustomerUiProfile({ restrictCustomMessages: false }, false);
+  assert.equal(p.restrictCustomMessages, false);
+});

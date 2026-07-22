@@ -69,6 +69,17 @@ export function customerOpenSkillGuardWarning(
   );
 }
 
+/** customer 模式強制 custom 訊息出口 fail-closed(#102)。
+ *  存量 preview 機的 customer.toml 由舊版 gen-profile 產出、不含
+ *  restrict_custom_messages——安全過濾不依賴可再生的 toml,由 server 強制。 */
+export function enforceCustomerUiProfile<T extends { restrictCustomMessages: boolean }>(
+  profile: T,
+  isCustomer: boolean,
+): T {
+  if (isCustomer) profile.restrictCustomMessages = true;
+  return profile;
+}
+
 const REQUIRED_CUSTOMER_ENV = [
   "PI_WEBUI_PASSWORD", "PI_WEBUI_MODEL", "LITELLM_BASE_URL", "LITELLM_API_KEY",
   "PC2_SERVICE_HOST", "PC2_API_TOKEN", "PI_WEBUI_BASE_PATH", "PI_PROJECT_CWD",

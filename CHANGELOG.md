@@ -2,6 +2,17 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-07-22 (customer custom 訊息出口)
+
+### 新增
+
+- customer 模式 custom(extension `pi.sendMessage` 注入)訊息出口 fail-closed(readyai#102):
+  僅 `readyai_customer_` 前綴 customType 放行,並轉成 assistant 訊息(客戶介面渲染為一般
+  助理泡泡,不露 `Custom: <type>` 內部標頭);其餘(如 `readyai_bootstrap_notice` 內部工程
+  訊息)整則 drop——message_history 與 live event(message_* / agent_end 挾帶快照)兩路皆過濾
+- profile toml `[ui] restrict_custom_messages`;customer preset 與內建 customer fallback 預設
+  開啟;customer 模式由 server 強制(`enforceCustomerUiProfile`),不依賴存量機舊版 customer.toml
+
 ## 2026-05-29 (uploads)
 
 ### 新增
