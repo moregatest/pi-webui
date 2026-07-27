@@ -16,7 +16,7 @@ import {
 
 test("預設清單包含使用者要求的副檔名", () => {
   const cfg = resolveUploadConfig({ env: {} });
-  const must = ["jpg", "jpeg", "png", "gif", "svg", "pdf", "rar", "zip", "flv", "txt", "doc", "docx", "xls", "xlsx", "dwg"];
+  const must = ["jpg", "jpeg", "png", "gif", "webp", "svg", "pdf", "rar", "zip", "flv", "txt", "doc", "docx", "xls", "xlsx", "dwg"];
   for (const ext of must) {
     assert.ok(cfg.allowedExtensions.has(ext), `預設清單應含 ${ext}`);
   }
@@ -27,7 +27,7 @@ test("預設值 max_bytes / max_files / subdir", () => {
   assert.equal(cfg.maxBytes, DEFAULT_MAX_BYTES);
   assert.equal(cfg.maxFiles, DEFAULT_MAX_FILES);
   assert.equal(cfg.subdir, "default");
-  assert.equal(DEFAULT_ALLOWED_EXTENSIONS.length, 15);
+  assert.equal(DEFAULT_ALLOWED_EXTENSIONS.length, 16);
 });
 
 test("profileName 帶入時 subdir 採 profile 名", () => {

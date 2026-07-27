@@ -89,7 +89,7 @@ command-line flags:
 | `--brand-favicon <path>` | replace the built-in pi favicon served at `/favicon.svg` (svg / png / ico / gif / jpg / webp). path must exist or boot fails. alias: `PI_WEBUI_BRAND_FAVICON`; profile `[brand].favicon` as fallback. |
 | `--chat-layout <mode>` | message layout: `bubble` (Claude-style: user right / assistant left, role labels hidden) or `log` (engineer view with titles, default). alias: `PI_WEBUI_CHAT_LAYOUT`; profile `[ui].chat_layout` as fallback. `customer` fallback defaults to `bubble`. |
 | `--ui-profile <preset>` | preset that expands to a set of the above flags. currently supported: `customer` (= `--hide-thinking --hide-tool-calls --show-tool-progress --hide-status-chips --hide-session-picker --hide-model --safe-errors`). individual flags can still be set alongside; they only ever flip in the same direction (no "un-hide"). |
-| `--upload-ext <list>` | 取代預設一般檔案上傳白名單(逗號分隔,不帶點)。預設清單:`jpg,jpeg,png,gif,svg,pdf,rar,zip,flv,txt,doc,docx,xls,xlsx,dwg`。alias: `PI_WEBUI_UPLOAD_EXT`;profile `[uploads].allowed_extensions` 為 fallback。 |
+| `--upload-ext <list>` | 取代預設一般檔案上傳白名單(逗號分隔,不帶點)。預設清單:`jpg,jpeg,png,gif,webp,svg,pdf,rar,zip,flv,txt,doc,docx,xls,xlsx,dwg`。alias: `PI_WEBUI_UPLOAD_EXT`;profile `[uploads].allowed_extensions` 為 fallback。 |
 | `--upload-ext-add <list>` | 在現有清單之上加增副檔名(預設 + profile + `--upload-ext`)。alias: `PI_WEBUI_UPLOAD_EXT_ADD`。 |
 | `--upload-subdir <name>` | 上傳檔案落地子目錄(`<cwd>/uploads/<subdir>/`)。預設取 `--profile` 名,沒設時為 `default`。只允許 `[A-Za-z0-9_-]`。alias: `PI_WEBUI_UPLOAD_SUBDIR`;profile `[uploads].subdir` 為 fallback。 |
 | `--upload-max-bytes <n>` | 單檔位元組上限。預設 `52428800`(50 MiB)。alias: `PI_WEBUI_UPLOAD_MAX_BYTES`。 |

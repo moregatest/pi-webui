@@ -2,6 +2,22 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-07-27 (圖片附件同時落地)
+
+### 改動
+
+- 圖片附件(png/jpeg/gif/webp)除了原本的 in-band base64,**同時**再走一次
+  `PUT /api/upload` 落地,並把 `attachPath` 一併放進 prompt 的 `files`,於是
+  `[Attached files]` 區塊也會列出圖片路徑。原本只有 base64 時,LLM 看得到圖卻
+  沒有檔案可操作,任何吃檔案路徑的工具(例如 `readyai-image-uploader --local-file`)
+  都無從執行,只能回頭跟使用者要「檔案路徑」——對客戶而言那是死路
+  (readyai-fly-services 2026-07-27 probe 實測)
+- 落地失敗或無從落地(剪貼簿貼圖常無副檔名、白名單外、超過上傳上限)時標記為
+  `error` / `skipped`,**不阻斷送出**,行為退回原本的純 vision;`error` 另發 toast
+- 送出前的「等待上傳完成」檢查納入圖片,避免搶在落地完成前送出而漏掉 `attachPath`
+- 預設副檔名白名單補上 `webp`(16 個),與 `ALLOWED_PASTED_IMAGE_MIME` 對齊——
+  否則 webp 會出現「看得到卻沒檔案」的落差
+
 ## 2026-07-22 (customer custom 訊息出口)
 
 ### 新增

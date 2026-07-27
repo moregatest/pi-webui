@@ -114,8 +114,13 @@ const MAX_PASTED_IMAGE_BYTES = 10 * 1024 * 1024;
 // Anthropic ImageContent 支援的 mime;命中這條的圖檔走 in-band base64 path,
 // 讓 LLM 直接「看見」內容(不必先 Read 路徑)。命中不到的圖(svg)以及所有
 // 其他副檔名,走 /api/upload + path,LLM 用 Read/Bash 自行取。
+// 命中的圖檔**同時**再走一次 /api/upload 落地(見 ingestFiles):光有 base64
+// 時 LLM 看得到圖卻沒有檔案可操作,任何吃檔案路徑的工具(如 readyai-image-uploader
+// --local-file)都無從執行,只能回頭跟使用者要「路徑」——那是死路。
 const ALLOWED_PASTED_IMAGE_MIME = /^image\/(png|jpeg|gif|webp)$/i;
-// in-memory list of images attached to the next prompt: {data, mimeType, url}
+// in-memory list of images attached to the next prompt:
+// {data, mimeType, url, originalName, ext, attachPath, uploadStatus}
+// uploadStatus: "uploading" | "ready" | "error" | "skipped"(無副檔名/白名單外/過大)
 const pendingImages = [];
 
 
@@ -127,7 +132,7 @@ let nextPendingFileId = 1;
 // 上傳設定:從 connected packet 拿;先給 defaults 避免 connected 之前 paste
 // 觸發到 undefined。預設清單與 server 端 DEFAULT_ALLOWED_EXTENSIONS 對齊。
 const DEFAULT_UPLOAD_EXTENSIONS = [
-  "jpg", "jpeg", "png", "gif", "svg",
+  "jpg", "jpeg", "png", "gif", "webp", "svg",
   "pdf", "rar", "zip", "flv", "txt",
   "doc", "docx", "xls", "xlsx", "dwg",
 ];
@@ -2143,6 +2148,9 @@ function renderAttachments() {
   pendingImages.forEach((img, i) => {
     const chip = document.createElement("div");
     chip.className = "attachment-chip";
+    // 落地中的圖沿用檔案 chip 的 pending 樣式;純 vision(skipped/error)不特別標示,
+    // 因為對使用者而言圖仍然「附上去了」。
+    if (img.uploadStatus === "uploading") chip.classList.add("pending");
     const thumb = document.createElement("img");
     thumb.src = img.url;
     thumb.alt = "pasted image";
@@ -2245,11 +2253,38 @@ async function ingestFiles(files) {
       }
       const buf = await file.arrayBuffer();
       const data = arrayBufferToBase64(buf);
-      pendingImages.push({
+      const imgEntry = {
         data,
         mimeType: file.type,
         url: `data:${file.type};base64,${data}`,
-      });
+        originalName: file.name || "",
+        ext,
+        attachPath: null,
+        uploadStatus: "uploading",
+      };
+      pendingImages.push(imgEntry);
+      // 再落地一份取 attachPath。剪貼簿貼上的圖常無檔名/副檔名,白名單外或超過
+      // 上傳上限的同理——這些只能保持純 vision,標 skipped 不擋送出。
+      if (!ext || !uploadConfig.allowedExtensions.has(ext) || file.size > uploadConfig.maxBytes) {
+        imgEntry.uploadStatus = "skipped";
+      } else {
+        uploadFile(file).then(
+          (meta) => {
+            imgEntry.uploadStatus = "ready";
+            imgEntry.attachPath = meta.attachPath;
+            imgEntry.storedName = meta.storedName;
+            renderAttachments();
+          },
+          (err) => {
+            // 落地失敗只是降級回純 vision,不阻斷送出;但要讓使用者知道
+            // 「這張圖 LLM 看得到、卻沒有檔案可用」。
+            imgEntry.uploadStatus = "error";
+            logger.info("image upload failed", { message: err.message });
+            showToast(`image saved for viewing only (upload failed): ${err.message}`, "warning");
+            renderAttachments();
+          },
+        );
+      }
       continue;
     }
     // 非圖片(或 svg / 其他副檔名)走 /api/upload
@@ -2372,9 +2407,12 @@ composer.addEventListener("submit", (event) => {
   // 排除。若還在 uploading,提示使用者稍候。
   const readyFiles = pendingFiles.filter((f) => f.status === "ready");
   const uploadingFiles = pendingFiles.filter((f) => f.status === "uploading");
+  // 圖片的落地也算一份上傳,沒等完就送會漏掉 attachPath。
+  const uploadingImages = pendingImages.filter((img) => img.uploadStatus === "uploading");
   const hasFiles = readyFiles.length > 0;
-  if (uploadingFiles.length > 0) {
-    showToast(`waiting for ${uploadingFiles.length} upload(s) to finish`, "info");
+  const pendingUploads = uploadingFiles.length + uploadingImages.length;
+  if (pendingUploads > 0) {
+    showToast(`waiting for ${pendingUploads} upload(s) to finish`, "info");
     return;
   }
   if ((!message && !hasImages && !hasFiles) || socket?.readyState !== WebSocket.OPEN) return;
@@ -2413,7 +2451,13 @@ composer.addEventListener("submit", (event) => {
   }
 
   const images = pendingImages.map((img) => ({ data: img.data, mimeType: img.mimeType }));
-  const files = readyFiles.map((f) => ({ originalName: f.originalName, attachPath: f.attachPath }));
+  // 落地成功的圖同時以附件路徑送出:base64 給 vision、attachPath 給要吃檔案的工具。
+  const files = [
+    ...readyFiles.map((f) => ({ originalName: f.originalName, attachPath: f.attachPath })),
+    ...pendingImages
+      .filter((img) => img.attachPath)
+      .map((img) => ({ originalName: img.originalName, attachPath: img.attachPath })),
+  ];
   pendingImages.length = 0;
   pendingFiles.length = 0;
   renderAttachments();

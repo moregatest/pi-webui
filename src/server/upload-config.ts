@@ -16,7 +16,9 @@ import type { ProfileFile } from "./profile-loader.js";
 // 預設副檔名清單(全部小寫,不含開頭的點)。
 // 與 README/ROADMAP 對齊,改這裡也要同步改文件。
 export const DEFAULT_ALLOWED_EXTENSIONS: ReadonlyArray<string> = Object.freeze([
-  "jpg", "jpeg", "png", "gif", "svg",
+  // webp 與 ALLOWED_PASTED_IMAGE_MIME 對齊:圖檔會同時走 in-band base64 與落地,
+  // 少了 webp 會出現「看得到卻沒檔案」的落差。
+  "jpg", "jpeg", "png", "gif", "webp", "svg",
   "pdf",
   "rar", "zip",
   "flv",
