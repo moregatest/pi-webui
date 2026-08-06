@@ -1,0 +1,20 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/deployment-confirmations",
+    "body": {
+      "project_id": "customer-preview",
+      "confirmation_id": "550e8400-e29b-41d4-a716-446655440000",
+      "preview_fingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "fingerprint_schema": 1,
+      "agent_summary": "Preview verified; ready for shadow deployment.",
+      "conversation_ref": "agentsview://conversation/550e8400-e29b-41d4-a716-446655440000",
+      "ticket_id": null
+    }
+  },
+  "response": {
+    "confirmation_id": "550e8400-e29b-41d4-a716-446655440000",
+    "deployment_id": "7e5f4ad2-9f18-4f12-8ce9-34c777ed0b91",
+    "status": "queued"
+  }
+}

@@ -269,6 +269,8 @@ export const SECRET_ENV_KEYS: readonly string[] = [
   "PC2_SERVICE_PWS",
   "R2_ACCESS_KEY_ID",
   "R2_SECRET_ACCESS_KEY",
+  "TICKET_HUB_SITE_TOKEN",       // PGC publish control-plane
+  "PGC_SNAPSHOT_EXPORT_TOKEN",    // PGC snapshot export
 ];
 
 export const REDACTION_PLACEHOLDER = "«REDACTED»";

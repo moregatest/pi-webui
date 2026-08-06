@@ -1,0 +1,34 @@
+{
+  "payload": {
+    "schema_version": 1,
+    "project_id": "customer-preview",
+    "source_app": "readyai",
+    "workspace_domain": "customer-preview.demo.ready-market.com",
+    "target_domain": "www.customer.example",
+    "languages": [
+      "en",
+      "zh-TW"
+    ],
+    "broker_project_key": "customer-preview",
+    "acceptance_policy": {
+      "archive_scopes": [
+        "pc2-template/customer-preview"
+      ],
+      "languages": [
+        "en",
+        "zh-TW"
+      ],
+      "public_content_routes": [
+        "/products/widget"
+      ],
+      "asset_checks": {
+        "require_content_type": true,
+        "require_source_target_sha256": true
+      },
+      "db_receipt": {
+        "schema_version": 1
+      }
+    }
+  },
+  "digest": "sha256:0310c0bb0fbc89938e44502fcbf97fa38df4b2ff829825d6a4015738dd1bf0ea"
+}
