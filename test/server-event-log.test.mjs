@@ -35,6 +35,12 @@ test("eventsAfter(cursor) returns empty array when cursor is current head", () =
   assert.deepEqual(out.events, []);
 });
 
+test("eventsAfter(cursor) treats a cursor ahead of this process generation as a miss", () => {
+  const log = createEventLog();
+  log.append({ type: "message_update" });
+  assert.deepEqual(log.eventsAfter(99), { events: [], miss: true });
+});
+
 test("eventsAfter(null) is treated as a miss (forces full reset on the client)", () => {
   const log = createEventLog();
   log.append({ type: "x" });

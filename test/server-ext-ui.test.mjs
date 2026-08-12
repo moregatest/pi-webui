@@ -36,6 +36,29 @@ test("confirm posts ext_ui_request and resolves to the response value", async ()
   assert.equal(await p, true);
 });
 
+test("第一個互動 response 會廣播 cancel，關閉其他瀏覽器的同一 modal", async () => {
+  const { lastSent, bridge } = makeHarness();
+  const promise = bridge.ui.confirm("title", "are you sure?");
+  const request = lastSent("ext_ui_request");
+  bridge.handleResponse({ id: request.payload.id, value: true });
+  assert.equal(await promise, true);
+  assert.deepEqual(lastSent("ext_ui_cancel"), {
+    type: "ext_ui_cancel",
+    payload: { id: request.payload.id },
+  });
+});
+
+test("互動 request timeout 會廣播 cancel，不留下其他瀏覽器的 stale modal", async () => {
+  const { lastSent, bridge } = makeHarness();
+  const promise = bridge.ui.confirm("title", "timeout", { timeout: 10 });
+  const request = lastSent("ext_ui_request");
+  await assert.rejects(promise, /timed out/);
+  assert.deepEqual(lastSent("ext_ui_cancel"), {
+    type: "ext_ui_cancel",
+    payload: { id: request.payload.id },
+  });
+});
+
 test("confirm resolves to false when the modal is dismissed (undefined response)", async () => {
   // The client sends `value: undefined` for Escape on a confirm dialog. The
   // bridge passes this through; the abort fallback is only used for AbortSignal
@@ -86,6 +109,18 @@ test("dispose rejects pending interactive requests so callers don't hang", async
   await assert.rejects(p, /disposed/);
 });
 
+test("replayPending 把未完成的互動 request 重送給新連線", async (t) => {
+  const { bridge, lastSent } = makeHarness();
+  const promise = bridge.ui.confirm("title", "continue?");
+  const request = lastSent("ext_ui_request");
+  t.after(() => bridge.handleResponse({ id: request.payload.id, value: false }));
+  const replayed = [];
+  bridge.replayPending((packet) => replayed.push(packet));
+  assert.deepEqual(replayed, [request]);
+  bridge.handleResponse({ id: request.payload.id, value: true });
+  assert.equal(await promise, true);
+});
+
 // --- ui.custom ----------------------------------------------------------
 
 // Build a fake pi-tui Component the bridge can drive: it captures every
@@ -121,6 +156,21 @@ test("custom factory is invoked and initial render is shipped as ext_ui_custom_o
   assert.equal(open.payload.lines.length, 2);
   assert.match(open.payload.lines[0], /^width=\d+$/);
   assert.equal(sent.filter((m) => m.type === "ext_ui_custom_open").length, 1);
+});
+
+test("replayPending 會以 ext_ui_custom_open 重建未完成 custom UI", async (t) => {
+  const { bridge } = makeHarness();
+  const fc = makeFakeComponent();
+  const promise = bridge.ui.custom(fc.factory);
+  await new Promise((r) => setImmediate(r));
+  t.after(() => fc.finish(undefined));
+  const replayed = [];
+  bridge.replayPending((packet) => replayed.push(packet));
+  assert.equal(replayed.length, 1);
+  assert.equal(replayed[0].type, "ext_ui_custom_open");
+  assert.match(replayed[0].payload.lines[0], /^width=\d+$/);
+  fc.finish("done");
+  assert.equal(await promise, "done");
 });
 
 test("tui.requestRender debounces into a single ext_ui_custom_update", async () => {

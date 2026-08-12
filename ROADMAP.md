@@ -38,6 +38,7 @@
 [x] `PI_PROJECT_CWD` / `PI_AGENT_DIR` / `PI_SESSION_DIR` overrides (plus `--session-dir` CLI flag)
 [x] session file watching for external changes
 [x] event log for replay and debugging
+[x] issue #9:customer profile 由 process 內單一 shared controller/runtime 掌管 active session，跨瀏覽器忽略舊 localStorage、共用 event replay 與 turn queue；staff/developer 保留 per-browser resume
 [x] static asset vendoring via `make vendor`
 [x] private fork renamed to `@moregatest/readyai-webui` (decoupled from upstream `@khimaros/pi-webui` update stream) with `readyai-webui` bin
 [x] `make pack` and `make publish` targets
