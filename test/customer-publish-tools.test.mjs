@@ -302,25 +302,27 @@ describe("CLI args", () => {
     );
   });
 
-  it("buildPushBackArgs 無 force", () => {
+  it("buildPushBackArgs 無 force：帶 --http（客戶路徑無 SSH，走 ORIGIN_HOSTNAME + 站台 token）", () => {
     assert.deepStrictEqual(
       buildPushBackArgs("my-app", { force: false }),
-      ["preview", "push-back", "--name", "my-app"],
+      ["preview", "push-back", "--http", "--name", "my-app"],
     );
   });
 
-  it("buildPushBackArgs force + reason", () => {
+  it("buildPushBackArgs force + reason：--force/--reason 只出現一次", () => {
     assert.deepStrictEqual(
       buildPushBackArgs("my-app", { force: true, reason: "客戶要求" }),
-      ["preview", "push-back", "--name", "my-app", "--force", "--reason", "客戶要求"],
+      ["preview", "push-back", "--http", "--name", "my-app", "--force", "--reason", "客戶要求"],
     );
   });
 
-  it("buildPushDbArgs 多語系 + force", () => {
+  it("buildPushDbArgs 多語系 + force：不帶 --http（push-db 已 HTTP 化，CLI 無此 flag）", () => {
+    const args = buildPushDbArgs("my-app", ["en", "zh-TW"], { force: true, reason: "r" });
     assert.deepStrictEqual(
-      buildPushDbArgs("my-app", ["en", "zh-TW"], { force: true, reason: "r" }),
+      args,
       ["preview", "push-db", "--name", "my-app", "--lng", "en,zh-TW", "--force", "--reason", "r"],
     );
+    assert.ok(!args.includes("--http"), "push-db 不接受 --http，帶上會被 click 拒絕");
   });
 
   it("buildForcePublishAuditUrl：組出 m=log&a=pgc-force-publish + 參數", () => {

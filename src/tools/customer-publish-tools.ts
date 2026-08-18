@@ -288,7 +288,9 @@ export function buildPushBackArgs(
   appName: string,
   opts: { force: boolean; reason?: string },
 ): string[] {
-  const args = ["preview", "push-back", "--name", appName];
+  // --http：客戶預覽機沒有 origin 的 SSH 通道（也不該有），走 R2+HTTP+站台 token。
+  // 少了它 CLI 會落到 SSH 分支要 ORIGIN_SSH_HOST，publish 直接失敗。
+  const args = ["preview", "push-back", "--http", "--name", appName];
   if (opts.force) {
     args.push("--force");
     if (opts.reason) args.push("--reason", opts.reason);
@@ -301,6 +303,8 @@ export function buildPushDbArgs(
   languages: string[],
   opts: { force: boolean; reason?: string },
 ): string[] {
+  // 注意：push-db 不加 --http——該指令本身已 HTTP 化（--host 是 no-op），CLI 沒有這個
+  // flag，帶上會被 click 以 "No such option" 拒絕。它同樣讀 .env 的 ORIGIN_HOSTNAME。
   const args = ["preview", "push-db", "--name", appName, "--lng", languages.join(",")];
   if (opts.force) {
     args.push("--force");
@@ -378,15 +382,10 @@ export function createLocalPublishDeps(config: LocalPublishConfig): PublishLocal
     if (!resp.ok) throw new Error(`force publish audit HTTP ${resp.status}`);
   }
 
-  function runCli(
-    args: string[],
-    opts: { force: boolean; reason?: string },
-  ): Promise<CliRunResult> {
-    const full = args.slice();
-    if (opts.force) {
-      full.push("--force");
-      if (opts.reason) full.push("--reason", opts.reason);
-    }
+  // args 已由 buildPushBackArgs / buildPushDbArgs 組妥（含 --force / --reason）；
+  // 這裡不再附加，否則會送出重複的 --force --reason X --force --reason X。
+  function runCli(args: string[]): Promise<CliRunResult> {
+    const full = args;
     return new Promise((resolve) => {
       let settled = false;
       const done = (r: CliRunResult) => {
@@ -413,8 +412,8 @@ export function createLocalPublishDeps(config: LocalPublishConfig): PublishLocal
     readRecordedOriginVersion,
     writeForcePublishAudit,
     pushBack: (opts) =>
-      runCli(buildPushBackArgs(config.appName, opts), opts),
+      runCli(buildPushBackArgs(config.appName, opts)),
     pushDb: (opts) =>
-      runCli(buildPushDbArgs(config.appName, config.languages, opts), opts),
+      runCli(buildPushDbArgs(config.appName, config.languages, opts)),
   };
 }
