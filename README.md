@@ -11,7 +11,7 @@ a simple, standalone webui for [pi.dev](https://pi.dev)
 
 prerequisites:
 
-- node.js 20+
+- node.js 22.19+
 - a working pi installation
 
 install as a pi extension (this is a private fork — install from source, not the npm registry):
@@ -20,7 +20,7 @@ install as a pi extension (this is a private fork — install from source, not t
 git clone https://github.com/moregatest/pi-webui
 cd pi-webui
 make            # install deps + build (tsc)
-npm link        # expose the `readyai-webui` bin + register as a pi extension globally
+npm link --ignore-scripts  # expose the bin + register as a pi extension globally
 ```
 
 control from the pi tui:
@@ -63,6 +63,8 @@ command-line flags:
 | --- | --- |
 | `--listen <host:port>` | http bind address; takes precedence over `HOST`/`PORT`. use `:port` for default host, or `[::1]:port` for ipv6. |
 | `--model <provider/id>` | default model for new sessions (e.g. `anthropic/claude-opus-4-7`). bare `id` is resolved against the model registry. |
+| `--approve` | trust project-local `.pi` / `.agents` executable resources for this run. review them before enabling. |
+| `--no-approve` | ignore project-local `.pi` / `.agents` executable resources for this run. without either flag, saved Pi trust is honored and an unknown repo containing these resources fails closed. |
 | `--skill <path>` | additional skill source (file or directory). repeatable, or use `:` / `,` to combine. |
 | `--skill-allow <names>` | comma-separated skill name whitelist; only these skills are loaded. |
 | `--skill-allow-file <path>` | whitelist file (one name per line, `#` for comments). missing file behaves as if unset. when neither this flag nor `PI_WEBUI_SKILL_ALLOW_FILE` is set, `<cwd>/.pi/skills-allow.txt` is auto-detected if present. |
@@ -145,6 +147,7 @@ examples:
 ```bash
 readyai-webui --listen 0.0.0.0:3000
 readyai-webui --model anthropic/claude-opus-4-7 --hide-model
+OPENROUTER_API_KEY=... readyai-webui --model openrouter/deepseek/deepseek-v4-pro --hide-model
 readyai-webui --skill ~/.claude/skills --skill-allow brainstorming,verify
 HOST=0.0.0.0 PORT=3000 PI_PROJECT_CWD=/path/to/project npm start
 PI_WEBUI_PASSWORD=hunter2 readyai-webui --listen 0.0.0.0:3000 --trust-proxy
@@ -152,7 +155,8 @@ readyai-webui --ui-profile customer --brand-name "Acme Bot" --brand-color "#0066
 ```
 
 when launched via the pi extension, equivalent pi flags are available:
-`--webui-model`, `--webui-skill`, `--webui-skill-allow`,
+`--webui-model`, `--webui-approve`, `--webui-no-approve`,
+`--webui-skill`, `--webui-skill-allow`,
 `--webui-skill-allow-file`, `--webui-command-allow`,
 `--webui-command-allow-file`, `--webui-session-dir`, `--webui-hide-model`,
 `--webui-password`, `--webui-trust-proxy`,
@@ -165,6 +169,26 @@ when launched via the pi extension, equivalent pi flags are available:
 `--webui-ui-profile`, `--webui-profile`,
 `--webui-upload-ext`, `--webui-upload-ext-add`, `--webui-upload-subdir`,
 `--webui-upload-max-bytes`, `--webui-upload-max-files`.
+
+### dependency and repo trust
+
+This checkout pins production and development packages to exact versions and
+commits their npm lockfile integrity hashes. `.npmrc` disables lifecycle scripts,
+and the Makefile installs with `npm ci --ignore-scripts`; keep both protections
+when installing in CI or on a deployment host. Treat dependency updates as a
+reviewed change: inspect the lockfile diff, run `npm audit --omit=dev` and the
+full test suite, then merge. A stable release label by itself is not a security
+boundary.
+
+Pi extensions, skills and other project-local resources are code/configuration
+from the opened repository. An unknown repository that contains trust-requiring
+`.pi` or `.agents` resources is therefore loaded in untrusted mode by default.
+After reviewing those files, use `--approve` (or `--webui-approve`) for that run.
+Use `--no-approve` to force the safe mode even if Pi has a saved trust decision.
+
+This reduces install-time and open-repo risk, but it does not make a trusted
+agent process a sandbox. For untrusted prompts or users, also use `--sandbox`,
+least-privilege credentials, short-lived tokens, and an isolated deployment.
 
 to lock down the slash command menu for a deployment, drop a
 `.pi/commands-allow.txt` in the project root with one command name per line

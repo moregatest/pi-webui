@@ -84,6 +84,8 @@ function openUrl(url: string) {
 interface StartOptions {
 	listen?: string;
 	model?: string;
+	approve?: boolean;
+	noApprove?: boolean;
 	// 路徑用 ':' 或 ',' 分隔多個;會在這邊展開成多個 --skill 參數
 	skills?: string;
 	skillAllow?: string;
@@ -137,6 +139,8 @@ function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 		const serverArgs = [serverPath];
 		if (opts.listen) serverArgs.push("--listen", opts.listen);
 		if (opts.model) serverArgs.push("--model", opts.model);
+		if (opts.approve) serverArgs.push("--approve");
+		if (opts.noApprove) serverArgs.push("--no-approve");
 		if (opts.skills) {
 			for (const p of opts.skills.split(/[:,]/).map((s) => s.trim()).filter(Boolean)) {
 				serverArgs.push("--skill", p);
@@ -278,6 +282,8 @@ function parseStartFlags(tokens: string[]): StartOptions {
 		else if (t.startsWith("--listen=")) opts.listen = t.slice("--listen=".length);
 		else if (t === "--model") opts.model = valueOf(++i, t);
 		else if (t.startsWith("--model=")) opts.model = t.slice("--model=".length);
+		else if (t === "--approve") opts.approve = true;
+		else if (t === "--no-approve") opts.noApprove = true;
 		else if (t === "--skill") skills.push(valueOf(++i, t));
 		else if (t.startsWith("--skill=")) skills.push(t.slice("--skill=".length));
 		else if (t === "--skill-allow") opts.skillAllow = valueOf(++i, t);
@@ -336,6 +342,9 @@ function parseStartFlags(tokens: string[]): StartOptions {
 		else if (t.startsWith("--upload-max-files=")) opts.uploadMaxFiles = t.slice("--upload-max-files=".length);
 		else throw new Error(`unknown flag: ${t}`);
 	}
+	if (opts.approve && opts.noApprove) {
+		throw new Error("--approve and --no-approve cannot be used together");
+	}
 	if (skills.length > 0) opts.skills = skills.join(":");
 	return opts;
 }
@@ -375,6 +384,18 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		description: "default model for readyai-webui sessions (provider/id, or bare id). Implies --webui.",
 		type: "string",
 		default: "",
+	});
+
+	pi.registerFlag?.("webui-approve", {
+		description: "trust project-local .pi/.agents resources for this readyai-webui run. Implies --webui.",
+		type: "boolean",
+		default: false,
+	});
+
+	pi.registerFlag?.("webui-no-approve", {
+		description: "ignore project-local .pi/.agents resources for this readyai-webui run. Implies --webui.",
+		type: "boolean",
+		default: false,
 	});
 
 	pi.registerFlag?.("webui-skill", {
@@ -639,6 +660,8 @@ export default function webuiExtension(pi: ExtensionAPI) {
 	setImmediate(() => {
 		let listen: string;
 		let model: string;
+		let approve: boolean;
+		let noApprove: boolean;
 		let skills: string;
 		let skillAllow: string;
 		let skillAllowFile: string;
@@ -677,6 +700,8 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		try {
 			listen = String(pi.getFlag?.("webui-listen") || "").trim();
 			model = String(pi.getFlag?.("webui-model") || "").trim();
+			approve = !!pi.getFlag?.("webui-approve");
+			noApprove = !!pi.getFlag?.("webui-no-approve");
 			skills = String(pi.getFlag?.("webui-skill") || "").trim();
 			skillAllow = String(pi.getFlag?.("webui-skill-allow") || "").trim();
 			skillAllowFile = String(pi.getFlag?.("webui-skill-allow-file") || "").trim();
@@ -715,6 +740,8 @@ export default function webuiExtension(pi: ExtensionAPI) {
 				!!pi.getFlag?.("webui") ||
 				listen.length > 0 ||
 				model.length > 0 ||
+				approve ||
+				noApprove ||
 				skills.length > 0 ||
 				skillAllow.length > 0 ||
 				skillAllowFile.length > 0 ||
@@ -753,6 +780,10 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			return;
 		}
 		if (!want) return;
+		if (approve && noApprove) {
+			process.stderr.write("[readyai-webui] error: --webui-approve and --webui-no-approve cannot be used together\n");
+			return;
+		}
 		const stubCtx = {
 			ui: {
 				notify: (msg: string, level?: string) =>
@@ -762,6 +793,8 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		runStart(stubCtx, {
 			listen: listen || undefined,
 			model: model || undefined,
+			approve: approve || undefined,
+			noApprove: noApprove || undefined,
 			skills: skills || undefined,
 			skillAllow: skillAllow || undefined,
 			skillAllowFile: skillAllowFile || undefined,

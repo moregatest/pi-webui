@@ -16,7 +16,7 @@ CURL              := curl -fsSL
 TS_SOURCES        := $(shell find src -name '*.ts' 2>/dev/null)
 JS_SOURCES        := $(shell find public test -name '*.mjs' -not -path './public/vendor/*' 2>/dev/null)
 
-.PHONY: build lint test test-sandbox test-tunnel precommit start install update vendor vendor-clean pack publish clean
+.PHONY: build lint test test-sandbox test-tunnel precommit start install vendor vendor-clean pack publish clean
 
 .DEFAULT_GOAL := build
 
@@ -24,7 +24,7 @@ build: node_modules
 	@npm run build
 
 node_modules: package.json package-lock.json
-	@npm install
+	@npm ci --ignore-scripts
 	@touch node_modules
 
 lint: node_modules
@@ -54,18 +54,14 @@ start: build
 	@npm start
 
 install:
-	@npm install -g .
+	@npm install -g --ignore-scripts .
 
 pack: build
 	@mkdir -p build
-	@npm pack --pack-destination build
+	@npm pack --ignore-scripts --pack-destination build
 
 publish: build
-	@npm publish --access public
-
-update:
-	@npm update
-	@touch node_modules
+	@npm publish --ignore-scripts --access public
 
 clean:
 	@rm -rf dist build

@@ -8,3 +8,12 @@ build/
 uploads/
 # 對話 session 預設落地目錄,內含對話內容(可能含敏感資訊)不應入庫
 .pi/sessions/
+# /teach 技能的教學工作區(供應鏈安全),與 pi-webui 產品無關,不入庫
+MISSION.md
+NOTES.md
+RESOURCES.md
+GLOSSARY.md
+lessons/
+reference/
+learning-records/
+assets/

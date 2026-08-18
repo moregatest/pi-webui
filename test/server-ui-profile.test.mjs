@@ -282,6 +282,26 @@ test("/brand/logo 在 password 模式下不需 cookie 也可存取(避免 login 
 
 // ── issue #2 P1:模型 registry 找不到 → connected.modelWarning（不再靜默）─────
 
+test("Pi 0.83 可解析 OpenRouter deepseek-v4-pro 的完整 selector", async () => {
+  const selector = "openrouter/deepseek/deepseek-v4-pro";
+  const server = await startServer({
+    PI_WEBUI_MODEL: selector,
+    // 只用來讓 provider 進 available catalog；本測試不送 prompt、不呼叫模型。
+    OPENROUTER_API_KEY: "pi-webui-capability-probe",
+  });
+  try {
+    const payload = await getConnectedPayload(server.url);
+    assert.equal(payload.modelWarning ?? null, null, "完整 selector 應由 modelRuntime 解析");
+    assert.match(
+      server.getStderr() + server.getStdout(),
+      /session bound.*model=openrouter\/deepseek\/deepseek-v4-pro/,
+      "session 應綁定 OpenRouter 下的 deepseek-v4-pro，而非直連 DeepSeek provider",
+    );
+  } finally {
+    await stopServer(server.child);
+  }
+});
+
 test("PI_WEBUI_MODEL 在 registry 找不到 → connected payload 帶 modelWarning（含 model 名）", async () => {
   const { child, url } = await startServer({ PI_WEBUI_MODEL: "nonexistent/zzz-model-xyz" });
   try {

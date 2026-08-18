@@ -12,7 +12,10 @@ import {
   createAgentSessionRuntime,
   createAgentSessionServices,
   getAgentDir,
+  hasTrustRequiringProjectResources,
+  ProjectTrustStore,
   SessionManager,
+  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { resolveSessionDir, canonicalize } from "./session-dir.js";
 import { shouldResumeStoredSession } from "./session-guard.js";
@@ -176,6 +179,10 @@ function printHelp() {
     "                              use ':port' for default host, or '[::1]:port' for ipv6.",
     "  --model <provider/id>       default model for new sessions (e.g. anthropic/claude-opus-4-7).",
     "                              may be a bare id; the model registry resolves the match.",
+    "  --approve                   trust project-local .pi/.agents resources for this run.",
+    "  --no-approve                ignore project-local .pi/.agents resources for this run.",
+    "                              without either flag, saved Pi trust is honored; unknown repos",
+    "                              containing executable resources fail closed.",
     "  --skill <path>              additional skill path (file or directory). repeatable;",
     "                              or use ':' / ',' to combine in one value.",
     "  --skill-allow <names>       comma-separated skill name whitelist; only these skills load.",
@@ -323,6 +330,8 @@ function parseArgs(argv) {
     else if (a.startsWith("--listen=")) out.listen = a.slice("--listen=".length);
     else if (a === "--model") out.model = argv[++i];
     else if (a.startsWith("--model=")) out.model = a.slice("--model=".length);
+    else if (a === "--approve") out.approve = true;
+    else if (a === "--no-approve") out.noApprove = true;
     else if (a === "--skill") out.skill.push(argv[++i]);
     else if (a.startsWith("--skill=")) out.skill.push(a.slice("--skill=".length));
     else if (a === "--skill-allow") out.skillAllow = argv[++i];
@@ -412,6 +421,9 @@ function parseArgs(argv) {
   }
   if (out.password !== undefined && String(out.password).length === 0) {
     throw new Error("--password cannot be empty");
+  }
+  if (out.approve && out.noApprove) {
+    throw new Error("--approve and --no-approve cannot be used together");
   }
   return out;
 }
@@ -742,6 +754,17 @@ async function collectRecentCwds() {
   return [...seen.values()].sort((a, b) => b.modified - a.modified);
 }
 const agentDir = process.env.PI_AGENT_DIR || getAgentDir();
+const projectTrustStore = new ProjectTrustStore(agentDir);
+
+// Pi 0.79+ 的 project trust 邊界。WebUI 啟動時還沒有互動式 UI 可詢問，
+// 因此未知 repo 一律先視為不信任；只有 Pi 已保存的信任，或本次明確
+// --approve，才載入 cwd 的 .pi/.agents 可執行資源。兩個 CLI flag 都只影響本次執行。
+function resolveProjectTrusted(cwd) {
+  if (args.approve) return true;
+  if (args.noApprove) return false;
+  if (!hasTrustRequiringProjectResources(cwd)) return true;
+  return projectTrustStore.get(cwd) === true;
+}
 // session 儲存目錄輸入。實際目錄由 resolveSessionDir(cwd, ...) 算:
 // CLI > env > 預設 <cwd>/.pi/sessions。override 跨 cwd 共用,預設隨 cwd 重算。
 const cliSessionDir = args.sessionDir;
@@ -949,10 +972,10 @@ const mimeTypes = {
 // Mirrors the TUI's /scoped-models selection persisted via SettingsManager.
 // The TUI saves enabled model IDs as "provider/id" strings, so exact matching
 // against the registry is sufficient.
-function resolveScopedModelsFromSettings(services) {
+async function resolveScopedModelsFromSettings(services) {
   const patterns = services.settingsManager.getEnabledModels();
   if (!patterns || patterns.length === 0) return [];
-  const available = services.modelRegistry.getAvailable();
+  const available = await services.modelRuntime.getAvailable();
   const matched = [];
   for (const pattern of patterns) {
     const found = available.find(
@@ -976,14 +999,14 @@ function buildSkillsOverride(allow) {
   });
 }
 
-// 從 modelRegistry 把 "provider/id" 或單獨 id 解析成 Model 物件。
+// 從 modelRuntime 把 "provider/id" 或單獨 id 解析成 Model 物件。
 // 找不到時印警告,讓 SDK 回退到預設模型。
-function resolveCliModel(services, pattern) {
+async function resolveCliModel(services, pattern) {
   if (!pattern) {
     modelResolveWarning = null;
     return undefined;
   }
-  const available = services.modelRegistry.getAvailable();
+  const available = await services.modelRuntime.getAvailable();
   const found =
     available.find((m) => `${m.provider}/${m.id}` === pattern) ||
     available.find((m) => m.id === pattern);
@@ -1031,9 +1054,19 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
   const isCustomer = isCustomerMode(profileName, profileFile);
   // noExtensions/noSkills 不受 sandboxTools 影響，此處 sandboxTools 省略（= undefined）
   const loaderInjection = resolveCustomerInjection({ isCustomer, customerOpen });
+  const hasProjectResources = hasTrustRequiringProjectResources(cwd);
+  const projectTrusted = resolveProjectTrusted(cwd);
+  const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
+  if (hasProjectResources && !projectTrusted) {
+    logger.warn("project-local resources ignored (untrusted cwd)", {
+      cwd,
+      hint: "restart with --approve after reviewing .pi and .agents",
+    });
+  }
   const services = await createAgentSessionServices({
     cwd,
     agentDir,
+    settingsManager,
     resourceLoaderOptions: {
       additionalSkillPaths: cliSkillPaths.length > 0 ? cliSkillPaths : undefined,
       skillsOverride: buildSkillsOverride(cliSkillAllow),
@@ -1042,8 +1075,8 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
       noSkills:     loaderInjection.noSkills,
     },
   });
-  const scopedModels = resolveScopedModelsFromSettings(services);
-  const cliModel = resolveCliModel(services, cliModelPattern);
+  const scopedModels = await resolveScopedModelsFromSettings(services);
+  const cliModel = await resolveCliModel(services, cliModelPattern);
 
   // 啟動時 log 一次,方便確認 --skill / --skill-allow 是否生效
   try {
@@ -1602,21 +1635,22 @@ const SLASH_HANDLERS = {
     if (!provider || !apiKey) {
       throw new Error("Usage: /login <provider> <api-key>");
     }
-    ctrl.runtime.services.authStorage.set(provider, { type: "api_key", key: apiKey });
-    ctrl.runtime.services.modelRegistry.refresh?.();
+    await ctrl.runtime.services.modelRuntime.login(provider, "api_key", {
+      prompt: async () => apiKey,
+      notify: () => {},
+    });
     await ctrl.sendState();
     return { provider };
   },
   logout: async (ctrl, arg) => {
     const target = String(arg || "").trim();
-    const auth = ctrl.runtime.services.authStorage;
+    const modelRuntime = ctrl.runtime.services.modelRuntime;
     if (target) {
-      auth.remove(target);
-      ctrl.runtime.services.modelRegistry.refresh?.();
+      await modelRuntime.logout(target);
       await ctrl.sendState();
       return { provider: target };
     }
-    const providers = auth.list();
+    const providers = (await modelRuntime.listCredentials()).map((credential) => credential.providerId);
     if (providers.length === 0) throw new Error("No providers configured");
     return {
       needsPicker: "logout",
@@ -1730,11 +1764,11 @@ const SLASH_HANDLERS = {
   },
   "scoped-models": async (ctrl, arg) => {
     const target = String(arg || "").trim();
-    const all = ctrl.session.modelRegistry.getAvailable();
+    const all = await ctrl.session.modelRuntime.getAvailable();
     if (target) {
       const patterns = target.split(/[,\s]+/).filter(Boolean);
       ctrl.session.settingsManager.setEnabledModels(patterns.length > 0 ? patterns : undefined);
-      const scoped = resolveScopedModelsFromSettings(ctrl.runtime.services);
+      const scoped = await resolveScopedModelsFromSettings(ctrl.runtime.services);
       ctrl.session.setScopedModels(scoped);
       await ctrl.sendState();
       return { saved: patterns };
@@ -1755,7 +1789,7 @@ const SLASH_HANDLERS = {
     const scoped = ctrl.session.scopedModels;
     const available = scoped.length > 0
       ? scoped.map((s) => s.model)
-      : ctrl.session.modelRegistry.getAvailable();
+      : await ctrl.session.modelRuntime.getAvailable();
     if (target) {
       const match = available.find(
         (m) => `${m.provider}/${m.id}` === target || m.id === target,
