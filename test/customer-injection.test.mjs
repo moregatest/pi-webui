@@ -1,11 +1,11 @@
 // test/customer-injection.test.mjs
-// Task 4：publish_confirmed 接進 customer tool 注入 + LocalPublishConfig 解析。
-// 對應 spec 2026-08-18-pgc-preview-local-minimal-design §3、plan Task 4。
+// Task 4 + Phase 4 契約：publish_confirmed 接進 customer tool 注入 + LocalPublishConfig 解析。
+// baseline 落點改 data/preview-meta.json（origin_source_version），不讀 .onboard-status.yaml。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   resolveCustomerInjection,
-  parseOnboardStatusConfig,
+  parsePreviewMetaConfig,
   subdomainOfHost,
   resolveLocalPublishConfig,
 } from "../dist/server/customer-injection.js";
@@ -15,7 +15,8 @@ const SHA = "sha256:" + "ab".repeat(32);
 function fakePublishDeps() {
   return {
     fetchOriginVersion: async () => ({ source_lng: "en", content_sha256: SHA }),
-    readOnboardOriginVersion: async () => null,
+    readRecordedOriginVersion: async () => null,
+    writeForcePublishAudit: async () => {},
     pushBack: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
     pushDb: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
   };
@@ -37,59 +38,59 @@ test("subdomainOfHost: IP / localhost / www / undefined → null", () => {
   assert.equal(subdomainOfHost(""), null);
 });
 
-// ─── parseOnboardStatusConfig ──────────────────────────────────────────────
+// ─── parsePreviewMetaConfig ────────────────────────────────────────────────
 
-test("parseOnboardStatusConfig: 解析 fly_app / lng / languages / origin_source_version.source_lng", () => {
-  const yaml = [
-    "version: 2",
-    "lng: en",
-    "languages:",
-    "- en",
-    "- zh-TW",
-    "stages:",
-    "  preview:",
-    "    fly_app: my-app-preview",
-    "origin_source_version:",
-    "  source_lng: en",
-    "  content_sha256: sha256:abc",
-  ].join("\n");
-  const c = parseOnboardStatusConfig(yaml);
-  assert.equal(c.flyApp, "my-app-preview");
-  assert.equal(c.sourceLng, "en"); // origin_source_version.source_lng 優先
-  assert.deepEqual(c.languages, ["en", "zh-TW"]);
+test("parsePreviewMetaConfig: 解析 app_name / origin_source_version.source_lng", () => {
+  const json = JSON.stringify({
+    preview_url: "https://my-app-preview.fly.dev/",
+    app_name: "my-app-preview",
+    domain: "www.example.com",
+    origin_source_version: {
+      source_lng: "en",
+      content_sha256: "sha256:abc",
+      recorded_at: "2026-08-18T10:00:00+08:00",
+    },
+  });
+  const c = parsePreviewMetaConfig(json);
+  assert.equal(c.appName, "my-app-preview");
+  assert.equal(c.sourceLng, "en");
 });
 
-test("parseOnboardStatusConfig: 無檔案 → 空物件", () => {
-  assert.deepEqual(parseOnboardStatusConfig(null), {});
-  assert.deepEqual(parseOnboardStatusConfig(""), {});
+test("parsePreviewMetaConfig: 無檔案 / 空 → 空物件", () => {
+  assert.deepEqual(parsePreviewMetaConfig(null), {});
+  assert.deepEqual(parsePreviewMetaConfig(""), {});
 });
 
-test("parseOnboardStatusConfig: 無 origin_source_version → 用頂層 lng", () => {
-  const c = parseOnboardStatusConfig("lng: zh-TW\nstages:\n  preview:\n    fly_app: x-preview\n");
-  assert.equal(c.sourceLng, "zh-TW");
-  assert.equal(c.flyApp, "x-preview");
+test("parsePreviewMetaConfig: 無 origin_source_version → 只有 appName", () => {
+  const c = parsePreviewMetaConfig(JSON.stringify({ app_name: "x-preview" }));
+  assert.equal(c.appName, "x-preview");
+  assert.equal(c.sourceLng, undefined);
+});
+
+test("parsePreviewMetaConfig: 非 JSON → 空物件", () => {
+  assert.deepEqual(parsePreviewMetaConfig("not-json"), {});
 });
 
 // ─── resolveLocalPublishConfig ─────────────────────────────────────────────
 
-test("resolveLocalPublishConfig: 完整解析", () => {
+test("resolveLocalPublishConfig: 完整解析（app_name + source_lng）", () => {
   const config = resolveLocalPublishConfig(
     {
       PC2_SERVICE_HOST_ORIGINAL: "https://demo.example.com/",
       PC2_API_TOKEN: "tok1234567890",
       PC2_SERVICE_HOST: "https://my-app.fly.dev",
     },
-    { flyApp: "my-app-preview", sourceLng: "en", languages: ["en", "zh-TW"] },
+    { appName: "my-app-preview", sourceLng: "en" },
     "/workspace/proj",
   );
   assert.equal(config.originBaseUrl, "https://demo.example.com/");
   assert.equal(config.siteToken, "tok1234567890");
   assert.equal(config.appName, "my-app-preview");
-  assert.deepEqual(config.languages, ["en", "zh-TW"]);
+  assert.deepEqual(config.languages, ["en"]);
   assert.equal(config.cwd, "/workspace/proj");
 });
 
-test("resolveLocalPublishConfig: fly_app 缺 → subdomain fallback", () => {
+test("resolveLocalPublishConfig: app_name 缺 → subdomain fallback", () => {
   const config = resolveLocalPublishConfig(
     {
       PC2_SERVICE_HOST_ORIGINAL: "https://demo",
@@ -110,13 +111,29 @@ test("resolveLocalPublishConfig: 缺 originBaseUrl 或 token → null", () => {
   );
 });
 
-test("resolveLocalPublishConfig: 翻譯語系去重（含來源）＋來源語系缺省 en", () => {
+test("resolveLocalPublishConfig: 來源語系缺省 en", () => {
   const config = resolveLocalPublishConfig(
     { PC2_SERVICE_HOST_ORIGINAL: "https://x", PC2_API_TOKEN: "t" },
-    { languages: ["en", "en", "zh-TW"] },
+    {},
     "/w",
   );
-  assert.deepEqual(config.languages, ["en", "zh-TW"]);
+  assert.deepEqual(config.languages, ["en"]);
+});
+
+test("resolveLocalPublishConfig: confirmationId 取 PGC_CONFIRMATION_ID（缺省 cli）", () => {
+  const a = resolveLocalPublishConfig(
+    { PC2_SERVICE_HOST_ORIGINAL: "https://x", PC2_API_TOKEN: "t", PGC_CONFIRMATION_ID: "conf-9" },
+    { sourceLng: "en" },
+    "/w",
+  );
+  assert.equal(a.confirmationId, "conf-9");
+
+  const b = resolveLocalPublishConfig(
+    { PC2_SERVICE_HOST_ORIGINAL: "https://x", PC2_API_TOKEN: "t" },
+    { sourceLng: "en" },
+    "/w",
+  );
+  assert.equal(b.confirmationId, "cli");
 });
 
 // ─── resolveCustomerInjection：publish_confirmed 注入 ───────────────────────

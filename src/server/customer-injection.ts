@@ -15,7 +15,7 @@ export interface CustomerInjectionInput {
   isCustomer: boolean;
   customerOpen: boolean;
   sandboxTools?: unknown; // undefined = 無 sandbox
-  /** 供測試注入 publish deps；undefined＝從 env＋.onboard-status.yaml 解析；null＝不注入 publish tool。 */
+  /** 供測試注入 publish deps；undefined＝從 env＋data/preview-meta.json 解析；null＝不注入 publish tool。 */
   publishDeps?: PublishLocalDeps | null;
 }
 
@@ -45,61 +45,41 @@ export function shouldInjectHostGuards(input: {
 
 // ── publish_confirmed 的 LocalPublishConfig 解析 ──
 
-export interface OnboardStatusConfig {
-  flyApp?: string | null;
+export interface PreviewMetaConfig {
+  appName?: string | null;
   sourceLng?: string | null;
-  languages?: string[] | null;
-}
-
-function stripQuotes(s: string): string {
-  return s.trim().replace(/^(['"])(.*)\1$/, "$2");
 }
 
 /**
- * 從 .onboard-status.yaml 文字解析 publish 所需欄位（最小 YAML 子集）：
- *   - stages.preview.fly_app（縮排 fly_app）
- *   - origin_source_version.source_lng（縮排 source_lng，優先）或頂層 lng
- *   - 頂層 languages 清單（若存在）
+ * 從 data/preview-meta.json 文字解析 publish 所需欄位：
+ *   - app_name（Fly app 名）
+ *   - origin_source_version.source_lng（來源語系）
+ * Phase 4 凍結契約：baseline 落點 preview-meta.json，不再讀 .onboard-status.yaml。
  */
-export function parseOnboardStatusConfig(text: string | null): OnboardStatusConfig {
-  const out: OnboardStatusConfig = {};
+export function parsePreviewMetaConfig(text: string | null): PreviewMetaConfig {
+  const out: PreviewMetaConfig = {};
   if (!text) return out;
 
-  const lines = text.split(/\r?\n/);
-  let topLng: string | undefined;
-  let originSourceLng: string | undefined;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    const topLngMatch = line.match(/^lng:\s*(.*)$/);
-    if (topLngMatch) topLng = stripQuotes(topLngMatch[1]);
-
-    const srcLngMatch = line.match(/^\s+source_lng:\s*(.*)$/);
-    if (srcLngMatch) originSourceLng = stripQuotes(srcLngMatch[1]);
-
-    const flyAppMatch = line.match(/^\s+fly_app:\s*(.*)$/);
-    if (flyAppMatch) out.flyApp = stripQuotes(flyAppMatch[1]);
-
-    if (/^languages:\s*$/.test(line)) {
-      const langs: string[] = [];
-      for (let j = i + 1; j < lines.length; j++) {
-        const li = lines[j];
-        if (li.trim() === "") continue;
-        const m = li.match(/^\s*-\s*(.+)$/);
-        if (!m) break;
-        langs.push(stripQuotes(m[1]));
-      }
-      if (langs.length > 0) out.languages = langs;
-    }
+  let meta: unknown;
+  try {
+    meta = JSON.parse(text);
+  } catch {
+    return out;
   }
+  if (!meta || typeof meta !== "object") return out;
+  const m = meta as Record<string, unknown>;
 
-  if (originSourceLng) out.sourceLng = originSourceLng;
-  else if (topLng) out.sourceLng = topLng;
+  if (typeof m.app_name === "string" && m.app_name) out.appName = m.app_name;
+
+  const ov = m.origin_source_version;
+  if (ov && typeof ov === "object") {
+    const o = ov as Record<string, unknown>;
+    if (typeof o.source_lng === "string" && o.source_lng) out.sourceLng = o.source_lng;
+  }
   return out;
 }
 
-/** 從 PC2_SERVICE_HOST 取 hostname 第一段 label 當 Fly app 名（缺 fly_app 時的 fallback）。 */
+/** 從 PC2_SERVICE_HOST 取 hostname 第一段 label 當 Fly app 名（缺 app_name 時的 fallback）。 */
 export function subdomainOfHost(host: string | undefined): string | null {
   if (!host) return null;
   try {
@@ -116,38 +96,38 @@ export function subdomainOfHost(host: string | undefined): string | null {
 /** 解析 LocalPublishConfig；缺 originBaseUrl / token 時回 null（不注入 publish tool）。 */
 export function resolveLocalPublishConfig(
   env: Record<string, string | undefined>,
-  onboard: OnboardStatusConfig,
+  meta: PreviewMetaConfig,
   appCwd: string,
 ): LocalPublishConfig | null {
   const originBaseUrl = (env.PC2_SERVICE_HOST_ORIGINAL ?? "").trim();
   const siteToken = (env.PC2_API_TOKEN ?? "").trim();
   if (!originBaseUrl || !siteToken) return null;
 
-  const sourceLng = (onboard.sourceLng ?? "").trim() || "en";
-  const translations = (onboard.languages ?? [])
-    .map((s) => s.trim())
-    .filter((s) => s && s !== sourceLng);
-  const languages = [sourceLng, ...translations];
+  const sourceLng = (meta.sourceLng ?? "").trim() || "en";
+  // preview-meta.json 無 languages 清單（Phase 4 契約：僅來源語系參與 drift 比對）
+  const languages = [sourceLng];
 
-  const appName = (onboard.flyApp ?? "").trim()
+  const appName = (meta.appName ?? "").trim()
     || subdomainOfHost(env.PC2_SERVICE_HOST)
     || "";
 
-  return { cwd: appCwd, originBaseUrl, siteToken, appName, languages };
+  const confirmationId = (env.PGC_CONFIRMATION_ID ?? "").trim() || "cli";
+
+  return { cwd: appCwd, originBaseUrl, siteToken, appName, languages, confirmationId };
 }
 
-/** 預設 deps 解析：從 process.env + <appCwd>/.onboard-status.yaml 建 publish deps。 */
+/** 預設 deps 解析：從 process.env + <appCwd>/data/preview-meta.json 建 publish deps。 */
 function resolvePublishDepsFromEnv(): PublishLocalDeps | null {
   const appCwd = resolvePath(process.env.PI_PROJECT_CWD || process.cwd());
-  let onboardText: string | null = null;
+  let metaText: string | null = null;
   try {
-    onboardText = readFileSync(join(appCwd, ".onboard-status.yaml"), "utf-8");
+    metaText = readFileSync(join(appCwd, "data", "preview-meta.json"), "utf-8");
   } catch {
-    onboardText = null;
+    metaText = null;
   }
   const config = resolveLocalPublishConfig(
     process.env as Record<string, string | undefined>,
-    parseOnboardStatusConfig(onboardText),
+    parsePreviewMetaConfig(metaText),
     appCwd,
   );
   return config ? createLocalPublishDeps(config) : null;

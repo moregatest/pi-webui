@@ -2,7 +2,8 @@
 // PGC publish_confirmed agent tool — 客戶明確確認後走「本地流程」：
 //   origin 來源語系版本比對 → preview push-back → push-db。
 //   內容 drift 時需客戶原因（force）；無原因 = 拒絕。
-// 對應 spec 2026-08-18-pgc-preview-local-minimal-design §3（極簡客戶確認）。
+// Phase 4 凍結契約：baseline 落點 data/preview-meta.json 的 origin_source_version；
+//   輸出對齊 {ok:true,status:"succeeded",...} / {ok:false,status:"origin_drift",recorded_sha,current_sha}。
 
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
@@ -18,8 +19,9 @@ export interface OriginSourceVersion {
   content_sha256: string; // "sha256:<64hex>"
 }
 
-// .onboard-status.yaml 記錄的 origin_source_version（{source_lng, content_sha256, recorded_at}）。
-export interface OnboardOriginRecord {
+// data/preview-meta.json 的 origin_source_version（{source_lng, content_sha256, recorded_at}）。
+// Phase 4 凍結契約：baseline 落點（preview up 時 deploy 前 fetch origin 寫入，隨 image 上機）。
+export interface RecordedOriginVersion {
   source_lng: string;
   content_sha256: string;
   recorded_at?: string;
@@ -32,20 +34,40 @@ export interface CliRunResult {
   stderr: string;
 }
 
+// 強制發布審計輸入（m=log&a=pgc-force-publish 的兩 hash + 客戶原因）。
+export interface ForcePublishAuditInput {
+  recorded: RecordedOriginVersion | null;
+  current: OriginSourceVersion;
+  reason: string;
+}
+
 // 本地流程相依（可注入，供 TDD）。
 export interface PublishLocalDeps {
   fetchOriginVersion: () => Promise<OriginSourceVersion>;
-  readOnboardOriginVersion: () => Promise<OnboardOriginRecord | null>;
+  readRecordedOriginVersion: () => Promise<RecordedOriginVersion | null>;
+  writeForcePublishAudit: (input: ForcePublishAuditInput) => Promise<void>;
   pushBack: (opts: { force: boolean; reason?: string }) => Promise<CliRunResult>;
   pushDb: (opts: { force: boolean; reason?: string }) => Promise<CliRunResult>;
 }
 
 // 工具執行結果（回給 model / client 的結構化結果）。
+// Phase 4 凍結契約輸出：成功 → {ok:true,status:"succeeded",source_lng,content_sha256}；
+// drift 無原因 → {ok:false,status:"origin_drift",recorded_sha,current_sha}。
 export interface PublishResult {
   ok: boolean;
+  /** 凍結契約狀態：succeeded（含強制發布）｜origin_drift（drift 且無原因）。 */
+  status?: "succeeded" | "origin_drift";
   message?: string;
   error?: string;
   forced?: boolean;
+  /** succeeded：origin 當前來源語系。 */
+  source_lng?: string;
+  /** succeeded：origin 當前來源語系內容 hash。 */
+  content_sha256?: string;
+  /** origin_drift：建置記錄的來源語系內容 hash（無記錄為 null）。 */
+  recorded_sha?: string | null;
+  /** origin_drift：origin 當前來源語系內容 hash。 */
+  current_sha?: string;
   details?: Record<string, unknown>;
 }
 
@@ -54,7 +76,7 @@ const FORCE_REASON_MAX_BYTES = 512;
 /** origin 內容版本相符：source_lng 一致 且 content_sha256 相等（凍結契約）。 */
 export function sourceVersionMatches(
   origin: OriginSourceVersion,
-  record: OnboardOriginRecord | null,
+  record: RecordedOriginVersion | null,
 ): boolean {
   return !!record
     && record.source_lng === origin.source_lng
@@ -62,38 +84,24 @@ export function sourceVersionMatches(
 }
 
 /**
- * 從 .onboard-status.yaml 文字解析 origin_source_version 區塊（最小 YAML 子集，
- * 只認頂層 origin_source_version 下縮排的 source_lng / content_sha256 / recorded_at）。
- * 無區塊或缺必填欄位回 null。
+ * 從 data/preview-meta.json 文字解析 origin_source_version（JSON 物件：
+ * {source_lng, content_sha256, recorded_at}）。缺必填欄位／非物件／非 JSON 回 null。
  */
-export function parseOnboardOriginVersion(text: string): OnboardOriginRecord | null {
-  const lines = text.split(/\r?\n/);
-  let i = 0;
-  while (i < lines.length && !/^origin_source_version:\s*$/.test(lines[i])) i++;
-  if (i >= lines.length) return null;
-  i++;
-
-  let source_lng: string | undefined;
-  let content_sha256: string | undefined;
-  let recorded_at: string | undefined;
-
-  while (i < lines.length) {
-    const line = lines[i];
-    if (line.trim() === "") { i++; continue; }
-    // 回到頂層（無縮排）→ origin_source_version 區塊結束
-    if (!/^\s/.test(line)) break;
-    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/);
-    if (m) {
-      const key = m[1];
-      const raw = m[2].trim();
-      const val = raw.replace(/^(['"])(.*)\1$/, "$2");
-      if (key === "source_lng") source_lng = val;
-      else if (key === "content_sha256") content_sha256 = val;
-      else if (key === "recorded_at") recorded_at = val;
-    }
-    i++;
+export function parsePreviewMetaOriginVersion(text: string): RecordedOriginVersion | null {
+  if (!text) return null;
+  let meta: unknown;
+  try {
+    meta = JSON.parse(text);
+  } catch {
+    return null;
   }
-
+  if (!meta || typeof meta !== "object") return null;
+  const ov = (meta as Record<string, unknown>).origin_source_version;
+  if (!ov || typeof ov !== "object") return null;
+  const o = ov as Record<string, unknown>;
+  const source_lng = typeof o.source_lng === "string" ? o.source_lng : "";
+  const content_sha256 = typeof o.content_sha256 === "string" ? o.content_sha256 : "";
+  const recorded_at = typeof o.recorded_at === "string" ? o.recorded_at : undefined;
   if (!source_lng || !content_sha256) return null;
   return recorded_at
     ? { source_lng, content_sha256, recorded_at }
@@ -131,22 +139,26 @@ export async function runPublishFlow(
     };
   }
 
-  // 3. 讀建置記錄（無記錄 / 讀取失敗一律視為 drift，fail-closed）
-  let record: OnboardOriginRecord | null = null;
+  // 3. 讀建置記錄（data/preview-meta.json 的 origin_source_version；無記錄 / 讀取失敗
+  //    一律視為 drift，fail-closed）
+  let record: RecordedOriginVersion | null = null;
   try {
-    record = await deps.readOnboardOriginVersion();
+    record = await deps.readRecordedOriginVersion();
   } catch {
     record = null;
   }
 
   const match = sourceVersionMatches(origin, record);
 
-  // 4. drift → 需客戶原因；無原因 = 拒絕
+  // 4. drift → 需客戶原因；無原因 = 拒絕（凍結契約輸出 origin_drift）
   if (!match && !reason) {
     return {
       ok: false,
+      status: "origin_drift",
       error:
         "偵測到內容 drift：origin 來源語系內容在建置後已變更。若仍要發布，請客戶提供強制發布原因（force_reason）。",
+      recorded_sha: record?.content_sha256 ?? null,
+      current_sha: origin.content_sha256,
       details: {
         code: "drift_requires_reason",
         recorded: record
@@ -155,6 +167,25 @@ export async function runPublishFlow(
         current: { source_lng: origin.source_lng, content_sha256: origin.content_sha256 },
       },
     };
+  }
+
+  // 4b. drift 且有 reason → 先在 tool 端寫強制發布審計（凍結契約 step 5：
+  //     m=log&a=pgc-force-publish，who=confirmation_id, desc=reason, params=兩 hash）。
+  //     機上 CLI 無 .onboard-status.yaml 不會寫 audit，故權威在 tool；寫失敗即中止。
+  if (!match) {
+    try {
+      await deps.writeForcePublishAudit({
+        recorded: record,
+        current: origin,
+        reason,
+      });
+    } catch {
+      return {
+        ok: false,
+        error: "寫入強制發布審計失敗，已中止發布",
+        details: { code: "force_audit_failed" },
+      };
+    }
   }
 
   const opts = match ? { force: false } : { force: true, reason };
@@ -196,12 +227,11 @@ export async function runPublishFlow(
 
   return {
     ok: true,
+    status: "succeeded",
     message: match ? "發布已觸發（無 drift）" : "已依客戶原因強制發布",
     forced: !match,
-    details: {
-      source_lng: origin.source_lng,
-      content_sha256: origin.content_sha256,
-    },
+    source_lng: origin.source_lng,
+    content_sha256: origin.content_sha256,
   };
 }
 
@@ -233,10 +263,25 @@ export function buildCustomerPublishTools(deps: PublishLocalDeps): ToolDefinitio
   return [publishConfirmedTool(deps)];
 }
 
-// ── 本地流程的實際 I/O（fetch origin + 讀 .onboard-status.yaml + spawn CLI）──
+// ── 本地流程的實際 I/O（fetch origin + 讀 data/preview-meta.json + spawn CLI）──
 
 export function buildOriginVersionUrl(baseUrl: string): string {
   return `${baseUrl.replace(/\/$/, "")}/readyscript/capps/pc2-p/service/?m=source&a=version`;
+}
+
+/** m=log&a=pgc-force-publish 審計 URL（who/desc/params 走 URL 查詢參數）。 */
+export function buildForcePublishAuditUrl(
+  baseUrl: string,
+  query: { who: string; desc: string; params: string },
+): string {
+  const sp = new URLSearchParams({
+    m: "log",
+    a: "pgc-force-publish",
+    who: query.who,
+    desc: query.desc,
+    params: query.params,
+  });
+  return `${baseUrl.replace(/\/$/, "")}/readyscript/capps/pc2-p/service/?${sp.toString()}`;
 }
 
 export function buildPushBackArgs(
@@ -265,7 +310,7 @@ export function buildPushDbArgs(
 }
 
 export interface LocalPublishConfig {
-  /** 專案目錄（.onboard-status.yaml 所在、CLI 執行處）。 */
+  /** 專案目錄（data/preview-meta.json 所在、CLI 執行處）。 */
   cwd: string;
   /** origin 站 base_url（PC2_SERVICE_HOST_ORIGINAL）。 */
   originBaseUrl: string;
@@ -275,6 +320,8 @@ export interface LocalPublishConfig {
   appName: string;
   /** push-db 的語系清單（--lng 逗號串接）。 */
   languages: string[];
+  /** 強制發布審計 who 欄位（PGC_CONFIRMATION_ID），缺省 "cli"。 */
+  confirmationId?: string;
   /** 供測試替換 fetch。 */
   fetch?: typeof globalThis.fetch;
 }
@@ -299,13 +346,36 @@ export function createLocalPublishDeps(config: LocalPublishConfig): PublishLocal
     };
   }
 
-  async function readOnboardOriginVersion(): Promise<OnboardOriginRecord | null> {
+  async function readRecordedOriginVersion(): Promise<RecordedOriginVersion | null> {
     try {
-      const text = await readFile(`${config.cwd}/.onboard-status.yaml`, "utf-8");
-      return parseOnboardOriginVersion(text);
+      const text = await readFile(`${config.cwd}/data/preview-meta.json`, "utf-8");
+      return parsePreviewMetaOriginVersion(text);
     } catch {
       return null;
     }
+  }
+
+  async function writeForcePublishAudit(input: ForcePublishAuditInput): Promise<void> {
+    const url = buildForcePublishAuditUrl(config.originBaseUrl, {
+      who: config.confirmationId ?? "cli",
+      desc: input.reason,
+      params: JSON.stringify({
+        recorded: input.recorded
+          ? {
+              source_lng: input.recorded.source_lng,
+              content_sha256: input.recorded.content_sha256,
+            }
+          : null,
+        current: {
+          source_lng: input.current.source_lng,
+          content_sha256: input.current.content_sha256,
+        },
+      }),
+    });
+    const resp = await fetchImpl(url, {
+      headers: { Authorization: `Bearer ${config.siteToken}` },
+    });
+    if (!resp.ok) throw new Error(`force publish audit HTTP ${resp.status}`);
   }
 
   function runCli(
@@ -340,7 +410,8 @@ export function createLocalPublishDeps(config: LocalPublishConfig): PublishLocal
 
   return {
     fetchOriginVersion,
-    readOnboardOriginVersion,
+    readRecordedOriginVersion,
+    writeForcePublishAudit,
     pushBack: (opts) =>
       runCli(buildPushBackArgs(config.appName, opts), opts),
     pushDb: (opts) =>

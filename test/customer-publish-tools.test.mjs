@@ -1,6 +1,8 @@
 // test/customer-publish-tools.test.mjs
 // PGC publish_confirmed 本地流程：origin 版本比對 → push-back → push-db，
-// drift 時需客戶原因（force）。對應 spec 2026-08-18-pgc-preview-local-minimal-design §3。
+// drift 時需客戶原因（force）。對應 Phase 4 凍結契約：
+//   baseline 落點 data/preview-meta.json 的 origin_source_version；
+//   輸出對齊 {ok:true,status:"succeeded",...} / {ok:false,status:"origin_drift",recorded_sha,current_sha}。
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs";
@@ -10,9 +12,10 @@ import {
   buildCustomerPublishTools,
   runPublishFlow,
   sourceVersionMatches,
-  parseOnboardOriginVersion,
+  parsePreviewMetaOriginVersion,
   createLocalPublishDeps,
   buildOriginVersionUrl,
+  buildForcePublishAuditUrl,
   buildPushBackArgs,
   buildPushDbArgs,
 } from "../dist/tools/customer-publish-tools.js";
@@ -23,13 +26,16 @@ const ORIGIN = { schema: "pgc-source-version-v1", source_lng: "en", content_sha2
 const RECORD = { source_lng: "en", content_sha256: SHA, recorded_at: "2026-08-18T10:00:00+08:00" };
 
 function makeDeps(overrides = {}) {
-  const calls = { fetch: 0, pushBack: [], pushDb: [] };
+  const calls = { fetch: 0, pushBack: [], pushDb: [], writeAudit: [] };
   const deps = {
     fetchOriginVersion: async () => {
       calls.fetch++;
       return ORIGIN;
     },
-    readOnboardOriginVersion: async () => RECORD,
+    readRecordedOriginVersion: async () => RECORD,
+    writeForcePublishAudit: async (input) => {
+      calls.writeAudit.push(input);
+    },
     pushBack: async (opts) => {
       calls.pushBack.push(opts);
       return { exitCode: 0, stdout: "", stderr: "" };
@@ -44,21 +50,28 @@ function makeDeps(overrides = {}) {
 }
 
 describe("runPublishFlow（核心決策邏輯）", () => {
-  it("相符：觸發 push-back → push-db（無 force）", async () => {
+  it("相符：觸發 push-back → push-db（無 force），回 succeeded", async () => {
     const { deps, calls } = makeDeps();
     const result = await runPublishFlow(deps, undefined);
     assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.status, "succeeded");
     assert.strictEqual(result.forced, false);
+    assert.strictEqual(result.source_lng, "en");
+    assert.strictEqual(result.content_sha256, SHA);
+    assert.strictEqual(calls.writeAudit.length, 0);
     assert.deepStrictEqual(calls.pushBack, [{ force: false }]);
     assert.deepStrictEqual(calls.pushDb, [{ force: false }]);
   });
 
-  it("drift 且無原因：拒絕，不觸發 CLI", async () => {
+  it("drift 且無原因：拒絕，不觸發 CLI，回 origin_drift", async () => {
     const { deps, calls } = makeDeps({
-      readOnboardOriginVersion: async () => ({ ...RECORD, content_sha256: OTHER_SHA }),
+      readRecordedOriginVersion: async () => ({ ...RECORD, content_sha256: OTHER_SHA }),
     });
     const result = await runPublishFlow(deps, undefined);
     assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.status, "origin_drift");
+    assert.strictEqual(result.recorded_sha, OTHER_SHA);
+    assert.strictEqual(result.current_sha, SHA);
     assert.strictEqual(result.details.code, "drift_requires_reason");
     assert.strictEqual(result.details.current.content_sha256, SHA);
     assert.strictEqual(result.details.recorded.content_sha256, OTHER_SHA);
@@ -66,21 +79,57 @@ describe("runPublishFlow（核心決策邏輯）", () => {
     assert.strictEqual(calls.pushDb.length, 0);
   });
 
-  it("drift 且有原因：帶 --force --reason 觸發", async () => {
+  it("drift 且有原因：先寫 audit 再帶 --force --reason 觸發，回 succeeded", async () => {
     const { deps, calls } = makeDeps({
-      readOnboardOriginVersion: async () => ({ ...RECORD, content_sha256: OTHER_SHA }),
+      readRecordedOriginVersion: async () => ({ ...RECORD, content_sha256: OTHER_SHA }),
     });
     const result = await runPublishFlow(deps, "客戶要求立即上線");
     assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.status, "succeeded");
     assert.strictEqual(result.forced, true);
+    assert.strictEqual(result.source_lng, "en");
+    assert.strictEqual(result.content_sha256, SHA);
+    assert.strictEqual(calls.writeAudit.length, 1);
+    assert.deepStrictEqual(calls.writeAudit[0], {
+      recorded: { ...RECORD, content_sha256: OTHER_SHA },
+      current: ORIGIN,
+      reason: "客戶要求立即上線",
+    });
     assert.deepStrictEqual(calls.pushBack, [{ force: true, reason: "客戶要求立即上線" }]);
     assert.deepStrictEqual(calls.pushDb, [{ force: true, reason: "客戶要求立即上線" }]);
   });
 
+  it("audit 寫失敗：拒絕，不觸發 CLI", async () => {
+    const { deps, calls } = makeDeps({
+      readRecordedOriginVersion: async () => ({ ...RECORD, content_sha256: OTHER_SHA }),
+      writeForcePublishAudit: async () => { throw new Error("audit boom"); },
+    });
+    const result = await runPublishFlow(deps, "客戶要求立即上線");
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.details.code, "force_audit_failed");
+    assert.strictEqual(calls.pushBack.length, 0);
+    assert.strictEqual(calls.pushDb.length, 0);
+  });
+
+  it("無記錄但有 reason：audit recorded=null 後強制發布", async () => {
+    const { deps, calls } = makeDeps({ readRecordedOriginVersion: async () => null });
+    const result = await runPublishFlow(deps, "無記錄強制");
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.status, "succeeded");
+    assert.strictEqual(result.forced, true);
+    assert.strictEqual(calls.writeAudit.length, 1);
+    assert.strictEqual(calls.writeAudit[0].recorded, null);
+    assert.strictEqual(calls.writeAudit[0].current, ORIGIN);
+    assert.strictEqual(calls.writeAudit[0].reason, "無記錄強制");
+  });
+
   it("無記錄（null）：視為 drift，需原因", async () => {
-    const { deps, calls } = makeDeps({ readOnboardOriginVersion: async () => null });
+    const { deps, calls } = makeDeps({ readRecordedOriginVersion: async () => null });
     const result = await runPublishFlow(deps, undefined);
     assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.status, "origin_drift");
+    assert.strictEqual(result.recorded_sha, null);
+    assert.strictEqual(result.current_sha, SHA);
     assert.strictEqual(result.details.code, "drift_requires_reason");
     assert.strictEqual(result.details.recorded, null);
     assert.strictEqual(calls.pushBack.length, 0);
@@ -89,10 +138,11 @@ describe("runPublishFlow（核心決策邏輯）", () => {
 
   it("source_lng 不符：drift", async () => {
     const { deps } = makeDeps({
-      readOnboardOriginVersion: async () => ({ ...RECORD, source_lng: "zh-TW" }),
+      readRecordedOriginVersion: async () => ({ ...RECORD, source_lng: "zh-TW" }),
     });
     const result = await runPublishFlow(deps, undefined);
     assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.status, "origin_drift");
     assert.strictEqual(result.details.code, "drift_requires_reason");
   });
 
@@ -146,18 +196,20 @@ describe("buildCustomerPublishTools（SDK 工具形狀）", () => {
     assert.strictEqual(res.content[0].type, "text");
     const parsed = JSON.parse(res.content[0].text);
     assert.strictEqual(parsed.ok, true);
+    assert.strictEqual(parsed.status, "succeeded");
     assert.strictEqual(parsed.forced, false);
     assert.deepStrictEqual(res.details, parsed);
   });
 
   it("drift 無原因 → execute 回傳 content 含 drift 錯誤", async () => {
     const { deps } = makeDeps({
-      readOnboardOriginVersion: async () => ({ ...RECORD, content_sha256: OTHER_SHA }),
+      readRecordedOriginVersion: async () => ({ ...RECORD, content_sha256: OTHER_SHA }),
     });
     const tools = buildCustomerPublishTools(deps);
     const res = await tools[0].execute("id-2", {}, undefined, undefined, {});
     const parsed = JSON.parse(res.content[0].text);
     assert.strictEqual(parsed.ok, false);
+    assert.strictEqual(parsed.status, "origin_drift");
     assert.strictEqual(parsed.details.code, "drift_requires_reason");
   });
 });
@@ -177,19 +229,19 @@ describe("sourceVersionMatches", () => {
   });
 });
 
-describe("parseOnboardOriginVersion", () => {
+describe("parsePreviewMetaOriginVersion", () => {
   it("解析出 origin_source_version", () => {
-    const yaml = [
-      "version: 2",
-      "lng: en",
-      "domains:",
-      "- www.example.com",
-      "origin_source_version:",
-      "  source_lng: en",
-      `  content_sha256: ${SHA}`,
-      "  recorded_at: '2026-08-18T10:00:00+08:00'",
-    ].join("\n");
-    const r = parseOnboardOriginVersion(yaml);
+    const json = JSON.stringify({
+      preview_url: "https://x-preview.fly.dev/",
+      app_name: "x-preview",
+      domain: "www.example.com",
+      origin_source_version: {
+        source_lng: "en",
+        content_sha256: SHA,
+        recorded_at: "2026-08-18T10:00:00+08:00",
+      },
+    });
+    const r = parsePreviewMetaOriginVersion(json);
     assert.deepStrictEqual(r, {
       source_lng: "en",
       content_sha256: SHA,
@@ -197,30 +249,48 @@ describe("parseOnboardOriginVersion", () => {
     });
   });
 
-  it("無 origin_source_version 區塊 → null", () => {
-    assert.strictEqual(parseOnboardOriginVersion("version: 2\nlng: en\n"), null);
-  });
-
-  it("區塊缺 content_sha256 → null", () => {
+  it("無 origin_source_version → null", () => {
     assert.strictEqual(
-      parseOnboardOriginVersion("origin_source_version:\n  source_lng: en\n"),
+      parsePreviewMetaOriginVersion(JSON.stringify({ preview_url: "https://x/" })),
       null,
     );
   });
 
-  it("帶引號的值也解析", () => {
-    const r = parseOnboardOriginVersion(
-      `origin_source_version:\n  source_lng: 'en'\n  content_sha256: '${SHA}'\n`,
+  it("origin_source_version 缺 content_sha256 → null", () => {
+    assert.strictEqual(
+      parsePreviewMetaOriginVersion(
+        JSON.stringify({ origin_source_version: { source_lng: "en" } }),
+      ),
+      null,
     );
-    assert.strictEqual(r.source_lng, "en");
-    assert.strictEqual(r.content_sha256, SHA);
   });
 
-  it("區塊後接其他頂層 key 時停止", () => {
-    const r = parseOnboardOriginVersion(
-      `origin_source_version:\n  source_lng: en\n  content_sha256: ${SHA}\nother_key: x\n`,
+  it("origin_source_version 缺 source_lng → null", () => {
+    assert.strictEqual(
+      parsePreviewMetaOriginVersion(
+        JSON.stringify({ origin_source_version: { content_sha256: SHA } }),
+      ),
+      null,
     );
-    assert.strictEqual(r.content_sha256, SHA);
+  });
+
+  it("無 recorded_at 也解析", () => {
+    const r = parsePreviewMetaOriginVersion(
+      JSON.stringify({ origin_source_version: { source_lng: "en", content_sha256: SHA } }),
+    );
+    assert.deepStrictEqual(r, { source_lng: "en", content_sha256: SHA });
+  });
+
+  it("非 JSON / 空字串 → null", () => {
+    assert.strictEqual(parsePreviewMetaOriginVersion("not-json"), null);
+    assert.strictEqual(parsePreviewMetaOriginVersion(""), null);
+  });
+
+  it("origin_source_version 非物件 → null", () => {
+    assert.strictEqual(
+      parsePreviewMetaOriginVersion(JSON.stringify({ origin_source_version: "en" })),
+      null,
+    );
   });
 });
 
@@ -251,6 +321,21 @@ describe("CLI args", () => {
       buildPushDbArgs("my-app", ["en", "zh-TW"], { force: true, reason: "r" }),
       ["preview", "push-db", "--name", "my-app", "--lng", "en,zh-TW", "--force", "--reason", "r"],
     );
+  });
+
+  it("buildForcePublishAuditUrl：組出 m=log&a=pgc-force-publish + 參數", () => {
+    const url = buildForcePublishAuditUrl("https://demo.example.com/", {
+      who: "conf-1",
+      desc: "客戶要求 & 立即",
+      params: '{"recorded":null,"current":{}}',
+    });
+    const u = new URL(url);
+    assert.strictEqual(u.pathname, "/readyscript/capps/pc2-p/service/");
+    assert.strictEqual(u.searchParams.get("m"), "log");
+    assert.strictEqual(u.searchParams.get("a"), "pgc-force-publish");
+    assert.strictEqual(u.searchParams.get("who"), "conf-1");
+    assert.strictEqual(u.searchParams.get("desc"), "客戶要求 & 立即");
+    assert.strictEqual(u.searchParams.get("params"), '{"recorded":null,"current":{}}');
   });
 });
 
@@ -292,33 +377,113 @@ describe("createLocalPublishDeps", () => {
     await assert.rejects(() => deps.fetchOriginVersion(), /content_sha256/);
   });
 
-  it("readOnboardOriginVersion：讀 .onboard-status.yaml", async () => {
+  it("readRecordedOriginVersion：讀 data/preview-meta.json 的 origin_source_version", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publish-"));
     try {
+      fs.mkdirSync(path.join(dir, "data"), { recursive: true });
       fs.writeFileSync(
-        path.join(dir, ".onboard-status.yaml"),
-        `origin_source_version:\n  source_lng: en\n  content_sha256: ${SHA}\n`,
+        path.join(dir, "data", "preview-meta.json"),
+        JSON.stringify({
+          preview_url: "https://x-preview.fly.dev/",
+          app_name: "x-preview",
+          origin_source_version: { source_lng: "en", content_sha256: SHA },
+        }),
       );
       const deps = createLocalPublishDeps({
         cwd: dir, originBaseUrl: "https://x", siteToken: "t", appName: "a", languages: ["en"],
       });
-      const r = await deps.readOnboardOriginVersion();
+      const r = await deps.readRecordedOriginVersion();
       assert.deepStrictEqual(r, { source_lng: "en", content_sha256: SHA });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("readOnboardOriginVersion：無檔 → null", async () => {
+  it("readRecordedOriginVersion：無檔 → null", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publish-"));
     try {
       const deps = createLocalPublishDeps({
         cwd: dir, originBaseUrl: "https://x", siteToken: "t", appName: "a", languages: ["en"],
       });
-      const r = await deps.readOnboardOriginVersion();
+      const r = await deps.readRecordedOriginVersion();
       assert.strictEqual(r, null);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("writeForcePublishAudit：GET m=log&a=pgc-force-publish + Bearer header + params", async () => {
+    let captured;
+    const deps = createLocalPublishDeps({
+      cwd: "/tmp/x",
+      originBaseUrl: "https://demo.example.com/",
+      siteToken: "tok1234567890",
+      appName: "my-app",
+      languages: ["en"],
+      confirmationId: "conf-42",
+      fetch: async (url, init) => {
+        captured = { url, init };
+        return { ok: true };
+      },
+    });
+    await deps.writeForcePublishAudit({
+      recorded: { source_lng: "en", content_sha256: OTHER_SHA },
+      current: { source_lng: "en", content_sha256: SHA },
+      reason: "客戶要求立即上線",
+    });
+    const u = new URL(captured.url);
+    assert.strictEqual(u.searchParams.get("m"), "log");
+    assert.strictEqual(u.searchParams.get("a"), "pgc-force-publish");
+    assert.strictEqual(u.searchParams.get("who"), "conf-42");
+    assert.strictEqual(u.searchParams.get("desc"), "客戶要求立即上線");
+    assert.strictEqual(
+      u.searchParams.get("params"),
+      JSON.stringify({
+        recorded: { source_lng: "en", content_sha256: OTHER_SHA },
+        current: { source_lng: "en", content_sha256: SHA },
+      }),
+    );
+    assert.strictEqual(captured.init.headers.Authorization, "Bearer tok1234567890");
+  });
+
+  it("writeForcePublishAudit：HTTP 非 2xx 抛錯", async () => {
+    const deps = createLocalPublishDeps({
+      cwd: "/tmp/x",
+      originBaseUrl: "https://demo.example.com",
+      siteToken: "t",
+      appName: "a",
+      languages: ["en"],
+      confirmationId: "cli",
+      fetch: async () => ({ ok: false, status: 500 }),
+    });
+    await assert.rejects(
+      () => deps.writeForcePublishAudit({
+        recorded: { source_lng: "en", content_sha256: OTHER_SHA },
+        current: { source_lng: "en", content_sha256: SHA },
+        reason: "r",
+      }),
+      /500/,
+    );
+  });
+
+  it("writeForcePublishAudit：confirmationId 缺省 cli", async () => {
+    let captured;
+    const deps = createLocalPublishDeps({
+      cwd: "/tmp/x",
+      originBaseUrl: "https://demo.example.com",
+      siteToken: "t",
+      appName: "a",
+      languages: ["en"],
+      fetch: async (url) => {
+        captured = url;
+        return { ok: true };
+      },
+    });
+    await deps.writeForcePublishAudit({
+      recorded: { source_lng: "en", content_sha256: OTHER_SHA },
+      current: { source_lng: "en", content_sha256: SHA },
+      reason: "r",
+    });
+    assert.strictEqual(new URL(captured).searchParams.get("who"), "cli");
   });
 });
