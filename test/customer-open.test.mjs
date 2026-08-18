@@ -165,8 +165,8 @@ test("injection: staff → 全放行", () => {
   assert.equal(r.customTools, undefined);
 });
 
-test("injection: plain customer → A1 鎖死", () => {
-  const r = resolveCustomerInjection({ isCustomer: true, customerOpen: false });
+test("injection: plain customer → A1 鎖死（publishDeps:null 不注入 publish）", () => {
+  const r = resolveCustomerInjection({ isCustomer: true, customerOpen: false, publishDeps: null });
   assert.equal(r.noExtensions, true);
   assert.equal(r.noSkills, true);
   assert.equal(r.noTools, "builtin");
