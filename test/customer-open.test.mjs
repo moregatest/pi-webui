@@ -175,7 +175,8 @@ test("injection: plain customer → A1 鎖死（publishDeps:null 不注入 publi
 });
 
 test("injection: customer-open → 放寬 + read/bash", () => {
-  const r = resolveCustomerInjection({ isCustomer: true, customerOpen: true });
+  // publishDeps:null＝顯式不注入 publish tool，讓本測只驗「放寬 + read/bash」這一面
+  const r = resolveCustomerInjection({ isCustomer: true, customerOpen: true, publishDeps: null });
   assert.equal(r.noExtensions, false);
   assert.equal(r.noSkills, false);
   assert.equal(r.noTools, undefined);

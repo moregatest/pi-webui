@@ -25,6 +25,22 @@ export interface CustomerInjectionResult {
   noTools: "builtin" | undefined;
   tools: string[] | undefined;
   customTools: unknown;
+  /**
+   * 需與 index.ts 的 hostGuardTools / sandboxTools *併存* 的附加 custom tools。
+   * 不塞進 customTools 的理由：index.ts 走 `customTools ?? hostGuardTools`，
+   * customTools 一旦有值就會把 in-process L0/L1/L3 guarded read/bash 整組蓋掉。
+   */
+  extraTools?: unknown[];
+}
+
+/**
+ * 合併 base custom tools（sandboxTools / hostGuardTools）與 extraTools。
+ * 無 extraTools 時原樣回傳 base，維持 index.ts 既有 `?? hostGuardTools` 語義。
+ */
+export function mergeInjectedTools(base: unknown, extra: unknown[] | undefined): unknown {
+  if (!extra || extra.length === 0) return base;
+  const baseArr = Array.isArray(base) ? base : base == null ? [] : [base];
+  return [...baseArr, ...extra];
 }
 
 /**
@@ -141,13 +157,18 @@ export function resolveCustomerInjection({
 }: CustomerInjectionInput): CustomerInjectionResult {
   // customer-open：放行 skills + extensions，工具面 read/bash（走 sandbox=VM 版，同名覆蓋 builtin）。
   // 全開期靠 Fly 單客戶邊界 + 強制 effective sandbox（L2）；env/檔案隔離由 L0/L1/VM 兜底。
+  // publish_confirmed 也必須在這條分支注入：Fly preview 機的 ecosystem.config.cjs 固定
+  // PI_WEBUI_SKILLS_OPEN=1，客戶端一律落在 customer-open，只在 plain customer 注入等於永不生效。
   if (isCustomer && customerOpen) {
+    const deps = publishDeps === undefined ? resolvePublishDepsFromEnv() : publishDeps;
+    const publishTools = deps ? buildCustomerPublishTools(deps) : [];
     return {
       noExtensions: false,
       noSkills: false,
       noTools: undefined,
-      tools: ["read", "bash"],
+      tools: publishTools.length > 0 ? ["read", "bash", "publish_confirmed"] : ["read", "bash"],
       customTools: sandboxTools ?? undefined,
+      extraTools: publishTools.length > 0 ? publishTools : undefined,
     };
   }
 

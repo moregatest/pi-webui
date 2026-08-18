@@ -77,7 +77,7 @@ import { loadProfile } from "./profile-loader.js";
 import type { ProfileFile } from "./profile-loader.js";
 import { loadBrandCss } from "./brand-overlay.js";
 import { isCustomerMode, isCustomerOpenMode, isBlockedCustomerMessage, scrubForCustomer, missingCustomerSecrets, customerOpenSkillGuardWarning, enforceCustomerUiProfile } from "./customer-policy.js";
-import { resolveCustomerInjection, shouldInjectHostGuards } from "./customer-injection.js";
+import { resolveCustomerInjection, shouldInjectHostGuards, mergeInjectedTools } from "./customer-injection.js";
 import { buildSandboxGuardedTools, buildHostGuardedTools } from "./guarded-tools.js";
 import { modelNotFoundNotice } from "./model-notice.js";
 import { buildCustomerApiTools } from "../tools/customer-api-tools.js";
@@ -1125,7 +1125,12 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
   const hostGuardTools = shouldInjectHostGuards({ hasSandboxTools: !!sandboxTools, isCustomer, customerOpen })
     ? buildHostGuardedTools(cwd, guardWorkspaceRoot)
     : undefined;
-  const finalCustomTools = toolInjection.customTools ?? hostGuardTools;
+  // extraTools（如 customer-open 的 publish_confirmed）要*附加*在 base 之後,
+  // 不能塞進 customTools——否則會把上面的 hostGuardTools / sandboxTools 整組蓋掉。
+  const finalCustomTools = mergeInjectedTools(
+    toolInjection.customTools ?? hostGuardTools,
+    toolInjection.extraTools,
+  );
 
   return {
     ...(await createAgentSessionFromServices({

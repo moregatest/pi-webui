@@ -8,6 +8,7 @@ import {
   parsePreviewMetaConfig,
   subdomainOfHost,
   resolveLocalPublishConfig,
+  mergeInjectedTools,
 } from "../dist/server/customer-injection.js";
 
 const SHA = "sha256:" + "ab".repeat(32);
@@ -165,14 +166,44 @@ test("injection: plain customer 無 publish deps（null）→ 只有 upload_imag
   assert.equal(r.customTools[0].name, "upload_image");
 });
 
-test("injection: customer-open 不注入 publish（維持 read/bash）", () => {
+test("injection: customer-open 有 publish deps → read/bash + publish_confirmed（走 extraTools）", () => {
   const r = resolveCustomerInjection({
     isCustomer: true,
     customerOpen: true,
     publishDeps: fakePublishDeps(),
   });
+  assert.deepEqual(r.tools, ["read", "bash", "publish_confirmed"]);
+  // customTools 必須維持 undefined：index.ts 走 `customTools ?? hostGuardTools`，
+  // 一旦這裡有值就會把 in-process L0/L1/L3 guarded read/bash 整組蓋掉。
+  assert.equal(r.customTools, undefined);
+  assert.equal(r.extraTools.length, 1);
+  assert.equal(r.extraTools[0].name, "publish_confirmed");
+});
+
+test("injection: customer-open 無 publish deps（null）→ 維持 read/bash", () => {
+  const r = resolveCustomerInjection({
+    isCustomer: true,
+    customerOpen: true,
+    publishDeps: null,
+  });
   assert.deepEqual(r.tools, ["read", "bash"]);
   assert.equal(r.customTools, undefined);
+  assert.equal(r.extraTools, undefined);
+});
+
+test("mergeInjectedTools: extraTools 附加在 base 之後，不覆蓋 base", () => {
+  const base = [{ name: "read" }, { name: "bash" }];
+  const extra = [{ name: "publish_confirmed" }];
+  assert.deepEqual(mergeInjectedTools(base, extra).map((t) => t.name), [
+    "read",
+    "bash",
+    "publish_confirmed",
+  ]);
+  // base 為 undefined（無 sandbox、無 hostGuard）時只回 extra
+  assert.deepEqual(mergeInjectedTools(undefined, extra).map((t) => t.name), ["publish_confirmed"]);
+  // 無 extra 時原樣回傳 base（維持 index.ts 既有 `?? hostGuardTools` 語義）
+  assert.equal(mergeInjectedTools(base, undefined), base);
+  assert.equal(mergeInjectedTools(undefined, []), undefined);
 });
 
 test("injection: 非 customer 不注入 publish", () => {
