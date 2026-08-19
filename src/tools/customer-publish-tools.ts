@@ -6,7 +6,7 @@
 //   輸出對齊 {ok:true,status:"succeeded",...} / {ok:false,status:"origin_drift",recorded_sha,current_sha}。
 
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, rename } from "node:fs/promises";
 import { Type } from "typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 
@@ -45,6 +45,7 @@ export interface ForcePublishAuditInput {
 export interface PublishLocalDeps {
   fetchOriginVersion: () => Promise<OriginSourceVersion>;
   readRecordedOriginVersion: () => Promise<RecordedOriginVersion | null>;
+  writeRecordedOriginVersion: (version: RecordedOriginVersion) => Promise<void>;
   writeForcePublishAudit: (input: ForcePublishAuditInput) => Promise<void>;
   pushBack: (opts: { force: boolean; reason?: string }) => Promise<CliRunResult>;
   pushDb: (opts: { force: boolean; reason?: string }) => Promise<CliRunResult>;
@@ -222,6 +223,29 @@ export async function runPublishFlow(
       ok: false,
       error: "preview push-db 失敗",
       details: { code: "push_db_failed" },
+    };
+  }
+
+  // 6. 發布成功後，重新 fetch origin version 並回寫 recorded baseline
+  //    （凍結契約 step 6：發布後 origin 內容已變，需更新基準指紋以免後續 false drift）。
+  try {
+    const newOrigin = await deps.fetchOriginVersion();
+    await deps.writeRecordedOriginVersion({
+      source_lng: newOrigin.source_lng,
+      content_sha256: newOrigin.content_sha256,
+      recorded_at: new Date().toISOString(),
+    });
+  } catch {
+    // 回寫失敗不 block 發布結果，但記入 details 供診斷
+    return {
+      ok: true,
+      status: "succeeded",
+      message: (match ? "發布已觸發（無 drift）" : "已依客戶原因強制發布")
+        + "（警告：基準指紋回寫失敗，後續可能誤報 drift）",
+      forced: !match,
+      source_lng: origin.source_lng,
+      content_sha256: origin.content_sha256,
+      details: { code: "baseline_write_failed" },
     };
   }
 
@@ -407,9 +431,34 @@ export function createLocalPublishDeps(config: LocalPublishConfig): PublishLocal
     });
   }
 
+  async function writeRecordedOriginVersion(version: RecordedOriginVersion): Promise<void> {
+    const metaPath = `${config.cwd}/data/preview-meta.json`;
+    // 讀現有 meta，合併更新 origin_source_version（保留其他 key 不動）
+    let meta: Record<string, unknown> = {};
+    try {
+      const text = await readFile(metaPath, "utf-8");
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        meta = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // 檔案不存在或格式異常 → 從頭建立
+    }
+    meta.origin_source_version = {
+      source_lng: version.source_lng,
+      content_sha256: version.content_sha256,
+      recorded_at: version.recorded_at ?? new Date().toISOString(),
+    };
+    // 原子寫入：先寫 tmp，再 rename 取代
+    const tmpPath = `${metaPath}.tmp`;
+    await writeFile(tmpPath, JSON.stringify(meta, null, 2), "utf-8");
+    await rename(tmpPath, metaPath);
+  }
+
   return {
     fetchOriginVersion,
     readRecordedOriginVersion,
+    writeRecordedOriginVersion,
     writeForcePublishAudit,
     pushBack: (opts) =>
       runCli(buildPushBackArgs(config.appName, opts)),

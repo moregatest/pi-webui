@@ -26,13 +26,16 @@ const ORIGIN = { schema: "pgc-source-version-v1", source_lng: "en", content_sha2
 const RECORD = { source_lng: "en", content_sha256: SHA, recorded_at: "2026-08-18T10:00:00+08:00" };
 
 function makeDeps(overrides = {}) {
-  const calls = { fetch: 0, pushBack: [], pushDb: [], writeAudit: [] };
+  const calls = { fetch: 0, pushBack: [], pushDb: [], writeAudit: [], writeRecorded: [] };
   const deps = {
     fetchOriginVersion: async () => {
       calls.fetch++;
       return ORIGIN;
     },
     readRecordedOriginVersion: async () => RECORD,
+    writeRecordedOriginVersion: async (version) => {
+      calls.writeRecorded.push(version);
+    },
     writeForcePublishAudit: async (input) => {
       calls.writeAudit.push(input);
     },
@@ -50,7 +53,7 @@ function makeDeps(overrides = {}) {
 }
 
 describe("runPublishFlow（核心決策邏輯）", () => {
-  it("相符：觸發 push-back → push-db（無 force），回 succeeded", async () => {
+  it("相符：觸發 push-back → push-db（無 force），回 succeeded，且回寫 baseline", async () => {
     const { deps, calls } = makeDeps();
     const result = await runPublishFlow(deps, undefined);
     assert.strictEqual(result.ok, true);
@@ -61,6 +64,11 @@ describe("runPublishFlow（核心決策邏輯）", () => {
     assert.strictEqual(calls.writeAudit.length, 0);
     assert.deepStrictEqual(calls.pushBack, [{ force: false }]);
     assert.deepStrictEqual(calls.pushDb, [{ force: false }]);
+    // 發布後重新 fetch origin 並回寫 recorded baseline（P0-3 修復）
+    assert.strictEqual(calls.fetch, 2);
+    assert.strictEqual(calls.writeRecorded.length, 1);
+    assert.strictEqual(calls.writeRecorded[0].content_sha256, SHA);
+    assert.strictEqual(calls.writeRecorded[0].source_lng, "en");
   });
 
   it("drift 且無原因：拒絕，不觸發 CLI，回 origin_drift", async () => {
@@ -79,7 +87,7 @@ describe("runPublishFlow（核心決策邏輯）", () => {
     assert.strictEqual(calls.pushDb.length, 0);
   });
 
-  it("drift 且有原因：先寫 audit 再帶 --force --reason 觸發，回 succeeded", async () => {
+  it("drift 且有原因：先寫 audit 再帶 --force --reason 觸發，回 succeeded，且回寫 baseline", async () => {
     const { deps, calls } = makeDeps({
       readRecordedOriginVersion: async () => ({ ...RECORD, content_sha256: OTHER_SHA }),
     });
@@ -97,6 +105,11 @@ describe("runPublishFlow（核心決策邏輯）", () => {
     });
     assert.deepStrictEqual(calls.pushBack, [{ force: true, reason: "客戶要求立即上線" }]);
     assert.deepStrictEqual(calls.pushDb, [{ force: true, reason: "客戶要求立即上線" }]);
+    // force 發布成功後回寫 recorded baseline，drift 才得以收斂（P0-3 修復）
+    assert.strictEqual(calls.fetch, 2);
+    assert.strictEqual(calls.writeRecorded.length, 1);
+    assert.strictEqual(calls.writeRecorded[0].content_sha256, SHA);
+    assert.strictEqual(calls.writeRecorded[0].source_lng, "en");
   });
 
   it("audit 寫失敗：拒絕，不觸發 CLI", async () => {
@@ -172,6 +185,16 @@ describe("runPublishFlow（核心決策邏輯）", () => {
     const result = await runPublishFlow(deps, undefined);
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.details.code, "push_db_failed");
+  });
+
+  it("發布成功但 baseline 回寫失敗：仍回 succeeded，但帶 warning details", async () => {
+    const { deps } = makeDeps({
+      writeRecordedOriginVersion: async () => { throw new Error("write boom"); },
+    });
+    const result = await runPublishFlow(deps, undefined);
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.status, "succeeded");
+    assert.strictEqual(result.details.code, "baseline_write_failed");
   });
 
   it("force_reason 超長：invalid_input，且不觸發 fetch", async () => {
@@ -409,6 +432,66 @@ describe("createLocalPublishDeps", () => {
       });
       const r = await deps.readRecordedOriginVersion();
       assert.strictEqual(r, null);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("writeRecordedOriginVersion：原子回寫 origin_source_version，保留其他 key", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publish-"));
+    try {
+      fs.mkdirSync(path.join(dir, "data"), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, "data", "preview-meta.json"),
+        JSON.stringify({
+          preview_url: "https://x-preview.fly.dev/",
+          app_name: "x-preview",
+          origin_source_version: { source_lng: "en", content_sha256: SHA },
+        }),
+      );
+      const deps = createLocalPublishDeps({
+        cwd: dir, originBaseUrl: "https://x", siteToken: "t", appName: "a", languages: ["en"],
+      });
+      await deps.writeRecordedOriginVersion({
+        source_lng: "en",
+        content_sha256: OTHER_SHA,
+        recorded_at: "2026-08-19T14:53:00+08:00",
+      });
+      const raw = JSON.parse(
+        fs.readFileSync(path.join(dir, "data", "preview-meta.json"), "utf-8"),
+      );
+      assert.deepStrictEqual(raw.origin_source_version, {
+        source_lng: "en",
+        content_sha256: OTHER_SHA,
+        recorded_at: "2026-08-19T14:53:00+08:00",
+      });
+      // 其他 key 保留
+      assert.strictEqual(raw.preview_url, "https://x-preview.fly.dev/");
+      assert.strictEqual(raw.app_name, "x-preview");
+      // 不留 tmp 殘檔
+      assert.ok(!fs.existsSync(path.join(dir, "data", "preview-meta.json.tmp")));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("writeRecordedOriginVersion：無既有檔時從頭建立", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publish-"));
+    try {
+      fs.mkdirSync(path.join(dir, "data"), { recursive: true });
+      const deps = createLocalPublishDeps({
+        cwd: dir, originBaseUrl: "https://x", siteToken: "t", appName: "a", languages: ["en"],
+      });
+      await deps.writeRecordedOriginVersion({
+        source_lng: "zh-TW",
+        content_sha256: OTHER_SHA,
+      });
+      const raw = JSON.parse(
+        fs.readFileSync(path.join(dir, "data", "preview-meta.json"), "utf-8"),
+      );
+      assert.strictEqual(raw.origin_source_version.content_sha256, OTHER_SHA);
+      assert.strictEqual(raw.origin_source_version.source_lng, "zh-TW");
+      assert.ok(raw.origin_source_version.recorded_at);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
