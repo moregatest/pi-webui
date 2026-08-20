@@ -818,6 +818,8 @@ function connect() {
 
   socket.addEventListener("open", () => {
     logger.info("ws open", { lastSeq });
+    const banner = document.getElementById("disconnected-banner");
+    if (banner) banner.style.display = "none";
     // Tell the server where our event-log cursor is. If it can replay missed
     // events, we keep all streamed UI state. Otherwise it'll send a
     // session_reset followed by a fresh bootstrap.
@@ -1006,6 +1008,8 @@ function connect() {
     dispatchSessionEvent(chatState, { type: "agent_end" });
     renderLog();
     renderStatusBar();
+    const banner = document.getElementById("disconnected-banner");
+    if (banner) banner.style.display = "block";
     // Auto-reconnect after a short delay
     logger.info("ws reconnect scheduled", { delayMs: 1000 });
     setTimeout(connect, 1000);

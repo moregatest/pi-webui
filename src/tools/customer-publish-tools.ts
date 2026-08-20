@@ -70,6 +70,8 @@ export interface PublishResult {
   /** origin_drift：origin 當前來源語系內容 hash。 */
   current_sha?: string;
   details?: Record<string, unknown>;
+  /** 本次實際變更的記錄數（push-back stdout 解析），null 表示無法判斷。 */
+  changed_records?: number | null;
 }
 
 const FORCE_REASON_MAX_BYTES = 512;
@@ -107,6 +109,24 @@ export function parsePreviewMetaOriginVersion(text: string): RecordedOriginVersi
   return recorded_at
     ? { source_lng, content_sha256, recorded_at }
     : { source_lng, content_sha256 };
+}
+
+/** 從 push-back / push-db stdout 解析變更記錄數。 */
+export function parsePushChangedRecords(stdout: string): number | null {
+  if (!stdout) return null;
+  // "Synced N files"
+  let m = stdout.match(/Synced\s+(\d+)\s+files/i);
+  if (m) return parseInt(m[1], 10);
+  // "N files changed"
+  m = stdout.match(/(\d+)\s+files?\s+changed/i);
+  if (m) return parseInt(m[1], 10);
+  // "changed: N"
+  m = stdout.match(/changed:\s*(\d+)/i);
+  if (m) return parseInt(m[1], 10);
+  // "N records"
+  m = stdout.match(/(\d+)\s+records?/i);
+  if (m) return parseInt(m[1], 10);
+  return null;
 }
 
 /**
@@ -190,6 +210,7 @@ export async function runPublishFlow(
   }
 
   const opts = match ? { force: false } : { force: true, reason };
+  let changedRecords: number | null = null;
 
   // 5. push-back → push-db
   try {
@@ -201,6 +222,8 @@ export async function runPublishFlow(
         details: { code: "push_back_failed", exitCode: back.exitCode, stderr: back.stderr },
       };
     }
+    const backChanged = parsePushChangedRecords(back.stdout);
+    if (backChanged !== null) changedRecords = backChanged;
   } catch {
     return {
       ok: false,
@@ -218,6 +241,8 @@ export async function runPublishFlow(
         details: { code: "push_db_failed", exitCode: db.exitCode, stderr: db.stderr },
       };
     }
+    const dbChanged = parsePushChangedRecords(db.stdout);
+    if (dbChanged !== null) changedRecords = (changedRecords ?? 0) + dbChanged;
   } catch {
     return {
       ok: false,
@@ -246,6 +271,7 @@ export async function runPublishFlow(
       source_lng: origin.source_lng,
       content_sha256: origin.content_sha256,
       details: { code: "baseline_write_failed" },
+      changed_records: changedRecords,
     };
   }
 
@@ -256,6 +282,7 @@ export async function runPublishFlow(
     forced: !match,
     source_lng: origin.source_lng,
     content_sha256: origin.content_sha256,
+    changed_records: changedRecords,
   };
 }
 

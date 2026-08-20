@@ -1116,7 +1116,27 @@ body.drag-active .composer-wrapper {
   border-left-color: var(--error);
 }
 
-/* ── Bubble 對話版型(需求3;data-chat-layout="bubble") ──────────────
+/* ── Disconnected banner ──────────────────────── */
+
+.disconnected-banner {
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  color: #856404;
+  padding: 8px 16px;
+  text-align: center;
+  font-size: 14px;
+  margin-bottom: 8px;
+  border-radius: 4px;
+}
+.disconnected-banner button {
+  margin-left: 12px;
+  padding: 4px 12px;
+  cursor: pointer;
+  background: #ffc107;
+  border: none;
+  border-radius: 3px;
+  font-size: 13px;
+}
    Claude 式:user 靠右有底色氣泡、assistant 靠左純文字,角色標題(h3)視覺
    隱藏但保留給螢幕閱讀器。只作用於 user/assistant;error/tool/system/custom
    維持標題式呈現(customer 模式本就看不到 tool/system)。 */
