@@ -26,6 +26,12 @@ export interface UiProfile {
   hideModel: boolean;
   safeErrors: boolean;
   exposeToolArgs: boolean;
+  // hideToolCalls=true 下的 tool 白名單:清單內 tool 的「結果」仍送給客戶
+  // (tool_execution_end 事件 + toolResult 訊息 / tool_result block)。
+  // 目的是給客戶一條獨立驗證管道 —— 例如 publish_confirmed 的 ok / status /
+  // source_lng / content_sha256 / forced 原始回傳值,客戶可自行核對,而不是
+  // 只能單方面相信 agent 的轉述。tool_call(參數)不在白名單範圍,一律照舊隱藏。
+  showToolResultsFor: string[];
   // custom(extension pi.sendMessage 注入)訊息出口 fail-closed(#102):
   // 僅 readyai_customer_ 前綴放行並轉 assistant 泡泡,其餘整則 drop。
   restrictCustomMessages: boolean;
@@ -76,6 +82,7 @@ export interface ParseUiProfileInput {
   hideModel?: boolean;
   safeErrors?: boolean;
   exposeToolArgs?: boolean;
+  showToolResultsFor?: string[];
   chatLayout?: string;
   uiProfile?: string;
   brandName?: string;
@@ -103,6 +110,9 @@ export function parseUiProfile(
     safeErrors: false,
     exposeToolArgs: false,
     restrictCustomMessages: false,
+    // 內建預設放行 publish_confirmed:hideToolCalls=false 的 profile 本來就全顯示,
+    // 這個預設實際只對 customer(hideToolCalls=true)生效。
+    showToolResultsFor: ["publish_confirmed"],
     chatLayout: "log",
     brand: {
       name: null,
@@ -127,6 +137,7 @@ export function parseUiProfile(
     if (ui.safe_errors !== undefined) profile.safeErrors = ui.safe_errors;
     if (ui.expose_tool_args !== undefined) profile.exposeToolArgs = ui.expose_tool_args;
     if (ui.restrict_custom_messages !== undefined) profile.restrictCustomMessages = ui.restrict_custom_messages;
+    if (ui.show_tool_results_for !== undefined) profile.showToolResultsFor = [...ui.show_tool_results_for];
     if (ui.chat_layout !== undefined) profile.chatLayout = ui.chat_layout;
   }
 
@@ -200,6 +211,9 @@ export function parseUiProfile(
     profile.exposeToolArgs = !!cli.exposeToolArgs;
   } else if (envBool(env, "PI_WEBUI_EXPOSE_TOOL_ARGS")) {
     profile.exposeToolArgs = true;
+  }
+  if (cli.showToolResultsFor !== undefined) {
+    profile.showToolResultsFor = [...cli.showToolResultsFor];
   }
 
   // chat_layout:enum 旗標(非 bool);CLI > env > profile。空字串視同未設定。
@@ -302,6 +316,20 @@ function redactToolEventForClient(event: any): any {
   return event;
 }
 
+// showToolResultsFor 白名單命中判斷。hideToolCalls=true 時,命中的 tool 其「結果」
+// 仍送給客戶;tool_call(參數)不受影響。空字串(SDK 沒帶 toolName)一律不命中,
+// fail-closed。
+function isToolResultAllowed(profile: UiProfile, toolName: string): boolean {
+  if (!toolName) return false;
+  return profile.showToolResultsFor.includes(toolName);
+}
+
+// 一個 tool_result block(snake_case 或 SDK camelCase)是否命中白名單。
+// block 的 tool 名在兩種形態下分別放在 toolName / name。
+function isToolResultBlockAllowed(b: any, profile: UiProfile): boolean {
+  return isToolResultAllowed(profile, String(b.toolName ?? b.name ?? ""));
+}
+
 // custom(role="custom"、extension pi.sendMessage 注入)訊息在 customer 出口的政策
 // (#102):fail-closed——僅 customType 帶 readyai_customer_ 前綴者放行,且轉成
 // assistant 訊息(客戶介面渲染為一般助理泡泡,不露 "Custom: <type>" 內部標頭,
@@ -325,14 +353,10 @@ function transformCustomMessage(msg: any, profile: UiProfile): any {
 function keepContentBlock(b: any, profile: UiProfile): boolean {
   if (!b || typeof b !== "object") return true;
   if (b.type === "thinking" && profile.hideThinking) return false;
-  if (
-    (b.type === "tool_call" ||
-      b.type === "tool_result" ||
-      b.type === "toolCall" ||
-      b.type === "toolResult") &&
-    profile.hideToolCalls
-  )
-    return false;
+  if ((b.type === "tool_call" || b.type === "toolCall") && profile.hideToolCalls) return false;
+  if ((b.type === "tool_result" || b.type === "toolResult") && profile.hideToolCalls) {
+    return isToolResultBlockAllowed(b, profile);
+  }
   return true;
 }
 
@@ -399,6 +423,17 @@ export function filterEvent(event: any, profile: UiProfile): FilterResult {
     event.type === "tool_execution_update"
   ) {
     if (!profile.hideToolCalls) return { kind: "event", event: redactToolEventForClient(event) };
+    // 白名單放行(P2-1):hideToolCalls 下仍把命中 tool 的「結果」原封送給客戶,
+    // 客戶因此有一條獨立於 agent 轉述的驗證管道。只放 tool_execution_end ——
+    // start 是「開始執行 + 參數」、update 是 streaming 中間態,客戶都不需要,
+    // 照舊隱藏。注意:此時不會再送 tool_progress end packet,start 建立的 spinner
+    // 改由 client 收到本事件時以 toolCallId 收掉(public/app.js)。
+    if (
+      event.type === "tool_execution_end" &&
+      isToolResultAllowed(profile, String(event.toolName ?? ""))
+    ) {
+      return { kind: "event", event: redactToolEventForClient(event) };
+    }
     // update 是 streaming 中間結果,不轉 progress(避免閃);整個 drop
     if (event.type === "tool_execution_update") return null;
     if (!profile.showToolProgress) return null;
@@ -470,7 +505,8 @@ export function filterEvent(event: any, profile: UiProfile): FilterResult {
 // 兩層過濾:
 //   - message-level:SDK 把 tool 結果 / bash 執行存成獨立 role(toolResult /
 //     bashExecution),hideToolCalls=true 時整則 drop,否則 client 仍會渲染
-//     "Tool result: bash" 區塊
+//     "Tool result: bash" 區塊;例外是 showToolResultsFor 白名單命中的 toolResult,
+//     保留以維持 reload 後仍可驗證
 //   - content-level:對 user/assistant 等帶 content 陣列的 message,剝
 //     thinking / tool_* block(SDK 用 camelCase,舊路徑也可能是 snake_case)
 // hide flag 都沒開時直接回原陣列(無謂複製)。
@@ -491,9 +527,13 @@ export function filterMessageHistory(messages: any[], profile: UiProfile): any[]
         continue;
       }
     }
+    if (profile.hideToolCalls && msg.role === "bashExecution") continue;
+    // toolResult role 訊息(reload 後的 canonical 形態):白名單命中者保留,
+    // 讓客戶重整頁面後仍看得到 publish 結果,而不是只在當下那一瞬間可驗證。
     if (
       profile.hideToolCalls &&
-      (msg.role === "toolResult" || msg.role === "bashExecution")
+      msg.role === "toolResult" &&
+      !isToolResultAllowed(profile, String(msg.toolName ?? ""))
     ) {
       continue;
     }
@@ -501,19 +541,7 @@ export function filterMessageHistory(messages: any[], profile: UiProfile): any[]
       out.push(msg);
       continue;
     }
-    const filtered = msg.content.filter((b: any) => {
-      if (!b || typeof b !== "object") return true;
-      if (b.type === "thinking" && profile.hideThinking) return false;
-      if (
-        (b.type === "tool_call" ||
-          b.type === "tool_result" ||
-          b.type === "toolCall" ||
-          b.type === "toolResult") &&
-        profile.hideToolCalls
-      )
-        return false;
-      return true;
-    });
+    const filtered = msg.content.filter((b: any) => keepContentBlock(b, profile));
     if (filtered.length === msg.content.length) {
       out.push(msg);
     } else {

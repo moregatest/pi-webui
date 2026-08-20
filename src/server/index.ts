@@ -656,6 +656,9 @@ function serializeUiProfile(profile: UiProfile) {
     hideSessionPicker: profile.hideSessionPicker,
     hideModel: profile.hideModel,
     safeErrors: profile.safeErrors,
+    // client 的 defensive secondary filter 要跟 server 用同一份白名單,
+    // 否則 server 放行的 tool_result 會在 client 端被二次過濾掉。
+    showToolResultsFor: profile.showToolResultsFor,
     chatLayout: profile.chatLayout,
     brand: {
       name: profile.brand.name,

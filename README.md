@@ -463,6 +463,10 @@ hide_model          = true         # hide model name
 safe_errors         = true         # wrap server_error as generic + ticket
 expose_tool_args    = false        # allow {tool_arg.*} placeholders (UNSAFE)
 chat_layout         = "bubble"     # bubble (Claude-style) | log (engineer view, default)
+show_tool_results_for = ["publish_confirmed"]
+                                   # whitelist: these tools' RESULTS stay visible even
+                                   # with hide_tool_calls (tool_call args stay hidden).
+                                   # default: ["publish_confirmed"]
 
 [brand]
 name   = "Acme Bot"

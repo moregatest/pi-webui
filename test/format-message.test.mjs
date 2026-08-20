@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatMessage, sdkContentToBlocks, hasVisibleContent } from "../public/format-message.mjs";
+import {
+  formatMessage,
+  sdkContentToBlocks,
+  hasVisibleContent,
+  isToolResultVisible,
+} from "../public/format-message.mjs";
 
 test("toolResult message preserves details (e.g. edit-tool diff)", () => {
   // Shape mirrors the JSONL written by pi-coding-agent for the "edit" tool:
@@ -180,4 +185,38 @@ test("hasVisibleContent: text alongside hidden thinking is still visible", () =>
 
 test("hasVisibleContent: an image block counts as visible", () => {
   assert.equal(hasVisibleContent([{ type: "image", mimeType: "image/png", data: "AAAA" }], {}), true);
+});
+
+//
+// showToolResultsFor 白名單(P2-1)client 端 secondary filter
+//
+
+test("isToolResultVisible: 白名單命中(snake_case name / SDK toolName 都認)", () => {
+  const ui = { hideToolCalls: true, showToolResultsFor: ["publish_confirmed"] };
+  assert.equal(isToolResultVisible({ type: "tool_result", name: "publish_confirmed" }, ui), true);
+  assert.equal(isToolResultVisible({ type: "toolResult", toolName: "publish_confirmed" }, ui), true);
+  assert.equal(isToolResultVisible({ type: "tool_result", name: "bash" }, ui), false);
+});
+
+test("isToolResultVisible: 沒有白名單 / 沒有 tool 名 → fail-closed", () => {
+  assert.equal(isToolResultVisible({ type: "tool_result", name: "publish_confirmed" }, {}), false);
+  assert.equal(isToolResultVisible({ type: "tool_result" }, { showToolResultsFor: ["publish_confirmed"] }), false);
+});
+
+test("hasVisibleContent: hideToolCalls 下白名單 tool_result 仍算可見", () => {
+  const ui = { hideToolCalls: true, showToolResultsFor: ["publish_confirmed"] };
+  const blocks = [{ type: "tool_result", name: "publish_confirmed", result: { content: [] } }];
+  assert.equal(hasVisibleContent(blocks, ui), true);
+});
+
+test("hasVisibleContent: hideToolCalls 下非白名單 tool_result 仍不可見", () => {
+  const ui = { hideToolCalls: true, showToolResultsFor: ["publish_confirmed"] };
+  const blocks = [{ type: "tool_result", name: "bash", result: { content: [] } }];
+  assert.equal(hasVisibleContent(blocks, ui), false);
+});
+
+test("hasVisibleContent: 白名單命中但 result 仍 pending(null)→ 不可見", () => {
+  const ui = { hideToolCalls: true, showToolResultsFor: ["publish_confirmed"] };
+  const blocks = [{ type: "tool_result", name: "publish_confirmed", result: null }];
+  assert.equal(hasVisibleContent(blocks, ui), false);
 });

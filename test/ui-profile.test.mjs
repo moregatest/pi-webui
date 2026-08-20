@@ -853,3 +853,111 @@ test("filterEvent tool_execution_end phase=end 走 resolveLabel", () => {
   assert.equal(result?.payload?.phase, "end");
   assert.equal(result?.payload?.label, "讀檔完成");
 });
+
+//
+// showToolResultsFor 白名單(P2-1):hideToolCalls 下讓客戶看得到指定 tool 的原始結果
+//
+
+test("parseUiProfile: showToolResultsFor 內建預設含 publish_confirmed", () => {
+  const p = parseUiProfile({}, {});
+  assert.deepEqual(p.showToolResultsFor, ["publish_confirmed"]);
+});
+
+test("parseUiProfile: customer preset 不覆蓋 showToolResultsFor(仍是內建預設)", () => {
+  const p = parseUiProfile({ uiProfile: "customer" }, {});
+  assert.equal(p.hideToolCalls, true);
+  assert.deepEqual(p.showToolResultsFor, ["publish_confirmed"]);
+});
+
+test("parseUiProfile: profileFile ui.show_tool_results_for 覆蓋預設", () => {
+  const p = parseUiProfile({}, {}, { ui: { show_tool_results_for: ["foo", "bar"] } });
+  assert.deepEqual(p.showToolResultsFor, ["foo", "bar"]);
+});
+
+test("parseUiProfile: CLI showToolResultsFor 覆蓋 profileFile", () => {
+  const p = parseUiProfile(
+    { showToolResultsFor: ["cli_tool"] },
+    {},
+    { ui: { show_tool_results_for: ["file_tool"] } },
+  );
+  assert.deepEqual(p.showToolResultsFor, ["cli_tool"]);
+});
+
+test("parseUiProfile: showToolResultsFor 為空陣列時白名單全關", () => {
+  const p = parseUiProfile({ hideToolCalls: true, showToolResultsFor: [] }, {});
+  const e = { type: "tool_execution_end", toolCallId: "tc-1", toolName: "publish_confirmed", result: "x", isError: false };
+  assert.equal(filterEvent(e, p), null);
+});
+
+test("filterEvent: hideToolCalls + 白名單 tool 的 tool_execution_end → 放行 event", () => {
+  const p = parseUiProfile({ hideToolCalls: true }, {});
+  const result = { content: [{ type: "text", text: '{"ok":true}' }], details: { ok: true } };
+  const e = { type: "tool_execution_end", toolCallId: "tc-1", toolName: "publish_confirmed", result, isError: false };
+  const r = filterEvent(e, p);
+  assert.equal(r.kind, "event");
+  assert.deepEqual(r.event, e);
+});
+
+test("filterEvent: hideToolCalls + showToolProgress 下,白名單 end 仍走 event(不轉 progress)", () => {
+  const p = parseUiProfile({ hideToolCalls: true, showToolProgress: true }, {});
+  const e = { type: "tool_execution_end", toolCallId: "tc-1", toolName: "publish_confirmed", result: "x", isError: false };
+  const r = filterEvent(e, p);
+  assert.equal(r.kind, "event");
+});
+
+test("filterEvent: 白名單只放 end —— 同 tool 的 start 照舊隱藏", () => {
+  const p = parseUiProfile({ hideToolCalls: true }, {});
+  const e = { type: "tool_execution_start", toolCallId: "tc-1", toolName: "publish_confirmed", args: { force_reason: "x" } };
+  assert.equal(filterEvent(e, p), null);
+});
+
+test("filterEvent: 白名單只放 end —— 同 tool 的 update 照舊隱藏", () => {
+  const p = parseUiProfile({ hideToolCalls: true }, {});
+  const e = { type: "tool_execution_update", toolCallId: "tc-1", toolName: "publish_confirmed", partialResult: {} };
+  assert.equal(filterEvent(e, p), null);
+});
+
+test("filterEvent: 非白名單 tool 的 end 照舊 drop", () => {
+  const p = parseUiProfile({ hideToolCalls: true }, {});
+  const e = { type: "tool_execution_end", toolCallId: "tc-1", toolName: "bash", result: "secret", isError: false };
+  assert.equal(filterEvent(e, p), null);
+});
+
+test("filterEvent: 白名單 toolResult content block 保留、toolCall 仍剝(message_update)", () => {
+  const p = parseUiProfile({ hideToolCalls: true }, {});
+  const e = {
+    type: "message_update",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "hi" },
+        { type: "toolCall", name: "publish_confirmed", arguments: {} },
+        { type: "toolResult", toolName: "publish_confirmed", content: [] },
+        { type: "toolResult", toolName: "bash", content: [] },
+      ],
+    },
+  };
+  const r = filterEvent(e, p);
+  assert.deepEqual(
+    r.event.message.content.map((b) => `${b.type}:${b.toolName ?? b.name ?? ""}`),
+    ["text:", "toolResult:publish_confirmed"],
+  );
+});
+
+test("filterMessageHistory: 白名單 toolResult role 訊息保留,其他 toolResult 仍 drop", () => {
+  const p = parseUiProfile({ hideToolCalls: true }, {});
+  const msgs = [
+    { role: "toolResult", toolName: "publish_confirmed", content: [{ type: "text", text: '{"ok":true}' }] },
+    { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "secret" }] },
+    { role: "bashExecution", command: "ls", output: "x" },
+  ];
+  const out = filterMessageHistory(msgs, p);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].toolName, "publish_confirmed");
+});
+
+test("filterMessageHistory: toolName 缺失的 toolResult fail-closed(仍 drop)", () => {
+  const p = parseUiProfile({ hideToolCalls: true }, {});
+  const msgs = [{ role: "toolResult", content: [{ type: "text", text: "x" }] }];
+  assert.deepEqual(filterMessageHistory(msgs, p), []);
+});
