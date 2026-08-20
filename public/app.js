@@ -37,7 +37,12 @@ import {
   stripCatNLinePrefixes,
 } from "./tool-result.mjs";
 import { ACTIVE_SESSION_KEY, extractSessionFileFromState } from "./storage.mjs";
-import { formatMessage, sdkContentToBlocks, hasVisibleContent } from "./format-message.mjs";
+import {
+  formatMessage,
+  sdkContentToBlocks,
+  hasVisibleContent,
+  isToolResultVisible,
+} from "./format-message.mjs";
 import { shouldHighlightCodeBlock } from "./highlight.mjs";
 import { planBlockRenders, reconcileChildrenInPlace } from "./render-blocks.mjs";
 import { createFollowState, onScrollEvent, shouldAutoScroll } from "./scroll-follow.mjs";
@@ -62,6 +67,7 @@ let uiProfile = {
   hideSessionPicker: false,
   hideModel: false,
   safeErrors: false,
+  showToolResultsFor: [],
   brand: { name: null, logoUrl: null, color: null, tokens: {}, mode: null, css: false },
 };
 // tool_progress packet 對應的 DOM 區塊。Map<id, HTMLElement>。
@@ -378,9 +384,12 @@ function renderBlocksHtml(blocks) {
     if (!b) continue;
     // defensive secondary filter:server 已過濾,client 再防一手(非安全機制)
     if (uiProfile?.hideThinking && b.type === "thinking") continue;
+    if (uiProfile?.hideToolCalls && b.type === "tool_call") continue;
+    // tool_result:白名單命中者不隱藏(server 已放行,這裡不可二次過濾掉)
     if (
       uiProfile?.hideToolCalls &&
-      (b.type === "tool_call" || b.type === "tool_result")
+      b.type === "tool_result" &&
+      !isToolResultVisible(b, uiProfile)
     ) {
       continue;
     }
@@ -647,6 +656,10 @@ function handleSessionEvent(event) {
         ok: !event.error,
         error: event.error?.message,
       });
+      // 白名單 tool 在 hideToolCalls 下由 server 放行成 session_event,不會再送
+      // tool_progress end packet;start 建立的 spinner 要在這裡自己收掉,
+      // 否則會永遠轉下去。非白名單情境本來就沒有對應節點,呼叫是 no-op。
+      handleToolProgress({ id: event.toolCallId, phase: "end" });
       dispatchSessionEvent(chatState, event);
       renderLog();
       return;
@@ -805,6 +818,8 @@ function connect() {
 
   socket.addEventListener("open", () => {
     logger.info("ws open", { lastSeq });
+    const banner = document.getElementById("disconnected-banner");
+    if (banner) banner.style.display = "none";
     // Tell the server where our event-log cursor is. If it can replay missed
     // events, we keep all streamed UI state. Otherwise it'll send a
     // session_reset followed by a fresh bootstrap.
@@ -993,6 +1008,8 @@ function connect() {
     dispatchSessionEvent(chatState, { type: "agent_end" });
     renderLog();
     renderStatusBar();
+    const banner = document.getElementById("disconnected-banner");
+    if (banner) banner.style.display = "block";
     // Auto-reconnect after a short delay
     logger.info("ws reconnect scheduled", { delayMs: 1000 });
     setTimeout(connect, 1000);

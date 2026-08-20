@@ -490,3 +490,26 @@ test("loadProfile [uploads].max_bytes 非正整數 → throw", (t) => {
   );
   assert.throws(() => loadProfile("x", tmp), /\[uploads\]\.max_bytes/);
 });
+
+test("loadProfile [ui].show_tool_results_for 合法字串陣列", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profilesDir, "a.toml"),
+    `[ui]\nshow_tool_results_for = ["publish_confirmed"]\n`,
+  );
+  assert.deepEqual(loadProfile("a", tmp).ui?.show_tool_results_for, ["publish_confirmed"]);
+});
+
+test("loadProfile [ui].show_tool_results_for 非陣列 / 含空字串 → throw", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const profilesDir = path.join(tmp, ".pi", "profiles");
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.writeFileSync(path.join(profilesDir, "x.toml"), `[ui]\nshow_tool_results_for = "publish_confirmed"\n`);
+  assert.throws(() => loadProfile("x", tmp), /show_tool_results_for/);
+  fs.writeFileSync(path.join(profilesDir, "y.toml"), `[ui]\nshow_tool_results_for = ["", "ok"]\n`);
+  assert.throws(() => loadProfile("y", tmp), /show_tool_results_for/);
+});

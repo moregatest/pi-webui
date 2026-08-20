@@ -46,8 +46,18 @@ function isFailedAssistantTurn(message) {
   return false;
 }
 
+// hideToolCalls 下仍該顯示的 tool_result:server 的 showToolResultsFor 白名單
+// (見 src/server/ui-profile.ts)。client 這層只是 defensive secondary filter,
+// 判斷條件必須跟 server 一致,否則 server 放行的結果會在這裡被二次過濾掉。
+export function isToolResultVisible(block, uiProfile) {
+  const allow = uiProfile?.showToolResultsFor;
+  if (!Array.isArray(allow)) return false;
+  const name = block?.toolName ?? block?.name;
+  return typeof name === "string" && name !== "" && allow.includes(name);
+}
+
 // 一組 blocks 在當前 uiProfile 下是否有「會渲染出可見內容」的 block。
-// 對應 renderBlocksHtml 的過濾規則(hideThinking / hideToolCalls),外加:
+// 對應 renderBlocksHtml 的過濾規則(hideThinking / hideToolCalls + 白名單),外加:
 // 空白 text/thinking、pending(result===null)的 tool_result 都不算可見。
 // renderLog 用它避免掛出渲染後為空的裸 header(issue #2 留言 B)。
 export function hasVisibleContent(blocks, uiProfile) {
@@ -55,7 +65,8 @@ export function hasVisibleContent(blocks, uiProfile) {
   for (const b of blocks) {
     if (!b) continue;
     if (uiProfile?.hideThinking && b.type === "thinking") continue;
-    if (uiProfile?.hideToolCalls && (b.type === "tool_call" || b.type === "tool_result")) continue;
+    if (uiProfile?.hideToolCalls && b.type === "tool_call") continue;
+    if (uiProfile?.hideToolCalls && b.type === "tool_result" && !isToolResultVisible(b, uiProfile)) continue;
     if (b.type === "tool_result" && (b.result === null || b.result === undefined)) continue;
     if ((b.type === "text" || b.type === "thinking") && !String(b.text || "").trim()) continue;
     return true;

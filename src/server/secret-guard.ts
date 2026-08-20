@@ -207,8 +207,8 @@ function resolveRealForGuard(cwd: string, target: string): string | null {
 
 /**
  * read tool 邊界判斷：realpath 正規化（解 ../ 與 symlink）後必須落在 workspaceRoot 內。
- * workspace 內全放行（含專案自身 .env 的 L-乙 憑證，對齊半信任）；workspace 外全擋
- * （L-甲 主機機密 ~/.ssh / ~/readyai.key / server .env）。比黑名單 fail-safe。
+ * workspace 內一般檔案放行，但 .env 家族仍擋（避免客戶繞過協作介面取得 scoped token）；
+ * workspace 外一律擋（L-甲 主機機密 ~/.ssh / ~/readyai.key / server .env）。
  */
 export function guardReadPath(
   cwd: string,
@@ -256,8 +256,8 @@ export function guardReadPath(
 
 /**
  * 遮蔽清單只含 L-甲共用機密（這些在 process.env、customer 不該見）。
- * L-乙（PC2_API_TOKEN 等）走 workspace .env、不在 process.env，process.env[k] 拿不到值故不列入
- * （半信任下 customer 本就能 cat 自己 workspace .env，遮之無安全意義）。
+ * L-乙（PC2_API_TOKEN 等）走 workspace .env、不在 process.env，process.env[k] 拿不到值故不列入。
+ * agent 的 bash/read 都禁止直接讀 .env；授權的 readyAI CLI 仍可在 sandbox 內自行載入。
  * 例外：LITELLM_API_KEY 雖屬 L-乙（per-preview virtual key），但啟動時走 process.env（見
  * customer-policy.ts REQUIRED_CUSTOMER_ENV），process.env[k] 拿得到值，故仍列入遮蔽。
  * 與 readyAI SECRET_KEY_PATTERN 同源；readyAI 新增機密 pattern 時同步這裡。

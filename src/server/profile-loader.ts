@@ -33,6 +33,11 @@ export interface UiFlags {
   safe_errors?: boolean;
   expose_tool_args?: boolean;
   restrict_custom_messages?: boolean;
+  // hide_tool_calls=true 時的白名單:清單內 tool 的「結果」(tool_result /
+  // tool_execution_end)仍送給客戶,讓客戶能自行核對 agent 的轉述,而不是只能單方
+  // 面相信。tool_call(參數)不受影響,一律照舊隱藏。未設時採 parseUiProfile 的
+  // 內建預設(publish_confirmed)。
+  show_tool_results_for?: string[];
   // 對話版型:"bubble"=Claude 式左右氣泡(user 右/assistant 左、隱藏角色標題);
   // "log"=工程師視圖(標題 + 左框線,預設)。customer fallback 用 bubble。
   chat_layout?: "bubble" | "log";
@@ -117,6 +122,16 @@ function validateUi(ui: UiFlags | undefined): void {
   if (ui.chat_layout !== undefined && !CHAT_LAYOUTS.has(ui.chat_layout)) {
     throw new Error(`[ui].chat_layout: 必須是 "bubble" 或 "log",收到 "${ui.chat_layout}"`);
   }
+  if (ui.show_tool_results_for !== undefined) {
+    if (!Array.isArray(ui.show_tool_results_for)) {
+      throw new Error(`[ui].show_tool_results_for: 必須是字串陣列,收到 ${typeof ui.show_tool_results_for}`);
+    }
+    for (const item of ui.show_tool_results_for) {
+      if (typeof item !== "string" || item.trim() === "") {
+        throw new Error(`[ui].show_tool_results_for: 陣列項目必須是非空字串,收到 ${JSON.stringify(item)}`);
+      }
+    }
+  }
 }
 
 const ALLOWED_TOP = new Set(["meta", "ui", "brand", "skills", "commands", "defaults", "tool_labels", "sandbox", "uploads"]);
@@ -124,6 +139,7 @@ const ALLOWED_UI = new Set([
   "hide_thinking", "hide_tool_calls", "show_tool_progress",
   "hide_status_chips", "hide_session_picker", "hide_model",
   "safe_errors", "expose_tool_args", "chat_layout", "restrict_custom_messages",
+  "show_tool_results_for",
 ]);
 const ALLOWED_BRAND = new Set([
   "name", "logo", "favicon", "mode", "bg", "panel", "text",

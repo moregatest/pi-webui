@@ -2,6 +2,30 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-08-20 (publish_confirmed 結果對客戶可見)
+
+### 新增
+
+- profile toml `[ui] show_tool_results_for`(字串陣列):`hide_tool_calls = true` 下的白名單,
+  清單內 tool 的**結果**仍送給客戶。內建預設 `["publish_confirmed"]`,`hide_tool_calls`
+  未開的 profile 本來就全顯示,實際只對 customer 生效
+- 白名單只放 `tool_execution_end`(結果)與 `toolResult` 訊息 / `tool_result` block;
+  `tool_execution_start` / `tool_execution_update` 與 `tool_call`(參數)照舊隱藏
+- `message_history` 同步放行,客戶重整頁面後仍看得到 publish 結果
+
+### 為什麼
+
+customer profile 把 tool 區塊全隱藏,客戶看不到 `publish_confirmed` 的原始回傳值
+(`ok` / `status` / `source_lng` / `content_sha256` / `forced`),只能單方面相信 agent 的
+轉述——P0-1(虛構調查報告)事故正是缺了這條獨立驗證管道。
+
+### 改動
+
+- `showToolProgress` 開啟時,白名單 tool 的 end 走 `session_event` 而非 `tool_progress`
+  end packet,client 收到該事件時自行以 `toolCallId` 收掉 start 建立的 spinner
+- client 的 defensive secondary filter(`renderBlocksHtml` / `hasVisibleContent`)同步吃
+  `showToolResultsFor`,否則 server 放行的結果會在 client 端被二次過濾掉
+
 ## 2026-07-27 (圖片附件同時落地)
 
 ### 改動

@@ -49,6 +49,9 @@
 [x] shrink viewport on mobile when virtual keyboard opens (visualViewport)
 [x] paste or drag/drop images into the composer as attachments
 [x] `--model <provider/id>` cli flag for default model selection
+[x] Pi 0.83 runtime migration + OpenRouter `deepseek/deepseek-v4-pro` model selector; Node 22.19+ baseline
+[x] project trust fail-closed:unknown repo 的 `.pi` / `.agents` 可執行資源預設不載入，`--approve` / `--no-approve`（含 extension forward）只對本次執行表態
+[x] npm supply-chain baseline:dependencies 固定精確版本、lockfile integrity、預設 `ignore-scripts`、Makefile 改用 `npm ci --ignore-scripts`
 [x] `--skill <path>` cli flag for additional skill sources (repeatable)
 [x] `--skill-allow` / `--skill-allow-file` cli flags for skill whitelist
 [x] `--hide-model` cli flag to hide the model name in the status bar

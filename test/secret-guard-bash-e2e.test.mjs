@@ -15,6 +15,17 @@ const { createBashToolDefinition } = await import("@earendil-works/pi-coding-age
 const { buildBashSpawnHook, wrapToolWithRedaction } = await import("../dist/server/secret-guard.js");
 const { buildHostGuardedTools } = await import("../dist/server/guarded-tools.js");
 
+// Pi 0.83 的 bash tool 會從第 5 個參數讀取 session context，注入非機密的
+// PI_SESSION_* / PI_MODEL 資訊。fixture 必須模擬真實 runtime，不可再傳空物件。
+const toolContext = {
+  sessionManager: {
+    getSessionId: () => "security-e2e-session",
+    getSessionFile: () => undefined,
+  },
+  model: undefined,
+  thinkingLevel: undefined,
+};
+
 // 跑一個 bash 指令、收集最終 + 串流輸出。
 async function runBash(command) {
   const def = wrapToolWithRedaction(
@@ -28,7 +39,7 @@ async function runBash(command) {
     (p) => {
       if (Array.isArray(p?.content)) for (const b of p.content) if (b?.text) streamed += b.text;
     },
-    {},
+    toolContext,
   );
   const finalText = (res?.content || []).map((b) => b?.text || "").join("\n");
   return finalText + "\n" + streamed;
@@ -76,13 +87,13 @@ function hostBash() {
 const textOf = (res) => (res?.content || []).map((b) => b?.text || "").join("\n");
 
 test("L0 縱深 端到端：buildHostGuardedTools 的 bash 擋 env 偵察（圍欄已掛進組裝鏈）", async () => {
-  const blocked = await hostBash().execute("t", { command: "cat /proc/1/environ" }, undefined, undefined, {});
+  const blocked = await hostBash().execute("t", { command: "cat /proc/1/environ" }, undefined, undefined, toolContext);
   assert.equal(blocked.isError, true);
   assert.match(textOf(blocked), /偵察/, "應回偵察 block 訊息、不實際執行");
 });
 
 test("L0 縱深 端到端：buildHostGuardedTools 的 bash 放行正當命令（不誤傷）", async () => {
-  const out = await hostBash().execute("t", { command: "echo hello-world-ok" }, undefined, undefined, {});
+  const out = await hostBash().execute("t", { command: "echo hello-world-ok" }, undefined, undefined, toolContext);
   assert.ok(!out.isError, "正當命令不該被擋");
   assert.match(textOf(out), /hello-world-ok/);
 });

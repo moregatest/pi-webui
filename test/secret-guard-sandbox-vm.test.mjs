@@ -1,7 +1,7 @@
 // test/secret-guard-sandbox-vm.test.mjs
 // 真實 Gondolin VM 的機密隔離整合測試（對應 spec 2026-07-01 測試策略 #2/#5/#6、E2E A 組紅線）。
 // 直接呼叫 production 工廠 buildSandboxGuardedTools（server 用的同一份），boot 真 VM，
-// 透過 sandbox bash / read 工具實測 env 隔離與 workspace .env 邊界。
+// 透過 sandbox bash / read 工具實測 env 隔離與 workspace .env 禁讀邊界。
 //
 // 預設不跑（需 QEMU + Gondolin，~1s 開機）。要跑：SANDBOX_VM=1 node --test test/secret-guard-sandbox-vm.test.mjs
 import { test } from "node:test";
@@ -29,6 +29,15 @@ process.env.ZYTE_API_KEY = L_BING_ZYTE;
 const { Sandbox } = await import("../dist/server/sandbox.js");
 const { buildSandboxGuardedTools } = await import("../dist/server/guarded-tools.js");
 
+const toolContext = {
+  sessionManager: {
+    getSessionId: () => "secret-guard-sandbox-vm",
+    getSessionFile: () => undefined,
+  },
+  model: undefined,
+  thinkingLevel: undefined,
+};
+
 function byName(tools, name) {
   const t = tools.find((x) => x && x.name === name);
   if (!t) throw new Error(`tool ${name} not found in [${tools.map((x) => x?.name).join(",")}]`);
@@ -45,13 +54,13 @@ async function runTool(tool, params) {
     (p) => {
       if (Array.isArray(p?.content)) for (const b of p.content) if (b?.text) streamed += b.text;
     },
-    {},
+    toolContext,
   );
   const finalText = (res?.content || []).map((b) => b?.text || "").join("\n");
   return { text: finalText + "\n" + streamed, isError: !!res?.isError };
 }
 
-test("[opt-in] 真 VM：sandbox bash env 無 L-甲/L-乙 值、有 READYAI_SANDBOX_MODE，workspace .env 邊界正確", { skip: !RUN }, async (t) => {
+test("[opt-in] 真 VM：sandbox env 隔離、偵察阻擋與 workspace .env 禁讀邊界", { skip: !RUN }, async (t) => {
   Sandbox.ensureQemuInstalled();
 
   // host workspace：塞 .env（僅 L-乙 scoped token，無 L-甲 PWS）＋一個一般檔。
@@ -75,37 +84,52 @@ test("[opt-in] 真 VM：sandbox bash env 無 L-甲/L-乙 值、有 READYAI_SANDB
   const bash = byName(tools, "bash");
   const read = byName(tools, "read");
 
-  // 1) sandbox bash `env`：L0 per-exec 白名單。
-  const env = await runTool(bash, { command: "env" });
+  // 1) 不繞過 production command guard；只探測已知變數是否存在，不列舉整份 env。
+  const env = await runTool(bash, {
+    command: [
+      "printf 'READYAI_SANDBOX_MODE=%s\\n' \"$READYAI_SANDBOX_MODE\"",
+      "printf 'PATH_PRESENT=%s\\n' \"${PATH:+1}\"",
+      "printf 'OPENROUTER_API_KEY_PRESENT=%s\\n' \"${OPENROUTER_API_KEY:+1}\"",
+      "printf 'PI_WEBUI_PASSWORD_PRESENT=%s\\n' \"${PI_WEBUI_PASSWORD:+1}\"",
+      "printf 'PC2_SERVICE_PWS_PRESENT=%s\\n' \"${PC2_SERVICE_PWS:+1}\"",
+      "printf 'R2_ACCESS_KEY_ID_PRESENT=%s\\n' \"${R2_ACCESS_KEY_ID:+1}\"",
+      "printf 'R2_SECRET_ACCESS_KEY_PRESENT=%s\\n' \"${R2_SECRET_ACCESS_KEY:+1}\"",
+      "printf 'PC2_API_TOKEN_PRESENT=%s\\n' \"${PC2_API_TOKEN:+1}\"",
+    ].join("; "),
+  });
+  assert.equal(env.isError, false, "單一已知變數探測不應被當成 env enumeration");
   for (const [k, v] of Object.entries(L_JIA)) {
     assert.ok(!env.text.includes(v), `L-甲 ${k} 值外洩進 VM env！`);
-    assert.ok(!new RegExp(`(^|\\n)${k}=`).test(env.text), `L-甲 ${k} key 名不該在 VM env`);
+    assert.match(env.text, new RegExp(`(^|\\n)${k}_PRESENT=(\\n|$)`), `L-甲 ${k} 應為 unset`);
   }
   assert.ok(!env.text.includes(L_YI_TOKEN), "L-乙 PC2_API_TOKEN 值不該在 VM env（走檔案）");
-  assert.ok(!/(^|\n)PC2_API_TOKEN=/.test(env.text), "PC2_API_TOKEN key 名不該在 VM env");
+  assert.match(env.text, /(^|\n)PC2_API_TOKEN_PRESENT=(\n|$)/, "PC2_API_TOKEN 應為 unset");
   // spawnHook 注入的 sandbox 模式旗標必須在（證明第二條 per-exec env 路徑走了我們的 hook）。
   assert.match(env.text, /(^|\n)READYAI_SANDBOX_MODE=1(\n|$)/, "READYAI_SANDBOX_MODE=1 應由 spawnHook 注入");
-  assert.match(env.text, /(^|\n)PATH=/, "PATH（白名單）應在");
+  assert.match(env.text, /(^|\n)PATH_PRESENT=1(\n|$)/, "PATH（白名單）應在");
 
-  // 2) A 組 env grep 必禁（spec E2E A）——輸出應為空。
+  // 2) A 組 env grep 必禁（spec E2E A）——command guard 必須直接拒絕。
   const grep = await runTool(bash, {
     command: "env | grep -oE '^(OPENROUTER_API_KEY|R2_SECRET_ACCESS_KEY|R2_ACCESS_KEY_ID|PI_WEBUI_PASSWORD|PC2_SERVICE_PWS|PC2_API_TOKEN)=' | sed 's/=.*//' | sort",
   });
-  assert.doesNotMatch(grep.text, /OPENROUTER_API_KEY|R2_|PI_WEBUI_PASSWORD|PC2_SERVICE_PWS|PC2_API_TOKEN/, "A 組禁忌 key 名 grep 應為空");
+  assert.equal(grep.isError, true, "env enumeration 應被 command guard 擋下");
+  assert.match(grep.text, /環境\/機密偵察|env enumeration/, "應回明確偵察拒絕訊息");
 
-  // 3) workspace .env 內容紅線：有 scoped PC2_API_TOKEN、無 PC2_SERVICE_PWS。
+  // 3) bash 不得偵察 workspace .env；技能需要時必須走下方有 L1/L3 的 read tool。
   const envfile = await runTool(bash, { command: "cat /workspace/.env" });
-  assert.match(envfile.text, /PC2_API_TOKEN=VMCANARY_scoped_pc2token_7788990/, "workspace .env 應有 scoped token（技能可讀）");
-  assert.doesNotMatch(envfile.text, /PC2_SERVICE_PWS/, "workspace .env 不得含 PC2_SERVICE_PWS（L-甲）");
+  assert.equal(envfile.isError, true, "bash cat .env 應被 command guard 擋下");
+  assert.match(envfile.text, /環境\/機密偵察|\.env recon/);
+  assert.doesNotMatch(envfile.text, /VMCANARY_/, "拒絕訊息不得帶出任何 token 值");
 
   // 4) host workspace 外機密：VM 未 mount，bash cat 取不到（無 HOSTCANARY）。
   const hostcat = await runTool(bash, { command: `cat ${hostSecretPath} 2>&1 || true` });
   assert.ok(!hostcat.text.includes("HOSTCANARY_private_key_do_not_leak"), "host workspace 外機密不得在 VM 內讀到");
 
-  // 5) read 工具（L1 圍欄）：workspace 內 .env 可讀；workspace 外主機機密被擋。
+  // 5) read 工具（L1 圍欄）：workspace .env 與 workspace 外主機機密都必須被擋。
   const readEnv = await runTool(read, { path: ".env" });
-  assert.ok(!readEnv.isError, "workspace 內 .env 應可讀");
-  assert.match(readEnv.text, /PC2_API_TOKEN=/, "read 應讀到 workspace .env（L-乙）");
+  assert.equal(readEnv.isError, true, "read 也不得取得 workspace .env scoped token");
+  assert.match(readEnv.text, /\.env（含 workspace token）/);
+  assert.doesNotMatch(readEnv.text, /VMCANARY_/, "read 拒絕訊息不得帶出 token 值");
 
   const readOutside = await runTool(read, { path: hostSecretPath });
   assert.ok(readOutside.isError, "read workspace 外主機機密應 block（isError）");
@@ -132,9 +156,13 @@ test("[opt-in] 真 customer image：readyai CLI 從 workspace .env 讀 token、e
   const bash = byName(tools, "bash");
 
   // L-甲 不外洩 + spawnHook 注入 SANDBOX_MODE。
-  const env = await runTool(bash, { command: "env" });
+  const env = await runTool(bash, {
+    command: "printf 'READYAI_SANDBOX_MODE=%s\\nOPENROUTER_API_KEY_PRESENT=%s\\nPC2_API_TOKEN_PRESENT=%s\\n' \"$READYAI_SANDBOX_MODE\" \"${OPENROUTER_API_KEY:+1}\" \"${PC2_API_TOKEN:+1}\"",
+  });
   for (const [k, v] of Object.entries(L_JIA)) assert.ok(!env.text.includes(v), `L-甲 ${k} 值不得進 VM env`);
   assert.match(env.text, /(^|\n)READYAI_SANDBOX_MODE=1(\n|$)/);
+  assert.match(env.text, /(^|\n)OPENROUTER_API_KEY_PRESENT=(\n|$)/);
+  assert.match(env.text, /(^|\n)PC2_API_TOKEN_PRESENT=(\n|$)/);
 
   // 關鍵鏈：env 沒有 token（L0 剝掉），但 workspace .env 有；readyAI CLI 自檔案讀。
   const probe = await runTool(bash, {
