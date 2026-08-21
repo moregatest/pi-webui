@@ -1673,8 +1673,8 @@ const SLASH_HANDLERS = {
     if (!text) throw new Error("No assistant message to copy");
     return { copyText: text };
   },
-  quit: async (ctrl) => {
-    setTimeout(() => ctrl.ws.close(), 100);
+  quit: async (_ctrl, _arg, target) => {
+    setTimeout(() => target?.close(), 100);
     return { closed: true };
   },
   hotkeys: async () => ({ showHotkeys: true }),
@@ -1906,8 +1906,12 @@ function serializeSessionInfo(info) {
 }
 
 class NativePiSessionController {
-  constructor(ws) {
-    this.ws = ws;
+  constructor(ws, { continueRecent = false } = {}) {
+    this.clients = new Set([ws]);
+    this.readyClients = new Set();
+    this.connectedClients = new Set();
+    this.continueRecent = continueRecent;
+    this.initialized = false;
     this.cwd = appCwd;
     this.runtime = undefined;
     this.unsubscribe = undefined;
@@ -1919,27 +1923,40 @@ class NativePiSessionController {
     this.lastReportedTurnError = null;
     this.eventLog = createEventLog();
     this.extUi = createExtUiBridge({
-      send: (msg) => sendJson(this.ws, msg),
+      send: (msg) => this.send(msg),
       log: logger,
     });
     this.ready = this.init().catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       const safe = safeError(effectiveUiProfile, message, logger);
-      sendJson(this.ws, { type: "server_error", payload: safe });
+      for (const client of this.clients) sendJson(client, { type: "server_error", payload: safe });
       throw error;
     });
   }
 
-  async init() {
-    this.runtime = await createAgentSessionRuntime(createRuntime, {
-      cwd: this.cwd,
-      agentDir,
-      sessionManager: SessionManager.create(this.cwd, resolveSessionDir(this.cwd, { cliSessionDir, envSessionDir })),
-    });
+  send(payload, target) {
+    if (target) {
+      sendJson(target, payload);
+      return;
+    }
+    for (const ws of this.readyClients) sendJson(ws, payload);
+  }
 
-    await this.bindSession();
+  addClient(ws) {
+    this.clients.add(ws);
+    if (this.initialized) this.sendConnected(ws);
+  }
 
-    sendJson(this.ws, {
+  removeClient(ws) {
+    this.clients.delete(ws);
+    this.readyClients.delete(ws);
+    this.connectedClients.delete(ws);
+  }
+
+  sendConnected(ws) {
+    if (this.connectedClients.has(ws)) return;
+    this.connectedClients.add(ws);
+    this.send({
       type: "connected",
       payload: scrubForCustomer({
         appCwd: this.cwd,
@@ -1970,13 +1987,27 @@ class NativePiSessionController {
           subdir: effectiveUploadConfig.subdir,
         },
       }, isCustomerMode(profileName, profileFile)),
+    }, ws);
+  }
+
+  async init() {
+    const sessionDir = resolveSessionDir(this.cwd, { cliSessionDir, envSessionDir });
+    this.runtime = await createAgentSessionRuntime(createRuntime, {
+      cwd: this.cwd,
+      agentDir,
+      sessionManager: this.continueRecent
+        ? SessionManager.continueRecent(this.cwd, sessionDir)
+        : SessionManager.create(this.cwd, sessionDir),
     });
+
+    await this.bindSession();
+    this.initialized = true;
+    for (const ws of this.clients) this.sendConnected(ws);
     // Bootstrap is now driven by the client's `ready` message — they tell us
     // their lastSeq and we either replay missed events or send a reset +
     // fresh bootstrap. This lets reconnecting clients keep their UI state
-    // when the buffer covers the gap (cross-WS replay still requires the
-    // shared-controller refactor; today the buffer is per-WS so a reconnect
-    // always falls through to reset, but the wire protocol is in place).
+    // when the buffer covers the gap. Customer profile 的 controller/event log
+    // 由同一 process 內所有 WS 共用；staff/developer 仍維持 per-WS controller。
   }
 
   async switchCwd(newCwd) {
@@ -2018,15 +2049,7 @@ class NativePiSessionController {
     const seq = this.eventLog.append(event);
     this.logSessionEvent(event, seq);
 
-    const filtered = filterEvent(event, effectiveUiProfile);
-    if (filtered === null) {
-      // event drop;但仍要走後續 sendState / sendMessages / trimSettled,
-      // 因為 state 機器跟 event 出口是兩件事
-    } else if (filtered.kind === "tool_progress") {
-      sendJson(this.ws, { type: "tool_progress", payload: filtered.payload });
-    } else {
-      sendJson(this.ws, { type: "session_event", payload: filtered.event, seq });
-    }
+    this.sendFilteredSessionEvent(event, seq);
 
     if (shouldRefreshState(event.type)) {
       this.sendState();
@@ -2042,6 +2065,19 @@ class NativePiSessionController {
     if (event.type === "agent_end") {
       this.eventLog.trimSettled();
       this.reportFailedTurn();
+    }
+  }
+
+  // Live broadcast 與 reconnect replay 共用同一個 customer 出口，避免 replay
+  // 把 event log 裡的原始 thinking/tool/custom payload 繞過過濾送到瀏覽器。
+  sendFilteredSessionEvent(event, seq, target) {
+    const filtered = filterEvent(event, effectiveUiProfile);
+    if (filtered === null) {
+      return;
+    } else if (filtered.kind === "tool_progress") {
+      this.send({ type: "tool_progress", payload: filtered.payload }, target);
+    } else {
+      this.send({ type: "session_event", payload: filtered.event, seq }, target);
     }
   }
 
@@ -2181,7 +2217,7 @@ class NativePiSessionController {
       const message = error instanceof Error ? error.message : String(error);
       logger.error("external refresh failed", { sessionFile, error: message });
       const safe = safeError(effectiveUiProfile, `External refresh failed: ${message}`, logger);
-      sendJson(this.ws, { type: "server_error", payload: safe });
+      this.send({ type: "server_error", payload: safe });
     } finally {
       this.refreshing = false;
     }
@@ -2228,24 +2264,24 @@ class NativePiSessionController {
     };
   }
 
-  async sendState() {
-    sendJson(this.ws, { type: "session_state", payload: scrubForCustomer(this.serializeState(), isCustomerMode(profileName, profileFile)) });
+  sendState(target) {
+    this.send({ type: "session_state", payload: scrubForCustomer(this.serializeState(), isCustomerMode(profileName, profileFile)) }, target);
   }
 
-  async sendMessages() {
+  sendMessages(target) {
     // 客戶 mode 下,history 也要剝 thinking / tool_call / tool_result block;
     // 否則重連 / refresh 時 client 仍會拿到細節
     const filtered = filterMessageHistory(this.session.messages, effectiveUiProfile);
-    sendJson(this.ws, { type: "message_history", payload: filtered });
+    this.send({ type: "message_history", payload: filtered }, target);
   }
 
-  async sendSessions() {
+  async sendSessions(target) {
     // project-local 模式:只列當前專案目錄;allProjects 恆空(不跨專案 listAll)。
     const dir = resolveSessionDir(this.runtime.cwd, { cliSessionDir, envSessionDir });
     const currentProject = await SessionManager.list(this.runtime.cwd, dir);
     const isCustomer = isCustomerMode(profileName, profileFile);
 
-    sendJson(this.ws, {
+    this.send({
       type: "sessions",
       payload: {
         currentProject: currentProject.map((info) => {
@@ -2259,7 +2295,7 @@ class NativePiSessionController {
         }),
         allProjects: [],
       },
-    });
+    }, target);
   }
 
   collectSlashCommands() {
@@ -2329,25 +2365,66 @@ class NativePiSessionController {
 
   // Tell the client to discard any streamed UI state. Sent before a fresh
   // bootstrap on cold start, session switch, or replay miss.
-  sendSessionReset() {
-    sendJson(this.ws, {
+  sendSessionReset(target) {
+    this.send({
       type: "session_reset",
       payload: { currentSeq: this.eventLog.currentSeq() },
-    });
+    }, target);
   }
 
-  async sendBootstrap({ reset = true } = {}) {
-    if (reset) this.sendSessionReset();
-    await this.sendState();
-    await this.sendMessages();
-    await this.sendSessions();
+  async sendBootstrap({ reset = true, target, replayPending = true } = {}) {
+    if (reset) this.sendSessionReset(target);
+    this.sendState(target);
+    this.sendMessages(target);
+    // state/history snapshot 與 replay cursor 在同一同步區段取得；之後 sendSessions
+    // 的檔案 IO 期間若有新 event，finishClientReady 會從此 cursor 補送。
+    const cursor = this.eventLog.currentSeq();
+    await this.sendSessions(target);
+    if (replayPending) this.extUi.replayPending((packet) => this.send(packet, target));
+    return cursor;
+  }
+
+  // Socket 在 bootstrap/replay 完成前不加入 live broadcast；最後以同步 catch-up
+  // 收斂到 event-log head，再原子地標記 ready，避免同一 seq 先 live 後 replay。
+  async finishClientReady(target, cursor) {
+    let nextCursor = cursor;
+    while (true) {
+      const result = this.eventLog.eventsAfter(nextCursor);
+      if (result.miss) {
+        nextCursor = await this.sendBootstrap({ reset: true, target, replayPending: false });
+        continue;
+      }
+      const head = this.eventLog.currentSeq();
+      for (const { seq, event } of result.events) {
+        this.sendFilteredSessionEvent(event, seq, target);
+      }
+      nextCursor = head;
+      if (this.eventLog.currentSeq() !== nextCursor) continue;
+      if (!this.clients.has(target) || target.readyState !== WebSocket.OPEN) return;
+      this.send({ type: "replay_done", payload: { currentSeq: nextCursor } }, target);
+      this.extUi.replayPending((packet) => this.send(packet, target));
+      this.readyClients.add(target);
+      return;
+    }
   }
 
   // Handle the client's resume request. If we can replay missed events,
   // do so without disturbing UI state. Otherwise fall back to a reset +
   // fresh bootstrap.
-  async handleReady(lastSeq, sessionFile) {
-    if (sessionFile && sessionFile !== (this.session.sessionFile || null)) {
+  async handleReady(lastSeq, sessionFile, target) {
+    this.readyClients.delete(target);
+    const isCustomer = isCustomerMode(profileName, profileFile);
+    const activeSessionFile = this.session.sessionFile || null;
+    if (isCustomer && sessionFile !== activeSessionFile) {
+      logger.info("customer session hint is stale, full bootstrap", {
+        hintedSessionFile: sessionFile,
+        activeSessionFile,
+      });
+      const cursor = await this.sendBootstrap({ reset: true, target, replayPending: false });
+      await this.finishClientReady(target, cursor);
+      return;
+    }
+    if (!isCustomer && sessionFile && sessionFile !== (this.session.sessionFile || null)) {
       // reconnect guard 判定抽到 session-guard.ts(純函式 shouldResumeStoredSession)。
       // 這裡只做 IO:讀 stored session 的 header cwd、canonicalize 路徑、算出對應 session 目錄。
       // 兩邊路徑都先 canonicalize 再比對,消滅 macOS /tmp→/private/tmp 的 symlink 誤判(D5)。
@@ -2371,7 +2448,8 @@ class NativePiSessionController {
         // 目錄內):不 switchSession,直接 reset bootstrap 讓 client 用 server 端啟動時的
         // session(維持 appCwd,不會掉回 process.cwd())。
         logger.info("ignoring stored session", { sessionFile, sessionCwd, reason: decision.reason });
-        await this.sendBootstrap({ reset: true });
+        const cursor = await this.sendBootstrap({ reset: true, target, replayPending: false });
+        await this.finishClientReady(target, cursor);
         return;
       }
       try {
@@ -2395,37 +2473,36 @@ class NativePiSessionController {
     const result = this.eventLog.eventsAfter(lastSeq);
     if (result.miss) {
       logger.info("client resume miss, full bootstrap", { lastSeq });
-      await this.sendBootstrap({ reset: true });
+      const cursor = await this.sendBootstrap({ reset: true, target, replayPending: false });
+      await this.finishClientReady(target, cursor);
       return;
     }
     if (result.events.length > 0) {
       logger.info("client resume replay", { from: lastSeq, count: result.events.length });
     }
+    const replayHead = this.eventLog.currentSeq();
     for (const { seq, event } of result.events) {
-      sendJson(this.ws, { type: "session_event", payload: event, seq });
+      this.sendFilteredSessionEvent(event, seq, target);
     }
-    sendJson(this.ws, {
-      type: "replay_done",
-      payload: { currentSeq: this.eventLog.currentSeq() },
-    });
+    await this.finishClientReady(target, replayHead);
   }
 
-  async runCommand(command, handler) {
+  async runCommand(command, handler, target) {
     try {
       const data = await handler();
-      sendJson(this.ws, { type: "command_result", payload: { command, ok: true, data } });
+      this.send({ type: "command_result", payload: { command, ok: true, data } }, target);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn("command failed", { command, error: message });
-      sendJson(this.ws, { type: "command_result", payload: { command, ok: false, error: message } });
+      this.send({ type: "command_result", payload: { command, ok: false, error: message } }, target);
     }
   }
 
-  async handle(payload) {
+  async handle(payload, target) {
     await this.ready;
 
     if (isBlockedCustomerMessage(payload, isCustomerMode(profileName, profileFile))) {
-      sendJson(this.ws, { type: "error", message: "operation not permitted" });
+      this.send({ type: "error", message: "operation not permitted" }, target);
       return;
     }
 
@@ -2438,14 +2515,14 @@ class NativePiSessionController {
       case "ready": {
         const lastSeq = typeof payload.lastSeq === "number" ? payload.lastSeq : null;
         const sessionFile = typeof payload.sessionFile === "string" && payload.sessionFile ? payload.sessionFile : null;
-        await this.handleReady(lastSeq, sessionFile);
+        await this.handleReady(lastSeq, sessionFile, target);
         return;
       }
       case "refresh":
         await this.runCommand("refresh", async () => {
-          await this.sendBootstrap({ reset: true });
+          await this.sendBootstrap({ reset: true, target });
           return { refreshed: true };
-        });
+        }, target);
         return;
 
       case "prompt": {
@@ -2458,10 +2535,10 @@ class NativePiSessionController {
         const files = sanitizePromptFiles(payload.files);
         const message = appendAttachmentNotice(rawMessage, files);
         if (!message && images.length === 0) {
-          sendJson(this.ws, {
+          this.send({
             type: "command_result",
             payload: { command: "prompt", ok: false, error: "Message cannot be empty" },
-          });
+          }, target);
           return;
         }
 
@@ -2479,14 +2556,14 @@ class NativePiSessionController {
             streamingBehavior,
             preflightResult: (success) => {
               if (!success) logger.warn("prompt preflight rejected");
-              sendJson(this.ws, { type: "prompt_preflight", payload: { success } });
+              this.send({ type: "prompt_preflight", payload: { success } }, target);
             },
           });
           await this.sendState();
           await this.sendMessages();
           await this.sendSessions();
           return { accepted: true };
-        });
+        }, target);
         return;
       }
 
@@ -2496,7 +2573,7 @@ class NativePiSessionController {
           await this.session.abort();
           await this.sendState();
           return { aborted: true };
-        });
+        }, target);
         return;
 
       case "new_session":
@@ -2508,7 +2585,7 @@ class NativePiSessionController {
             await this.sendBootstrap();
           }
           return result;
-        });
+        }, target);
         return;
 
       case "switch_session":
@@ -2524,7 +2601,7 @@ class NativePiSessionController {
             await this.sendBootstrap();
           }
           return result;
-        });
+        }, target);
         return;
 
       case "cycle_model":
@@ -2534,7 +2611,7 @@ class NativePiSessionController {
           logger.info("model cycled", { model: m ? `${m.provider}/${m.id}` : null });
           await this.sendState();
           return result || { changed: false };
-        });
+        }, target);
         return;
 
       case "set_session_name":
@@ -2544,7 +2621,7 @@ class NativePiSessionController {
           await this.sendState();
           await this.sendSessions();
           return { name };
-        });
+        }, target);
         return;
 
       case "bash":
@@ -2558,17 +2635,17 @@ class NativePiSessionController {
           await this.sendState();
           await this.sendMessages();
           return { exitCode };
-        });
+        }, target);
         return;
 
       case "list_dir": {
         const reqPath = String(payload.path || "").trim();
         try {
           const result = listDirectories(reqPath);
-          sendJson(this.ws, { type: "list_dir_result", payload: { request: reqPath, ...result } });
+          this.send({ type: "list_dir_result", payload: { request: reqPath, ...result } }, target);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          sendJson(this.ws, { type: "list_dir_result", payload: { request: reqPath, error: message } });
+          this.send({ type: "list_dir_result", payload: { request: reqPath, error: message } }, target);
         }
         return;
       }
@@ -2580,19 +2657,19 @@ class NativePiSessionController {
         // 閘門 2:白名單拒絕。null = 未設定時短路跳過。
         if (cliCommandAllowSet && !cliCommandAllowSet.has(name)) {
           logger.warn("slash command blocked by allowlist", { name });
-          sendJson(this.ws, {
+          this.send({
             type: "command_result",
             payload: {
               command: `slash:${name}`,
               ok: false,
               error: `/${name} is disabled by the command whitelist`,
             },
-          });
+          }, target);
           return;
         }
         const handler = SLASH_HANDLERS[name];
         if (handler) {
-          await this.runCommand(`slash:${name}`, () => handler(this, arg));
+          await this.runCommand(`slash:${name}`, () => handler(this, arg, target), target);
           return;
         }
         // Fall through to extension/template/skill dispatch via session.prompt —
@@ -2609,17 +2686,17 @@ class NativePiSessionController {
             await this.sendState();
             await this.sendMessages();
             return { dispatched: true };
-          });
+          }, target);
           return;
         }
-        sendJson(this.ws, {
+        this.send({
           type: "command_result",
           payload: {
             command: `slash:${name}`,
             ok: false,
             error: `/${name} is not supported in the web UI`,
           },
-        });
+        }, target);
         return;
       }
 
@@ -2640,10 +2717,10 @@ class NativePiSessionController {
         return;
 
       default:
-        sendJson(this.ws, {
+        this.send({
           type: "command_result",
           payload: { command: payload?.type || "unknown", ok: false, error: "Unknown command" },
-        });
+        }, target);
     }
   }
 
@@ -2668,7 +2745,7 @@ let lastTunnelState: TunnelState = { phase: "idle" };
 function broadcastTunnelState(state: TunnelState) {
   lastTunnelState = state;
   for (const ctrl of activeControllers) {
-    sendJson(ctrl.ws, { type: "tunnel_state", payload: state });
+    ctrl.send({ type: "tunnel_state", payload: state });
   }
 }
 
@@ -2707,6 +2784,7 @@ const server = createServer(async (req, res) => {
 });
 
 const wss = new WebSocketServer({ noServer: true });
+let customerController: NativePiSessionController | null = null;
 
 server.on("upgrade", (req, socket, head) => {
   let url;
@@ -2733,13 +2811,27 @@ server.on("upgrade", (req, socket, head) => {
 wss.on("connection", (ws, req) => {
   const remote = req?.socket?.remoteAddress || "unknown";
   logger.info("ws connect", { remote });
-  const controller = new NativePiSessionController(ws);
-  activeControllers.add(controller);
+  const customerMode = isCustomerMode(profileName, profileFile);
+  let controller: NativePiSessionController;
+  if (customerMode) {
+    // issue #9：customer 的 runtime / event log 是 process 內唯一 authority。
+    // 瀏覽器只附著到同一 controller，不能用自己的 localStorage 建立另一條對話。
+    if (!customerController) {
+      customerController = new NativePiSessionController(ws, { continueRecent: true });
+      activeControllers.add(customerController);
+    } else {
+      customerController.addClient(ws);
+    }
+    controller = customerController;
+  } else {
+    controller = new NativePiSessionController(ws);
+    activeControllers.add(controller);
+  }
 
   ws.on("message", (raw) => {
     try {
       const data = JSON.parse(raw.toString());
-      void controller.handle(data).catch((error) => {
+      void controller.handle(data, ws).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         logger.error("ws handler error", { error: message });
         const safe = safeError(effectiveUiProfile, message, logger);
@@ -2755,8 +2847,11 @@ wss.on("connection", (ws, req) => {
 
   ws.on("close", () => {
     logger.info("ws disconnect", { remote });
-    activeControllers.delete(controller);
-    void controller.close();
+    controller.removeClient(ws);
+    if (!customerMode) {
+      activeControllers.delete(controller);
+      void controller.close();
+    }
   });
 });
 

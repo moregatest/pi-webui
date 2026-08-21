@@ -590,9 +590,14 @@ project directory rather than your home directory.
   to load a session stored elsewhere (e.g. a legacy
   `~/.pi/agent/sessions/...` one from before this change), pass an explicit
   path: `/resume <absolute-path>`.
-- **reconnect:** a browser reload only auto-resumes a stored session if it
-  is a genuine project-local (or override-dir) session of its own cwd;
-  otherwise it starts fresh in the project-local default.
+- **reconnect (staff/developer):** a browser reload only auto-resumes a stored
+  session if it is a genuine project-local (or override-dir) session of its
+  own cwd; otherwise it starts fresh in the project-local default.
+- **reconnect (`customer` profile):** all browsers share one server-owned
+  runtime and active session. when the first customer WebSocket connects, the
+  server continues the most recent project session once; after that, browser localStorage cannot switch
+  customer users back to an older session. prompts arriving during an active
+  turn use the same runtime queue instead of creating per-browser branches.
 - **`/cwd` recent list** is sourced from the legacy home-dir index, so
   project-local-only projects do not appear there; use the directory
   browser to switch instead.

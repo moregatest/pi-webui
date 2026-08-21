@@ -29,8 +29,8 @@ const DEFAULT_CUSTOM_WIDTH = 100;
 const DEFAULT_CUSTOM_HEIGHT = 30;
 const RENDER_FLUSH_MS = 16;
 
-// One bridge per ws controller. Tracks pending request ids so responses can
-// be matched to their awaiting promise.
+// One bridge per session controller. Tracks pending request ids so responses
+// from one or more attached WebSockets can be matched to their awaiting promise.
 export function createExtUiBridge({ send, log }) {
   const pending = new Map();
   const custom = new Map(); // id -> { component, width, flush, settled }
@@ -38,10 +38,12 @@ export function createExtUiBridge({ send, log }) {
 
   function request(kind, payload, opts = {}) {
     const id = `eu-${nextId++}`;
+    const packet = { type: "ext_ui_request", payload: { id, kind, ...payload } };
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         if (!pending.has(id)) return;
         pending.delete(id);
+        send({ type: "ext_ui_cancel", payload: { id } });
         reject(new Error(`ext_ui_request timed out: ${kind}`));
       }, opts.timeoutMs ?? REQUEST_TIMEOUT_MS);
       const onAbort = () => {
@@ -60,6 +62,7 @@ export function createExtUiBridge({ send, log }) {
         opts.signal.addEventListener("abort", onAbort, { once: true });
       }
       pending.set(id, {
+        packet,
         resolve: (value) => {
           clearTimeout(timer);
           opts.signal?.removeEventListener("abort", onAbort);
@@ -71,7 +74,7 @@ export function createExtUiBridge({ send, log }) {
           reject(err);
         },
       });
-      send({ type: "ext_ui_request", payload: { id, kind, ...payload } });
+      send(packet);
     });
   }
 
@@ -83,6 +86,7 @@ export function createExtUiBridge({ send, log }) {
       return;
     }
     pending.delete(id);
+    send({ type: "ext_ui_cancel", payload: { id } });
     entry.resolve(payload.value);
   }
 
@@ -194,8 +198,24 @@ export function createExtUiBridge({ send, log }) {
     entry.finish?.(undefined);
   }
 
+  // Shared customer controller 可能在 extension 等待互動時暫時沒有 client。
+  // 新 client ready 後重送尚未完成的 request / custom snapshot，避免 turn 永久卡住。
+  function replayPending(sendPending) {
+    for (const entry of pending.values()) sendPending(entry.packet);
+    for (const [id, entry] of custom) {
+      if (entry.settled || !entry.component) continue;
+      try {
+        const lines = entry.component.render(entry.width);
+        sendPending({ type: "ext_ui_custom_open", payload: { id, lines, width: entry.width } });
+      } catch (err) {
+        log?.error?.("ext_ui custom replay render failed", { error: String(err) });
+      }
+    }
+  }
+
   function dispose() {
-    for (const { reject } of pending.values()) {
+    for (const [id, { reject }] of pending) {
+      send({ type: "ext_ui_cancel", payload: { id } });
       reject(new Error("ext_ui bridge disposed"));
     }
     pending.clear();
@@ -244,7 +264,7 @@ export function createExtUiBridge({ send, log }) {
     setToolsExpanded: () => {},
   };
 
-  return { ui, handleResponse, handleCustomInput, handleCustomResize, handleCustomClose, dispose };
+  return { ui, handleResponse, handleCustomInput, handleCustomResize, handleCustomClose, replayPending, dispose };
 }
 
 // Some extensions read `keybindings.get*` etc., but neither path-access nor

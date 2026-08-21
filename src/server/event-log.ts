@@ -27,6 +27,9 @@ export function createEventLog() {
       if (cursor === null || cursor === undefined) {
         return { events: [], miss: true };
       }
+      if (cursor > nextSeq - 1) {
+        return { events: [], miss: true };
+      }
       if (cursor < settledSeq) {
         return { events: [], miss: true };
       }
