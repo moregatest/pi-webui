@@ -1,9 +1,9 @@
 // src/tools/customer-publish-tools.ts
 // PGC publish_confirmed agent tool — 客戶明確確認後走「本地流程」：
 //   origin 來源語系版本比對 → preview push-back → push-db。
-//   內容 drift 時需客戶原因（force）；無原因 = 拒絕。
-// Phase 4 凍結契約：baseline 落點 data/preview-meta.json 的 origin_source_version；
-//   輸出對齊 {ok:true,status:"succeeded",...} / {ok:false,status:"origin_drift",recorded_sha,current_sha}。
+//   來源語系資料庫指紋 drift 時需客戶原因（force）；無原因 = 拒絕。
+// baseline 落點 data/preview-meta.json 的 origin_source_version；它只用於 drift 協調，
+// 不是永久 audit，也不能當成本次發布已套用目標內容的證據。
 
 import { spawn } from "node:child_process";
 import { readFile, writeFile, rename } from "node:fs/promises";
@@ -52,31 +52,38 @@ export interface PublishLocalDeps {
 }
 
 // 工具執行結果（回給 model / client 的結構化結果）。
-// Phase 4 凍結契約輸出：成功 → {ok:true,status:"succeeded",source_lng,content_sha256}；
-// drift 無原因 → {ok:false,status:"origin_drift",recorded_sha,current_sha}。
+// 本地 CLI 目前沒有回傳可對照候選內容的權威 runner receipt；exit 0 / HTTP 200
+// 只證明命令與傳輸被接受，所以只能回 triggered，不能回 succeeded。
 export interface PublishResult {
   ok: boolean;
-  /** 凍結契約狀態：succeeded（含強制發布）｜origin_drift（drift 且無原因）。 */
-  status?: "succeeded" | "origin_drift";
+  /** triggered：發布命令已執行但內容尚未獲權威證據；origin_drift：drift 且無原因。 */
+  status?: "triggered" | "origin_drift";
   message?: string;
   error?: string;
   forced?: boolean;
-  /** succeeded：origin 當前來源語系。 */
+  /** triggered：origin 當前來源語系。 */
   source_lng?: string;
-  /** succeeded：origin 當前來源語系內容 hash。 */
-  content_sha256?: string;
-  /** origin_drift：建置記錄的來源語系內容 hash（無記錄為 null）。 */
+  /** 發布命令執行前觀察到的 origin 指紋；不是發布後內容證據。 */
+  origin_sha_before?: string;
+  /** CLI 結束後再次觀察到的 origin 指紋；未與候選內容對照，仍不是套用證據。 */
+  origin_sha_observed_after?: string | null;
+  /** after 指紋只是整庫觀察值；未與候選內容比對，指紋變化也不是套用證據。 */
+  origin_sha_observed_after_reason?: string;
+  /** 只有權威 receipt 或目標內容比對才能為 true；目前本地流程固定 false。 */
+  content_verified?: boolean;
+  /** origin_drift：建置記錄的來源語系資料庫指紋（無記錄為 null）。 */
   recorded_sha?: string | null;
-  /** origin_drift：origin 當前來源語系內容 hash。 */
+  /** origin_drift：origin 當前來源語系資料庫指紋。 */
   current_sha?: string;
   details?: Record<string, unknown>;
-  /** 本次實際變更的記錄數（push-back stdout 解析），null 表示無法判斷。 */
-  changed_records?: number | null;
+  /** 權威資料列變更數；目前底層 receipt 未提供，明確回 unknown，不從 stdout 猜測。 */
+  changed_records?: number | "unknown";
+  changed_records_reason?: string;
 }
 
 const FORCE_REASON_MAX_BYTES = 512;
 
-/** origin 內容版本相符：source_lng 一致 且 content_sha256 相等（凍結契約）。 */
+/** origin 來源語系資料庫指紋相符：source_lng 一致且 content_sha256 相等。 */
 export function sourceVersionMatches(
   origin: OriginSourceVersion,
   record: RecordedOriginVersion | null,
@@ -111,22 +118,37 @@ export function parsePreviewMetaOriginVersion(text: string): RecordedOriginVersi
     : { source_lng, content_sha256 };
 }
 
-/** 從 push-back / push-db stdout 解析變更記錄數。 */
-export function parsePushChangedRecords(stdout: string): number | null {
-  if (!stdout) return null;
-  // "Synced N files"
-  let m = stdout.match(/Synced\s+(\d+)\s+files/i);
-  if (m) return parseInt(m[1], 10);
-  // "N files changed"
-  m = stdout.match(/(\d+)\s+files?\s+changed/i);
-  if (m) return parseInt(m[1], 10);
-  // "changed: N"
-  m = stdout.match(/changed:\s*(\d+)/i);
-  if (m) return parseInt(m[1], 10);
-  // "N records"
-  m = stdout.match(/(\d+)\s+records?/i);
-  if (m) return parseInt(m[1], 10);
-  return null;
+const CHANGED_RECORDS_REASON =
+  "目前 CLI/runner receipt 未提供可驗證的資料列變更數，不能從 stdout 的檔案數或 HTTP 200 推算。";
+const ORIGIN_SHA_OBSERVED_AFTER_REASON =
+  "origin_sha_observed_after 若有值，只是發布指令結束後觀察到的 origin 來源語系資料庫整庫指紋，"
+  + "未與候選內容比對；指紋即使變化也不代表候選內容已套用。null 表示無法取得觀察值。";
+
+function triggeredResult(
+  origin: OriginSourceVersion,
+  forced: boolean,
+  originShaObservedAfter: string | null,
+  details: Record<string, unknown>,
+  warning = "",
+): PublishResult {
+  return {
+    ok: true,
+    status: "triggered",
+    message:
+      "發布指令已觸發，但目前沒有可證明目標內容已套用的權威 receipt；"
+      + "發布後 origin 資料庫指紋即使有觀察值，也未與候選內容比對，指紋變化不代表候選內容已套用；"
+      + "不可僅憑 HTTP 200 或頁面可開啟就宣稱已完成上線。"
+      + warning,
+    forced,
+    source_lng: origin.source_lng,
+    origin_sha_before: origin.content_sha256,
+    origin_sha_observed_after: originShaObservedAfter,
+    origin_sha_observed_after_reason: ORIGIN_SHA_OBSERVED_AFTER_REASON,
+    content_verified: false,
+    changed_records: "unknown",
+    changed_records_reason: CHANGED_RECORDS_REASON,
+    details,
+  };
 }
 
 /**
@@ -148,14 +170,14 @@ export async function runPublishFlow(
     };
   }
 
-  // 2. 讀 origin 當前內容版本
+  // 2. 讀 origin 當前來源語系資料庫指紋
   let origin: OriginSourceVersion;
   try {
     origin = await deps.fetchOriginVersion();
   } catch {
     return {
       ok: false,
-      error: "讀取 origin 內容版本失敗，請稍後重試",
+      error: "讀取 origin 來源語系資料庫指紋失敗，請稍後重試",
       details: { code: "origin_version_error" },
     };
   }
@@ -177,7 +199,9 @@ export async function runPublishFlow(
       ok: false,
       status: "origin_drift",
       error:
-        "偵測到內容 drift：origin 來源語系內容在建置後已變更。若仍要發布，請客戶提供強制發布原因（force_reason）。",
+        "偵測到資料庫指紋 drift：origin 來源語系資料庫指紋在建置後已變更，"
+        + "可能包含 _version 等系統表／檔案層差異，不等同內容被修改。"
+        + "若仍要發布，請客戶提供強制發布原因（force_reason）。",
       recorded_sha: record?.content_sha256 ?? null,
       current_sha: origin.content_sha256,
       details: {
@@ -210,7 +234,6 @@ export async function runPublishFlow(
   }
 
   const opts = match ? { force: false } : { force: true, reason };
-  let changedRecords: number | null = null;
 
   // 5. push-back → push-db
   try {
@@ -222,8 +245,6 @@ export async function runPublishFlow(
         details: { code: "push_back_failed", exitCode: back.exitCode, stderr: back.stderr },
       };
     }
-    const backChanged = parsePushChangedRecords(back.stdout);
-    if (backChanged !== null) changedRecords = backChanged;
   } catch {
     return {
       ok: false,
@@ -241,8 +262,6 @@ export async function runPublishFlow(
         details: { code: "push_db_failed", exitCode: db.exitCode, stderr: db.stderr },
       };
     }
-    const dbChanged = parsePushChangedRecords(db.stdout);
-    if (dbChanged !== null) changedRecords = (changedRecords ?? 0) + dbChanged;
   } catch {
     return {
       ok: false,
@@ -251,52 +270,66 @@ export async function runPublishFlow(
     };
   }
 
-  // 6. 發布成功後，重新 fetch origin version 並回寫 recorded baseline
-  //    （凍結契約 step 6：發布後 origin 內容已變，需更新基準指紋以免後續 false drift）。
+  // 6. CLI 結束後重新觀察 origin 並回寫 drift baseline。這個觀察未與 preview
+  //    候選內容對照，且 content_sha256 可能受暫時性 _version 資料影響，所以不能把它
+  //    升格成發布成功證據。
+  let newOrigin: OriginSourceVersion;
   try {
-    const newOrigin = await deps.fetchOriginVersion();
+    newOrigin = await deps.fetchOriginVersion();
+  } catch {
+    return triggeredResult(
+      origin,
+      !match,
+      null,
+      { code: "post_origin_observation_failed", content_evidence: "unavailable" },
+      "（警告：無法取得發布後 origin 觀察值。）",
+    );
+  }
+
+  try {
     await deps.writeRecordedOriginVersion({
       source_lng: newOrigin.source_lng,
       content_sha256: newOrigin.content_sha256,
       recorded_at: new Date().toISOString(),
     });
   } catch {
-    // 回寫失敗不 block 發布結果，但記入 details 供診斷
-    return {
-      ok: true,
-      status: "succeeded",
-      message: (match ? "發布已觸發（無 drift）" : "已依客戶原因強制發布")
-        + "（警告：基準指紋回寫失敗，後續可能誤報 drift）",
-      forced: !match,
-      source_lng: origin.source_lng,
-      content_sha256: origin.content_sha256,
-      details: { code: "baseline_write_failed" },
-      changed_records: changedRecords,
-    };
+    return triggeredResult(
+      origin,
+      !match,
+      newOrigin.content_sha256,
+      { code: "baseline_write_failed", content_evidence: "unavailable" },
+      "（警告：drift 基準回寫失敗，後續可能誤報 drift。）",
+    );
   }
 
-  return {
-    ok: true,
-    status: "succeeded",
-    message: match ? "發布已觸發（無 drift）" : "已依客戶原因強制發布",
-    forced: !match,
-    source_lng: origin.source_lng,
-    content_sha256: origin.content_sha256,
-    changed_records: changedRecords,
-  };
+  return triggeredResult(
+    origin,
+    !match,
+    newOrigin.content_sha256,
+    { code: "content_evidence_unavailable", content_evidence: "unavailable" },
+  );
 }
 
 function publishConfirmedTool(deps: PublishLocalDeps): ToolDefinition {
   return defineTool({
     name: "publish_confirmed",
-    label: "確認發布",
+    label: "觸發發布",
     description:
-      "客戶明確確認後，將當前預覽內容發布回 demo。偵測到內容 drift 時，需客戶提供強制發布原因。",
+      "客戶明確確認後觸發預覽內容發布回 demo。工具目前只會回 status=triggered；"
+      + "exit 0 或 HTTP 200 不代表內容一致，不得據此宣稱已完成上線。"
+      + "只有對外站的目標內容逐項比對或權威 runner receipt 才能證明發布成功。"
+      + "偵測到來源語系資料庫指紋 drift 時，需客戶提供強制發布原因。",
+    promptGuidelines: [
+      "publish_confirmed 回傳 ok=true 只表示發布命令被接受；若 status=triggered 或 content_verified=false，"
+      + "禁止向客戶宣稱內容已上線、發布成功、套用完成或已驗證。"
+      + "只有對外站目標內容逐項比對或權威 runner receipt 才能宣稱發布成功。",
+    ],
     parameters: Type.Object({
       force_reason: Type.Optional(
         Type.String({
           description:
-            "僅在偵測到內容 drift（origin 內容在建置後被改過）時需要：客戶說明為何仍要強制發布（會寫入審計 log）。",
+            "僅在偵測到來源語系資料庫指紋 drift（可能含 _version 等系統表或檔案層差異）時需要："
+            + "客戶說明為何仍要強制發布（會寫入審計 log）。",
         }),
       ),
     }),

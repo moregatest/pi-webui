@@ -1,8 +1,7 @@
 // test/customer-publish-tools.test.mjs
 // PGC publish_confirmed 本地流程：origin 版本比對 → push-back → push-db，
-// drift 時需客戶原因（force）。對應 Phase 4 凍結契約：
-//   baseline 落點 data/preview-meta.json 的 origin_source_version；
-//   輸出對齊 {ok:true,status:"succeeded",...} / {ok:false,status:"origin_drift",recorded_sha,current_sha}。
+// drift 時需客戶原因（force）。baseline 落點 data/preview-meta.json 的
+// origin_source_version；沒有權威內容 receipt 時只回 triggered。
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs";
@@ -22,6 +21,7 @@ import {
 
 const SHA = "sha256:" + "ab".repeat(32);
 const OTHER_SHA = "sha256:" + "cd".repeat(32);
+const AFTER_SHA = "sha256:" + "ef".repeat(32);
 const ORIGIN = { schema: "pgc-source-version-v1", source_lng: "en", content_sha256: SHA };
 const RECORD = { source_lng: "en", content_sha256: SHA, recorded_at: "2026-08-18T10:00:00+08:00" };
 
@@ -53,14 +53,21 @@ function makeDeps(overrides = {}) {
 }
 
 describe("runPublishFlow（核心決策邏輯）", () => {
-  it("相符：觸發 push-back → push-db（無 force），回 succeeded，且回寫 baseline", async () => {
+  it("相符：CLI 成功只代表已觸發，沒有內容 receipt 不得回 succeeded", async () => {
     const { deps, calls } = makeDeps();
     const result = await runPublishFlow(deps, undefined);
     assert.strictEqual(result.ok, true);
-    assert.strictEqual(result.status, "succeeded");
+    assert.strictEqual(result.status, "triggered");
     assert.strictEqual(result.forced, false);
     assert.strictEqual(result.source_lng, "en");
-    assert.strictEqual(result.content_sha256, SHA);
+    assert.strictEqual(result.origin_sha_before, SHA);
+    assert.strictEqual(result.origin_sha_observed_after, SHA);
+    assert.match(result.origin_sha_observed_after_reason, /未與候選內容比對/);
+    assert.match(result.origin_sha_observed_after_reason, /指紋.*不代表.*內容已套用/);
+    assert.match(result.message, /指紋.*不代表.*內容已套用/);
+    assert.strictEqual(result.content_verified, false);
+    assert.strictEqual(result.changed_records, "unknown");
+    assert.strictEqual(result.details.code, "content_evidence_unavailable");
     assert.strictEqual(calls.writeAudit.length, 0);
     assert.deepStrictEqual(calls.pushBack, [{ force: false }]);
     assert.deepStrictEqual(calls.pushDb, [{ force: false }]);
@@ -83,20 +90,26 @@ describe("runPublishFlow（核心決策邏輯）", () => {
     assert.strictEqual(result.details.code, "drift_requires_reason");
     assert.strictEqual(result.details.current.content_sha256, SHA);
     assert.strictEqual(result.details.recorded.content_sha256, OTHER_SHA);
+    assert.match(result.error, /來源語系資料庫指紋/);
+    assert.match(result.error, /_version/);
+    assert.match(result.error, /系統表.*檔案層差異/);
+    assert.match(result.error, /不等同內容被修改/);
+    assert.doesNotMatch(result.error, /來源語系內容在建置後已變更/);
     assert.strictEqual(calls.pushBack.length, 0);
     assert.strictEqual(calls.pushDb.length, 0);
   });
 
-  it("drift 且有原因：先寫 audit 再帶 --force --reason 觸發，回 succeeded，且回寫 baseline", async () => {
+  it("drift 且有原因：先寫 audit 再帶 --force --reason，仍只回 triggered", async () => {
     const { deps, calls } = makeDeps({
       readRecordedOriginVersion: async () => ({ ...RECORD, content_sha256: OTHER_SHA }),
     });
     const result = await runPublishFlow(deps, "客戶要求立即上線");
     assert.strictEqual(result.ok, true);
-    assert.strictEqual(result.status, "succeeded");
+    assert.strictEqual(result.status, "triggered");
     assert.strictEqual(result.forced, true);
     assert.strictEqual(result.source_lng, "en");
-    assert.strictEqual(result.content_sha256, SHA);
+    assert.strictEqual(result.origin_sha_before, SHA);
+    assert.strictEqual(result.content_verified, false);
     assert.strictEqual(calls.writeAudit.length, 1);
     assert.deepStrictEqual(calls.writeAudit[0], {
       recorded: { ...RECORD, content_sha256: OTHER_SHA },
@@ -128,7 +141,7 @@ describe("runPublishFlow（核心決策邏輯）", () => {
     const { deps, calls } = makeDeps({ readRecordedOriginVersion: async () => null });
     const result = await runPublishFlow(deps, "無記錄強制");
     assert.strictEqual(result.ok, true);
-    assert.strictEqual(result.status, "succeeded");
+    assert.strictEqual(result.status, "triggered");
     assert.strictEqual(result.forced, true);
     assert.strictEqual(calls.writeAudit.length, 1);
     assert.strictEqual(calls.writeAudit[0].recorded, null);
@@ -187,14 +200,71 @@ describe("runPublishFlow（核心決策邏輯）", () => {
     assert.strictEqual(result.details.code, "push_db_failed");
   });
 
-  it("發布成功但 baseline 回寫失敗：仍回 succeeded，但帶 warning details", async () => {
+  it("baseline 回寫失敗：維持 triggered，且不升格成內容成功", async () => {
     const { deps } = makeDeps({
       writeRecordedOriginVersion: async () => { throw new Error("write boom"); },
     });
     const result = await runPublishFlow(deps, undefined);
     assert.strictEqual(result.ok, true);
-    assert.strictEqual(result.status, "succeeded");
+    assert.strictEqual(result.status, "triggered");
+    assert.strictEqual(result.content_verified, false);
     assert.strictEqual(result.details.code, "baseline_write_failed");
+  });
+
+  it("發布後 origin 無法觀察：仍回 triggered 並明示沒有內容證據", async () => {
+    let fetchCount = 0;
+    const { deps, calls } = makeDeps({
+      fetchOriginVersion: async () => {
+        fetchCount++;
+        if (fetchCount === 1) return ORIGIN;
+        throw new Error("post observation unavailable");
+      },
+    });
+    const result = await runPublishFlow(deps, undefined);
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.status, "triggered");
+    assert.strictEqual(result.content_verified, false);
+    assert.strictEqual(result.origin_sha_observed_after, null);
+    assert.strictEqual(result.details.code, "post_origin_observation_failed");
+    assert.strictEqual(result.details.content_evidence, "unavailable");
+    assert.match(result.message, /無法取得發布後 origin 觀察值/);
+    assert.strictEqual(calls.writeRecorded.length, 0);
+  });
+
+  it("發布後 origin 指紋改變也不是候選內容 receipt，不得升格 succeeded", async () => {
+    let fetchCount = 0;
+    const { deps } = makeDeps({
+      fetchOriginVersion: async () => {
+        fetchCount++;
+        return fetchCount === 1 ? ORIGIN : { ...ORIGIN, content_sha256: AFTER_SHA };
+      },
+    });
+    const result = await runPublishFlow(deps, undefined);
+    assert.strictEqual(result.status, "triggered");
+    assert.strictEqual(result.origin_sha_before, SHA);
+    assert.strictEqual(result.origin_sha_observed_after, AFTER_SHA);
+    assert.match(result.origin_sha_observed_after_reason, /未與候選內容比對/);
+    assert.match(result.origin_sha_observed_after_reason, /指紋.*不代表.*內容已套用/);
+    assert.match(result.message, /指紋.*不代表.*內容已套用/);
+    assert.strictEqual(result.content_verified, false);
+  });
+
+  it("非契約 stdout 的檔案數與 HTTP 200 不得捏造成 changed_records", async () => {
+    const { deps } = makeDeps({
+      pushBack: async () => ({
+        exitCode: 0,
+        stdout: "site: 12 檔打包 site.tar.gz\nsite → HTTP 200: {\"ok\":true}",
+        stderr: "",
+      }),
+      pushDb: async () => ({
+        exitCode: 0,
+        stdout: "HTTP 200\n{\"ok\":true,\"replaced\":true}",
+        stderr: "",
+      }),
+    });
+    const result = await runPublishFlow(deps, undefined);
+    assert.strictEqual(result.changed_records, "unknown");
+    assert.match(result.changed_records_reason, /receipt/i);
   });
 
   it("force_reason 超長：invalid_input，且不觸發 fetch", async () => {
@@ -219,9 +289,31 @@ describe("buildCustomerPublishTools（SDK 工具形狀）", () => {
     assert.strictEqual(res.content[0].type, "text");
     const parsed = JSON.parse(res.content[0].text);
     assert.strictEqual(parsed.ok, true);
-    assert.strictEqual(parsed.status, "succeeded");
+    assert.strictEqual(parsed.status, "triggered");
     assert.strictEqual(parsed.forced, false);
+    assert.strictEqual(parsed.content_verified, false);
+    assert.match(parsed.origin_sha_observed_after_reason, /未與候選內容比對/);
     assert.deepStrictEqual(res.details, parsed);
+    assert.match(tools[0].description, /HTTP 200/);
+    assert.match(tools[0].description, /不得.*上線/);
+  });
+
+  it("promptGuidelines 注入 triggered/content_verified=false 的禁止上線宣稱規則", () => {
+    const { deps } = makeDeps();
+    const [tool] = buildCustomerPublishTools(deps);
+    assert.deepStrictEqual(tool.promptGuidelines, [
+      "publish_confirmed 回傳 ok=true 只表示發布命令被接受；若 status=triggered 或 content_verified=false，禁止向客戶宣稱內容已上線、發布成功、套用完成或已驗證。只有對外站目標內容逐項比對或權威 runner receipt 才能宣稱發布成功。",
+    ]);
+    assert.match(tool.parameters.properties.force_reason.description, /資料庫指紋/);
+    assert.doesNotMatch(tool.parameters.properties.force_reason.description, /內容在建置後被改過/);
+  });
+
+  it("model-visible JSON 不得復活舊 content_sha256 欄位", async () => {
+    const { deps } = makeDeps();
+    const [tool] = buildCustomerPublishTools(deps);
+    const res = await tool.execute("id-no-legacy-sha", {}, undefined, undefined, {});
+    const parsed = JSON.parse(res.content[0].text);
+    assert.ok(!Object.hasOwn(parsed, "content_sha256"));
   });
 
   it("drift 無原因 → execute 回傳 content 含 drift 錯誤", async () => {
