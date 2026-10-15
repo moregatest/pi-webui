@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, link, unlink, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 
@@ -27,6 +27,8 @@ export interface PublishResult {
 }
 interface PublishInput { reason?: string; confirmation_id?: string; publication_id?: string }
 export interface PublishLocalDeps { publish: (input: PublishInput) => Promise<PublishResult> }
+/** 可替換的檔案開啟邊界；預設使用真實 FileHandle，包含每個必要 fsync。 */
+export interface PublicationFileIO { open: typeof open }
 export interface LocalPublishConfig {
   cwd: string;
   originBaseUrl: string;
@@ -60,6 +62,7 @@ interface Mapping {
 }
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
+const isDigest = (value: unknown): value is string => typeof value === "string" && DIGEST.test(value);
 const EXIT = { fatal: 1, needs_review: 2, reconcile: 3, retryable: 4 };
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const object = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
@@ -96,11 +99,16 @@ function decode(result: CliRunResult): Record<string, any> {
     || error.retryable !== (error.error_class === "retryable")) throw new Error("invalid failure");
   return { ok: false, error };
 }
-function validateData(data: unknown, config: LocalPublishConfig, id?: string, digest?: string): PublicationData {
+type CandidateData = Pick<PublicationData, "scope" | "app" | "origin" | "languages" | "candidate_digest">;
+function validateCandidate(data: unknown, config: LocalPublishConfig): CandidateData {
   if (!object(data) || data.scope !== "pgc" || data.app !== config.appName
     || typeof data.origin !== "string" || originIdentity(data.origin) !== originIdentity(config.originBaseUrl)
-    || !sameLanguages(data.languages, config.languages) || !DIGEST.test(data.candidate_digest)
-    || typeof data.stage !== "string" || !data.stage.trim() || typeof data.content_verified !== "boolean"
+    || !sameLanguages(data.languages, config.languages) || !isDigest(data.candidate_digest)) throw new Error("invalid candidate identity");
+  return data as CandidateData;
+}
+function validateData(data: unknown, config: LocalPublishConfig, id?: string, digest?: string): PublicationData {
+  validateCandidate(data, config);
+  if (!object(data) || typeof data.stage !== "string" || !data.stage.trim() || typeof data.content_verified !== "boolean"
     || (id !== undefined && data.publication_id !== id)
     || (digest !== undefined && data.candidate_digest !== digest)) throw new Error("invalid identity/evidence");
   return data as PublicationData;
@@ -147,11 +155,11 @@ function runCli(config: LocalPublishConfig, args: string[]): Promise<CliRunResul
   });
 }
 function command(config: LocalPublishConfig, action: string, id?: string, reason?: string, expectedCandidateDigest?: string): string[] {
-  const args = ["preview", "publication", action, "--name", config.appName];
+  const args = ["preview", "publication", action, "--name", config.appName, "--expected-origin", originIdentity(config.originBaseUrl)];
   if (action === "start") args.push("--scope", "pgc", "--lng", config.languages.join(","));
   if (id) args.push("--publication-id", id);
   if (id && (action === "start" || action === "resume")) {
-    if (!DIGEST.test(expectedCandidateDigest ?? "")) throw new Error("missing expected candidate digest");
+    if (!isDigest(expectedCandidateDigest)) throw new Error("missing expected candidate digest");
     args.push("--expected-candidate-digest", expectedCandidateDigest);
   }
   if (reason) args.push("--force", "--reason", reason);
@@ -159,40 +167,46 @@ function command(config: LocalPublishConfig, action: string, id?: string, reason
   return args;
 }
 
+async function syncDirectory(path: string, io: PublicationFileIO): Promise<void> {
+  const directory = await io.open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { await directory.sync(); } finally { await directory.close(); }
+}
+
 /** 原子建立唯讀 mapping，不存 token／原因／原始確認文字；既有紀錄絕不覆蓋。 */
-async function mappingFile(config: LocalPublishConfig, mapping: Mapping): Promise<{ existing: boolean; value: Mapping }> {
+async function mappingFile(config: LocalPublishConfig, mapping: Mapping, io: PublicationFileIO): Promise<{ existing: boolean; value: Mapping }> {
   const root = await realpath(config.cwd);
   for (const dir of [join(root, "data"), join(root, "data/customer-publications")]) {
     await mkdir(dir, { mode: 0o700 }).catch(e => { if (e.code !== "EEXIST") throw e; });
     const stat = await lstat(dir);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("unsafe mapping directory");
+    // 既有 entry 也重做，修復前一次 mkdir 成功但 parent fsync 失敗的恢復路徑。
+    await syncDirectory(dirname(dir), io);
   }
   const dir = join(root, "data/customer-publications");
   const path = join(dir, `${mapping.confirmation_hash}.json`);
   const temporary = join(dir, `.pending-${randomUUID()}`);
   let existing = false;
   try {
-    const file = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    const file = await io.open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try { await file.writeFile(JSON.stringify(mapping)); await file.sync(); } finally { await file.close(); }
     try { await link(temporary, path); } catch (e) { if (e.code === "EEXIST") existing = true; else throw e; }
   } finally { await unlink(temporary).catch(e => { if (e.code !== "ENOENT") throw e; }); }
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await io.open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
     if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o077)) throw new Error("unsafe mapping file");
     const value = JSON.parse(await file.readFile("utf-8"));
-    if (!object(value) || value.schema !== 1 || !ID.test(value.publication_id) || !DIGEST.test(value.candidate_digest)
+    if (!object(value) || value.schema !== 1 || !ID.test(value.publication_id) || !isDigest(value.candidate_digest)
       || value.confirmation_hash !== mapping.confirmation_hash || value.scope !== "pgc"
       || value.app !== mapping.app || value.origin !== mapping.origin
       || !sameLanguages(value.languages, mapping.languages)
       || value.publication_id !== `pgc-${hash([mapping.confirmation_hash, value.candidate_digest])}`) throw new Error("invalid mapping");
-    const directory = await open(dir, constants.O_RDONLY);
-    try { await directory.sync(); } finally { await directory.close(); }
+    await syncDirectory(dir, io);
     return { existing, value: value as Mapping };
   } finally { await file.close(); }
 }
 
-export function createLocalPublishDeps(config: LocalPublishConfig): PublishLocalDeps {
+export function createLocalPublishDeps(config: LocalPublishConfig, io: PublicationFileIO = { open }): PublishLocalDeps {
   return { async publish(input) {
     let id = input.publication_id;
     try {
@@ -205,11 +219,11 @@ export function createLocalPublishDeps(config: LocalPublishConfig): PublishLocal
       dryArgs.splice(dryArgs.length - 1, 0, "--dry-run");
       const prepared = decode(await runCli(config, dryArgs));
       if (!prepared.ok) return { ...failure("candidate_unavailable", prepared.error.message, id), details: {
-        code: "candidate_unavailable", error_class: prepared.error.error_class, retryable: prepared.error.retryable, hint: prepared.error.hint,
+        code: typeof prepared.error.details?.code === "string" ? prepared.error.details.code : "candidate_unavailable",
+        error_class: prepared.error.error_class, retryable: prepared.error.retryable, hint: prepared.error.hint,
       } };
-      // dry-run 的必要契約只有 candidate_digest；正式 start/status 再核對完整 target。
-      const candidate = prepared.data.candidate_digest;
-      if (!DIGEST.test(candidate)) return failure("invalid_cli_output", "CLI 未提供有效候選指紋", id);
+      // dry-run 就必須核對完整 target，不能等到正式發布後才發現 env 指向別站。
+      const candidate = validateCandidate(prepared.data, config).candidate_digest;
       let exists = !!id;
       if (!id) {
         const confirmationHash = hash(["pgc-confirmation-v1", config.appName, origin, confirmation]);
@@ -217,7 +231,7 @@ export function createLocalPublishDeps(config: LocalPublishConfig): PublishLocal
         const stored = await mappingFile(config, {
           schema: 1, confirmation_hash: confirmationHash, publication_id: id, candidate_digest: candidate,
           scope: "pgc", app: config.appName, origin, languages: [...config.languages].sort(),
-        });
+        }, io);
         id = stored.value.publication_id;
         if (stored.value.candidate_digest !== candidate) return failure("candidate_changed", "同一確認的候選內容已變更，請重新取得客戶確認並使用新的 confirmation_id。", id);
         exists = stored.existing;

@@ -2,6 +2,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { buildCustomerPublishTools, createLocalPublishDeps } from '../dist/tools/customer-publish-tools.js';
@@ -13,13 +14,13 @@ const evidence = {
   scope: 'pgc', app: 'my-preview', origin, languages: ['en', 'zh-TW'], candidate_digest: 'sha256:' + 'ab'.repeat(32),
 };
 
-async function fixture(run, { confirmationId = 'customer-confirmation-42', ...extra } = {}) {
+async function fixture(run, { confirmationId = 'customer-confirmation-42', initialData = true, ...extra } = {}) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'customer-publication-'));
   const oldPath = process.env.PATH;
   fs.mkdirSync(path.join(cwd, 'bin'));
-  fs.mkdirSync(path.join(cwd, 'data'));
+  if (initialData) fs.mkdirSync(path.join(cwd, 'data'));
   const meta = JSON.stringify({ keep: true, origin_source_version: { source_lng: 'en', content_sha256: 'before' } });
-  fs.writeFileSync(path.join(cwd, 'data/preview-meta.json'), meta);
+  if (initialData) fs.writeFileSync(path.join(cwd, 'data/preview-meta.json'), meta);
   const executable = path.join(cwd, 'bin/readyai-project');
   fs.writeFileSync(executable, `#!${process.execPath}
 const fs = require('node:fs');
@@ -28,6 +29,13 @@ fs.appendFileSync('argv.jsonl', JSON.stringify(args) + '\\n');
 const response = JSON.parse(fs.readFileSync('response.json', 'utf8'));
 const id = args[args.indexOf('--publication-id') + 1];
 const action = args[2];
+const operation = args.includes('--dry-run') ? 'dry-run' : action;
+const expectedOriginIndex = args.indexOf('--expected-origin');
+if (expectedOriginIndex >= 0 && response.resolvedOrigins?.[operation] && response.resolvedOrigins[operation] !== args[expectedOriginIndex + 1]) {
+  process.stdout.write(JSON.stringify({ok:false,error:{message:'Origin mismatch',error_class:'fatal',retryable:false,hint:'Check target configuration',details:{code:'origin_mismatch'}}}) + '\\n');
+  process.exit(1);
+}
+fs.appendFileSync('credential.jsonl', JSON.stringify({operation}) + '\\n');
 if (action === 'start' && !args.includes('--dry-run')) {
   const stateDir = 'data/customer-publications';
   const records = fs.readdirSync(stateDir).filter(name => name.endsWith('.json')).map(name => JSON.parse(fs.readFileSync(stateDir + '/' + name, 'utf8')));
@@ -53,17 +61,17 @@ process.exitCode = selected.exitCode;
 `, { mode: 0o700 });
   process.env.PATH = `${path.join(cwd, 'bin')}${path.delimiter}${oldPath}`;
   const config = {
-    cwd, originBaseUrl: origin, siteToken: 'never-send-me', appName: 'my-preview',
+    cwd, originBaseUrl: origin + '/', siteToken: 'never-send-me', appName: 'my-preview',
     languages: ['en', 'zh-TW'], confirmationId,
     fetch: async () => { throw new Error('Tool must not fetch/audit origin'); }, ...extra,
   };
-  const tool = () => buildCustomerPublishTools(createLocalPublishDeps(config))[0];
-  const respond = (body, exitCode = 0, prefix = 'human progress\n', { digest = 'sha256:' + 'ab'.repeat(32), status, changeAfterPreflight } = {}) => {
+  const tool = (io) => buildCustomerPublishTools(createLocalPublishDeps(config, io))[0];
+  const respond = (body, exitCode = 0, prefix = 'human progress\n', { digest = 'sha256:' + 'ab'.repeat(32), status, changeAfterPreflight, dryRunData, resolvedOrigins } = {}) => {
     fs.writeFileSync(path.join(cwd, 'response.json'), JSON.stringify({
       stdout: `${prefix}${typeof body === 'string' ? body : JSON.stringify(body)}\n\n`, exitCode,
       stderr: 'upstream private output must not escape',
-      changeAfterPreflight,
-      dryRun: { stdout: JSON.stringify({ok:true,data:{candidate_digest:digest}}) + '\n', exitCode: 0 },
+      changeAfterPreflight, resolvedOrigins,
+      dryRun: { stdout: JSON.stringify({ok:true,data:dryRunData ?? {...evidence,candidate_digest:digest}}) + '\n', exitCode: 0 },
       status: status ? { stdout: JSON.stringify(status) + '\n', exitCode: status.ok ? 0 : 3 } : undefined,
     }));
   };
@@ -71,7 +79,8 @@ process.exitCode = selected.exitCode;
     ? fs.readFileSync(path.join(cwd, 'argv.jsonl'), 'utf8').trim().split('\n').map(JSON.parse) : [];
   try {
     await run({ tool, respond, calls, config });
-    assert.equal(fs.readFileSync(path.join(cwd, 'data/preview-meta.json'), 'utf8'), meta, 'Tool must preserve drift baseline');
+    if (initialData) assert.equal(fs.readFileSync(path.join(cwd, 'data/preview-meta.json'), 'utf8'), meta, 'Tool must preserve drift baseline');
+    else assert.equal(fs.existsSync(path.join(cwd, 'data/preview-meta.json')), false);
   } finally {
     if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
     fs.rmSync(cwd, { recursive: true, force: true });
@@ -84,7 +93,128 @@ const execute = async (tool, params = {}) => {
 };
 const success = (overrides = {}) => ({ ok: true, data: { ...evidence, publication_id: 'PUBLICATION_ID', ...overrides } });
 
+// 真實 FileHandle 的 open 邊界：記錄 sync，並可在特定持久化階段故障。
+function tracedFileIO(cwd, events, fail = () => false) {
+  return { async open(filePath, ...args) {
+    const handle = await fs.promises.open(filePath, ...args);
+    const relative = path.relative(fs.realpathSync(cwd), filePath) || '.';
+    const label = path.basename(relative).startsWith('.pending-') ? 'mapping_file' : relative;
+    return new Proxy(handle, { get(target, key) {
+      if (key === 'sync') return async () => {
+        events.push(label);
+        assert.equal(fs.existsSync(path.join(cwd, 'mutation.jsonl')), false, 'Entire durability chain precedes start');
+        if (fail(label)) throw new Error('Injected fsync failure');
+        await target.sync();
+      };
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  } };
+}
+
 describe('customer publication CLI boundary', () => {
+  it('syncs every directory parent then mapping bytes and entry before start', async () => {
+    await fixture(async ({ tool, respond, config }) => {
+      respond(success());
+      const events = [];
+      const result = await execute(tool(tracedFileIO(config.cwd, events)));
+      assert.equal(result.ok, true);
+      assert.deepEqual(events, ['.', 'data', 'mapping_file', 'data/customer-publications']);
+      assert.equal(fs.existsSync(path.join(config.cwd, 'mutation.jsonl')), true);
+    }, { initialData: false });
+  });
+
+  it('any fsync failure prevents start; retry repairs the full parent chain', async () => {
+    for (const failedPhase of ['.', 'data', 'mapping_file', 'data/customer-publications']) {
+      await fixture(async ({ tool, respond, calls, config }) => {
+        respond(success());
+        let fail = true;
+        const events = [];
+        const io = tracedFileIO(config.cwd, events, label => fail && label === failedPhase);
+        const first = await execute(tool(io));
+        assert.equal(first.ok, false, failedPhase);
+        assert.ok(events.includes(failedPhase), 'Failure injection reached the intended sync');
+        assert.equal(fs.existsSync(path.join(config.cwd, 'mutation.jsonl')), false);
+        assert.deepEqual(calls().map(args => args.includes('--dry-run')), [true]);
+        fail = false;
+        events.length = 0;
+        assert.equal((await execute(tool(io))).ok, true);
+        assert.deepEqual(events, ['.', 'data', 'mapping_file', 'data/customer-publications']);
+      }, { initialData: false });
+    }
+  });
+
+  it('preflight rejects missing/wrong full target identity before state or content writes', async () => {
+    for (const dryRunData of [
+      {candidate_digest:evidence.candidate_digest}, {...evidence,app:'other-preview'},
+      {...evidence,origin:'https://other.example.com'}, {...evidence,scope:'staff'},
+      {...evidence,languages:['en']}, {...evidence,languages:['en','en','zh-TW']},
+    ]) {
+      await fixture(async ({ tool, respond, calls, config }) => {
+        respond(success(), 0, '', { dryRunData });
+        assert.equal((await execute(tool())).ok, false);
+        assert.deepEqual(calls().map(args => args.includes('--dry-run')), [true]);
+        assert.equal(fs.existsSync(path.join(config.cwd, 'data/customer-publications')), false);
+        assert.equal(fs.existsSync(path.join(config.cwd, 'mutation.jsonl')), false);
+      });
+    }
+  });
+
+  it('preflight accepts only string digests, without persisting malformed candidates', async () => {
+    for (const candidate_digest of [[evidence.candidate_digest], null, 123]) {
+      await fixture(async ({ tool, respond, calls, config }) => {
+        respond(success(), 0, '', { dryRunData:{...evidence,candidate_digest} });
+        const result = await execute(tool());
+        assert.equal(result.ok, false);
+        assert.equal(result.details.code, 'invalid_cli_output');
+        assert.equal(fs.existsSync(path.join(config.cwd, 'data/customer-publications')), false);
+        assert.deepEqual(calls().map(args => args.includes('--dry-run')), [true]);
+      });
+    }
+  });
+
+  it('malformed status/response/mapping digests never become valid publication evidence', async () => {
+    await fixture(async ({ tool, respond, config, calls }) => {
+      const malformed = [evidence.candidate_digest];
+      respond(success(), 0, '', { status:success({candidate_digest:malformed}) });
+      assert.equal((await execute(tool(), {publication_id:publicationId})).ok, false);
+      assert.equal(calls().some(args => args[2] === 'resume'), false);
+      respond(success({candidate_digest:malformed}));
+      assert.equal((await execute(tool())).ok, false);
+      // 手動損壞既有 mapping，並匹配舊版會對陣列進行 coercion 的衍生 ID。
+      const stateDir = path.join(config.cwd, 'data/customer-publications');
+      const stateFile = path.join(stateDir, fs.readdirSync(stateDir)[0]);
+      const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      saved.candidate_digest = malformed;
+      saved.publication_id = 'pgc-' + createHash('sha256').update(JSON.stringify([saved.confirmation_hash,malformed])).digest('hex');
+      fs.writeFileSync(stateFile, JSON.stringify(saved));
+      const before = calls().length;
+      respond(success());
+      const result = await execute(tool());
+      assert.equal(result.ok, false);
+      assert.equal(result.details.code, 'invalid_cli_output');
+      assert.equal(calls().length, before + 1);
+    });
+  });
+
+  it('pins every CLI target before credential/cache/content access, including changed env between commands', async () => {
+    for (const operation of ['dry-run', 'start', 'status', 'resume']) {
+      await fixture(async ({ tool, respond, calls, config }) => {
+        respond(success(), 0, '', { status:success(), resolvedOrigins:{[operation]:'https://wrong.example.com'} });
+        const params = ['status','resume'].includes(operation) ? {publication_id:publicationId} : {};
+        const result = await execute(tool(), params);
+        assert.equal(result.ok, false, operation);
+        assert.equal(result.details.error_class, 'fatal');
+        assert.equal(result.details.code, 'origin_mismatch');
+        assert.equal(fs.existsSync(path.join(config.cwd, 'mutation.jsonl')), false);
+        const credentialPath = path.join(config.cwd, 'credential.jsonl');
+        const accesses = fs.existsSync(credentialPath) ? fs.readFileSync(credentialPath,'utf8').trim().split('\n').map(JSON.parse) : [];
+        assert.equal(accesses.some(entry => entry.operation === operation), false);
+        assert.ok(calls().every(args => args[args.indexOf('--expected-origin') + 1] === origin));
+      });
+    }
+  });
+
   it('starts one PGC publication; retry after tool recreation reuses confirmation identity', async () => {
     await fixture(async ({ tool, respond, calls, config }) => {
       respond(success());
@@ -98,10 +228,14 @@ describe('customer publication CLI boundary', () => {
       assert.equal(second.publication_id, first.publication_id);
       assert.deepEqual(calls().map(args => args.includes('--dry-run') ? 'dry-run' : args[2]), ['dry-run', 'start', 'dry-run', 'status', 'resume']);
       assert.deepEqual(calls()[1], [
-        'preview', 'publication', 'start', '--name', 'my-preview', '--scope', 'pgc',
+        'preview', 'publication', 'start', '--name', 'my-preview', '--expected-origin', origin, '--scope', 'pgc',
         '--lng', 'en,zh-TW', '--publication-id', first.publication_id,
         '--expected-candidate-digest', 'sha256:' + 'ab'.repeat(32), '--json',
       ]);
+      for (const args of calls()) {
+        assert.equal(args[args.indexOf('--expected-origin') + 1], origin);
+        assert.equal(args.filter(arg => arg === '--expected-origin').length, 1);
+      }
       assert.equal(first.changed_records, 'unknown');
       const stateDir = path.join(config.cwd, 'data/customer-publications');
       const [stateName] = fs.readdirSync(stateDir);
@@ -120,7 +254,7 @@ describe('customer publication CLI boundary', () => {
       assert.equal(result.publication_id, publicationId);
       assert.equal(result.stage, 'db_partial');
       assert.deepEqual(calls().filter(args => !args.includes('--dry-run')), ['status', 'resume'].map(action => [
-        'preview', 'publication', action, '--name', 'my-preview', '--publication-id', publicationId,
+        'preview', 'publication', action, '--name', 'my-preview', '--expected-origin', origin, '--publication-id', publicationId,
         ...(action === 'resume' ? ['--expected-candidate-digest', 'sha256:' + 'ab'.repeat(32)] : []), '--json',
       ]));
     }, { confirmationId: 'cli' });
