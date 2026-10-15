@@ -1,528 +1,270 @@
-// src/tools/customer-publish-tools.ts
-// PGC publish_confirmed agent tool — 客戶明確確認後走「本地流程」：
-//   origin 來源語系版本比對 → preview push-back → push-db。
-//   來源語系資料庫指紋 drift 時需客戶原因（force）；無原因 = 拒絕。
-// baseline 落點 data/preview-meta.json 的 origin_source_version；它只用於 drift 協調，
-// 不是永久 audit，也不能當成本次發布已套用目標內容的證據。
-
+// 客戶確認的 PGC 發布入口。CLI session 主持 scope、drift guard、audit 與內容驗證。
+// 工具僅保存確認／候選對應，恢復時先查 status；不改寫 origin drift baseline。
 import { spawn } from "node:child_process";
-import { readFile, writeFile, rename } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, link, unlink, realpath } from "node:fs/promises";
+import { join } from "node:path";
 import { Type } from "typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 
-// ── 凍結契約型別 ──
-
-// origin GET ?m=source&a=version 回應（schema pgc-source-version-v1）。
-export interface OriginSourceVersion {
-  schema?: string;
-  source_lng: string;
-  content_sha256: string; // "sha256:<64hex>"
-}
-
-// data/preview-meta.json 的 origin_source_version（{source_lng, content_sha256, recorded_at}）。
-// Phase 4 凍結契約：baseline 落點（preview up 時 deploy 前 fetch origin 寫入，隨 image 上機）。
-export interface RecordedOriginVersion {
-  source_lng: string;
-  content_sha256: string;
-  recorded_at?: string;
-}
-
-// 本地 CLI 執行結果。
-export interface CliRunResult {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-}
-
-// 強制發布審計輸入（m=log&a=pgc-force-publish 的兩 hash + 客戶原因）。
-export interface ForcePublishAuditInput {
-  recorded: RecordedOriginVersion | null;
-  current: OriginSourceVersion;
-  reason: string;
-}
-
-// 本地流程相依（可注入，供 TDD）。
-export interface PublishLocalDeps {
-  fetchOriginVersion: () => Promise<OriginSourceVersion>;
-  readRecordedOriginVersion: () => Promise<RecordedOriginVersion | null>;
-  writeRecordedOriginVersion: (version: RecordedOriginVersion) => Promise<void>;
-  writeForcePublishAudit: (input: ForcePublishAuditInput) => Promise<void>;
-  pushBack: (opts: { force: boolean; reason?: string }) => Promise<CliRunResult>;
-  pushDb: (opts: { force: boolean; reason?: string }) => Promise<CliRunResult>;
-}
-
-// 工具執行結果（回給 model / client 的結構化結果）。
-// 本地 CLI 目前沒有回傳可對照候選內容的權威 runner receipt；exit 0 / HTTP 200
-// 只證明命令與傳輸被接受，所以只能回 triggered，不能回 succeeded。
+export interface CliRunResult { exitCode: number; stdout: string; stderr: string }
 export interface PublishResult {
   ok: boolean;
-  /** triggered：發布命令已執行但內容尚未獲權威證據；origin_drift：drift 且無原因。 */
   status?: "triggered" | "origin_drift";
+  publication_id?: string;
+  stage?: string;
+  candidate_digest?: string;
+  scope?: "pgc";
+  app?: string;
+  origin?: string;
+  languages?: string[];
+  content_verified: false;
   message?: string;
   error?: string;
-  forced?: boolean;
-  /** triggered：origin 當前來源語系。 */
-  source_lng?: string;
-  /** 發布命令執行前觀察到的 origin 指紋；不是發布後內容證據。 */
-  origin_sha_before?: string;
-  /** CLI 結束後再次觀察到的 origin 指紋；未與候選內容對照，仍不是套用證據。 */
-  origin_sha_observed_after?: string | null;
-  /** after 指紋只是整庫觀察值；未與候選內容比對，指紋變化也不是套用證據。 */
-  origin_sha_observed_after_reason?: string;
-  /** 只有權威 receipt 或目標內容比對才能為 true；目前本地流程固定 false。 */
-  content_verified?: boolean;
-  /** origin_drift：建置記錄的來源語系資料庫指紋（無記錄為 null）。 */
-  recorded_sha?: string | null;
-  /** origin_drift：origin 當前來源語系資料庫指紋。 */
-  current_sha?: string;
+  changed_records?: "unknown";
   details?: Record<string, unknown>;
-  /** 權威資料列變更數；目前底層 receipt 未提供，明確回 unknown，不從 stdout 猜測。 */
-  changed_records?: number | "unknown";
-  changed_records_reason?: string;
+}
+interface PublishInput { reason?: string; confirmation_id?: string; publication_id?: string }
+export interface PublishLocalDeps { publish: (input: PublishInput) => Promise<PublishResult> }
+export interface LocalPublishConfig {
+  cwd: string;
+  originBaseUrl: string;
+  siteToken: string;
+  appName: string;
+  languages: string[];
+  /** PGC_CONFIRMATION_ID；缺省 cli 不構成客戶確認的唯一身分。 */
+  confirmationId?: string;
+  /** 保留既有 config 相容；工具不自行連 origin 或寫 audit。 */
+  fetch?: typeof globalThis.fetch;
+}
+interface PublicationData {
+  publication_id?: string;
+  stage: string;
+  content_verified: boolean;
+  candidate_digest: string;
+  scope: "pgc";
+  app: string;
+  origin: string;
+  languages: string[];
+}
+interface Mapping {
+  schema: 1;
+  confirmation_hash: string;
+  publication_id: string;
+  candidate_digest: string;
+  scope: "pgc";
+  app: string;
+  origin: string;
+  languages: string[];
+}
+const ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
+const DIGEST = /^sha256:[a-f0-9]{64}$/;
+const EXIT = { fatal: 1, needs_review: 2, reconcile: 3, retryable: 4 };
+const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const object = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
+const failure = (code: string, error: string, id?: string): PublishResult => ({
+  ok: false, content_verified: false, ...(id ? { publication_id: id } : {}), error, details: { code },
+});
+function originIdentity(raw: string): string {
+  const u = new URL(raw);
+  if (!["https:", "http:"].includes(u.protocol) || u.username || u.password || u.search || u.hash) throw new Error("invalid origin");
+  return `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
+}
+function sameLanguages(a: unknown, b: string[]): boolean {
+  return Array.isArray(a) && a.every(x => typeof x === "string")
+    && new Set(a).size === a.length && a.length === b.length
+    && [...a].sort().join(",") === [...b].sort().join(",");
 }
 
-const FORCE_REASON_MAX_BYTES = 512;
-
-/** origin 來源語系資料庫指紋相符：source_lng 一致且 content_sha256 相等。 */
-export function sourceVersionMatches(
-  origin: OriginSourceVersion,
-  record: RecordedOriginVersion | null,
-): boolean {
-  return !!record
-    && record.source_lng === origin.source_lng
-    && record.content_sha256 === origin.content_sha256;
-}
-
-/**
- * 從 data/preview-meta.json 文字解析 origin_source_version（JSON 物件：
- * {source_lng, content_sha256, recorded_at}）。缺必填欄位／非物件／非 JSON 回 null。
- */
-export function parsePreviewMetaOriginVersion(text: string): RecordedOriginVersion | null {
-  if (!text) return null;
-  let meta: unknown;
-  try {
-    meta = JSON.parse(text);
-  } catch {
-    return null;
+/** 最後一個非空 stdout 行才是 adapter_output；進度文字和 stderr 不是證據。 */
+function decode(result: CliRunResult): Record<string, any> {
+  const last = result.stdout.trim().split(/\r?\n/).filter(line => line.trim()).at(-1);
+  const envelope = JSON.parse(last || "null");
+  if (!object(envelope) || typeof envelope.ok !== "boolean") throw new Error("invalid envelope");
+  if (envelope.ok) {
+    // 目前 adapter_output 使用 result；publication 契約使用 data。拒絕雙重權威。
+    if (result.exitCode !== 0 || ("data" in envelope && "result" in envelope)) throw new Error("invalid success");
+    const data = envelope.data ?? envelope.result;
+    if (!object(data)) throw new Error("missing data");
+    return { ok: true, data };
   }
-  if (!meta || typeof meta !== "object") return null;
-  const ov = (meta as Record<string, unknown>).origin_source_version;
-  if (!ov || typeof ov !== "object") return null;
-  const o = ov as Record<string, unknown>;
-  const source_lng = typeof o.source_lng === "string" ? o.source_lng : "";
-  const content_sha256 = typeof o.content_sha256 === "string" ? o.content_sha256 : "";
-  const recorded_at = typeof o.recorded_at === "string" ? o.recorded_at : undefined;
-  if (!source_lng || !content_sha256) return null;
-  return recorded_at
-    ? { source_lng, content_sha256, recorded_at }
-    : { source_lng, content_sha256 };
+  const error = envelope.error;
+  if (!object(error) || !Object.hasOwn(EXIT, error.error_class)
+    || result.exitCode !== EXIT[error.error_class] || typeof error.message !== "string"
+    || typeof error.hint !== "string" || typeof error.retryable !== "boolean"
+    || error.retryable !== (error.error_class === "retryable")) throw new Error("invalid failure");
+  return { ok: false, error };
 }
-
-const CHANGED_RECORDS_REASON =
-  "目前 CLI/runner receipt 未提供可驗證的資料列變更數，不能從 stdout 的檔案數或 HTTP 200 推算。";
-const ORIGIN_SHA_OBSERVED_AFTER_REASON =
-  "origin_sha_observed_after 若有值，只是發布指令結束後觀察到的 origin 來源語系資料庫整庫指紋，"
-  + "未與候選內容比對；指紋即使變化也不代表候選內容已套用。null 表示無法取得觀察值。";
-
-function triggeredResult(
-  origin: OriginSourceVersion,
-  forced: boolean,
-  originShaObservedAfter: string | null,
-  details: Record<string, unknown>,
-  warning = "",
-): PublishResult {
+function validateData(data: unknown, config: LocalPublishConfig, id?: string, digest?: string): PublicationData {
+  if (!object(data) || data.scope !== "pgc" || data.app !== config.appName
+    || typeof data.origin !== "string" || originIdentity(data.origin) !== originIdentity(config.originBaseUrl)
+    || !sameLanguages(data.languages, config.languages) || !DIGEST.test(data.candidate_digest)
+    || typeof data.stage !== "string" || !data.stage.trim() || typeof data.content_verified !== "boolean"
+    || (id !== undefined && data.publication_id !== id)
+    || (digest !== undefined && data.candidate_digest !== digest)) throw new Error("invalid identity/evidence");
+  return data as PublicationData;
+}
+function fromEnvelope(envelope: Record<string, any>, config: LocalPublishConfig, id: string, digest: string): PublishResult {
+  if (envelope.ok) {
+    const data = validateData(envelope.data, config, id, digest);
+    return {
+      ok: true, status: "triggered", publication_id: id, stage: data.stage, candidate_digest: digest,
+      scope: "pgc", app: data.app, origin: originIdentity(data.origin), languages: data.languages,
+      // 本工具尚未接收 public/raw/normal/browser 證據；不能只升格 CLI 的布林值。
+      content_verified: false, changed_records: "unknown",
+      message: "發布命令已接受；尚無完整公開頁面與瀏覽器驗證，不可宣稱已完成上線。",
+    };
+  }
+  const error = envelope.error;
+  const details = object(error.details) ? error.details : {};
+  const partial = object(details.publication) ? details.publication : details;
+  let data: PublicationData | undefined;
+  if ("publication_id" in partial) data = validateData(partial, config, id, digest);
   return {
-    ok: true,
-    status: "triggered",
-    message:
-      "發布指令已觸發，但目前沒有可證明目標內容已套用的權威 receipt；"
-      + "發布後 origin 資料庫指紋即使有觀察值，也未與候選內容比對，指紋變化不代表候選內容已套用；"
-      + "不可僅憑 HTTP 200 或頁面可開啟就宣稱已完成上線。"
-      + warning,
-    forced,
-    source_lng: origin.source_lng,
-    origin_sha_before: origin.content_sha256,
-    origin_sha_observed_after: originShaObservedAfter,
-    origin_sha_observed_after_reason: ORIGIN_SHA_OBSERVED_AFTER_REASON,
-    content_verified: false,
-    changed_records: "unknown",
-    changed_records_reason: CHANGED_RECORDS_REASON,
-    details,
+    ok: false, publication_id: id, ...(data ? { stage: data.stage } : {}), candidate_digest: digest,
+    ...(data ? { scope: data.scope, app: data.app, origin: originIdentity(data.origin), languages: data.languages } : {}),
+    content_verified: false, error: error.message,
+    ...(object(details.drift_gate) && details.drift_gate.result === "blocked" ? { status: "origin_drift" as const } : {}),
+    details: {
+      error_class: error.error_class, retryable: error.retryable, hint: error.hint,
+      ...(typeof details.code === "string" ? { code: details.code } : {}),
+    },
   };
 }
 
-/**
- * publish_confirmed 的核心決策流程（純邏輯 + 注入 deps）：
- *   驗證 force_reason → 讀 origin 版本 → 讀建置記錄 → 比對 →
- *   相符觸發 push-back→push-db；drift 需客戶原因，無原因拒絕。
- */
-export async function runPublishFlow(
-  deps: PublishLocalDeps,
-  forceReasonRaw: unknown,
-): Promise<PublishResult> {
-  // 1. 驗證 force_reason（若有）
-  const reason = String(forceReasonRaw ?? "").trim();
-  if (reason && Buffer.byteLength(reason, "utf-8") > FORCE_REASON_MAX_BYTES) {
-    return {
-      ok: false,
-      error: `force_reason 超過 ${FORCE_REASON_MAX_BYTES} bytes 上限`,
-      details: { code: "invalid_input" },
-    };
-  }
-
-  // 2. 讀 origin 當前來源語系資料庫指紋
-  let origin: OriginSourceVersion;
-  try {
-    origin = await deps.fetchOriginVersion();
-  } catch {
-    return {
-      ok: false,
-      error: "讀取 origin 來源語系資料庫指紋失敗，請稍後重試",
-      details: { code: "origin_version_error" },
-    };
-  }
-
-  // 3. 讀建置記錄（data/preview-meta.json 的 origin_source_version；無記錄 / 讀取失敗
-  //    一律視為 drift，fail-closed）
-  let record: RecordedOriginVersion | null = null;
-  try {
-    record = await deps.readRecordedOriginVersion();
-  } catch {
-    record = null;
-  }
-
-  const match = sourceVersionMatches(origin, record);
-
-  // 4. drift → 需客戶原因；無原因 = 拒絕（凍結契約輸出 origin_drift）
-  if (!match && !reason) {
-    return {
-      ok: false,
-      status: "origin_drift",
-      error:
-        "偵測到資料庫指紋 drift：origin 來源語系資料庫指紋在建置後已變更，"
-        + "可能包含 _version 等系統表／檔案層差異，不等同內容被修改。"
-        + "若仍要發布，請客戶提供強制發布原因（force_reason）。",
-      recorded_sha: record?.content_sha256 ?? null,
-      current_sha: origin.content_sha256,
-      details: {
-        code: "drift_requires_reason",
-        recorded: record
-          ? { source_lng: record.source_lng, content_sha256: record.content_sha256 }
-          : null,
-        current: { source_lng: origin.source_lng, content_sha256: origin.content_sha256 },
-      },
-    };
-  }
-
-  // 4b. drift 且有 reason → 先在 tool 端寫強制發布審計（凍結契約 step 5：
-  //     m=log&a=pgc-force-publish，who=confirmation_id, desc=reason, params=兩 hash）。
-  //     機上 CLI 無 .onboard-status.yaml 不會寫 audit，故權威在 tool；寫失敗即中止。
-  if (!match) {
-    try {
-      await deps.writeForcePublishAudit({
-        recorded: record,
-        current: origin,
-        reason,
-      });
-    } catch {
-      return {
-        ok: false,
-        error: "寫入強制發布審計失敗，已中止發布",
-        details: { code: "force_audit_failed" },
-      };
-    }
-  }
-
-  const opts = match ? { force: false } : { force: true, reason };
-
-  // 5. push-back → push-db
-  try {
-    const back = await deps.pushBack(opts);
-    if (back.exitCode !== 0) {
-      return {
-        ok: false,
-        error: "preview push-back 失敗",
-        details: { code: "push_back_failed", exitCode: back.exitCode, stderr: back.stderr },
-      };
-    }
-  } catch {
-    return {
-      ok: false,
-      error: "preview push-back 失敗",
-      details: { code: "push_back_failed" },
-    };
-  }
-
-  try {
-    const db = await deps.pushDb(opts);
-    if (db.exitCode !== 0) {
-      return {
-        ok: false,
-        error: "preview push-db 失敗",
-        details: { code: "push_db_failed", exitCode: db.exitCode, stderr: db.stderr },
-      };
-    }
-  } catch {
-    return {
-      ok: false,
-      error: "preview push-db 失敗",
-      details: { code: "push_db_failed" },
-    };
-  }
-
-  // 6. CLI 結束後重新觀察 origin 並回寫 drift baseline。這個觀察未與 preview
-  //    候選內容對照，且 content_sha256 可能受暫時性 _version 資料影響，所以不能把它
-  //    升格成發布成功證據。
-  let newOrigin: OriginSourceVersion;
-  try {
-    newOrigin = await deps.fetchOriginVersion();
-  } catch {
-    return triggeredResult(
-      origin,
-      !match,
-      null,
-      { code: "post_origin_observation_failed", content_evidence: "unavailable" },
-      "（警告：無法取得發布後 origin 觀察值。）",
-    );
-  }
-
-  try {
-    await deps.writeRecordedOriginVersion({
-      source_lng: newOrigin.source_lng,
-      content_sha256: newOrigin.content_sha256,
-      recorded_at: new Date().toISOString(),
+function runCli(config: LocalPublishConfig, args: string[]): Promise<CliRunResult> {
+  return new Promise(resolve => {
+    const child = spawn("readyai-project", args, {
+      cwd: config.cwd, env: { ...process.env, READYAI_SKIP_GLOBAL_SKILL_SYNC: "1" }, stdio: ["ignore", "pipe", "pipe"],
     });
-  } catch {
-    return triggeredResult(
-      origin,
-      !match,
-      newOrigin.content_sha256,
-      { code: "baseline_write_failed", content_evidence: "unavailable" },
-      "（警告：drift 基準回寫失敗，後續可能誤報 drift。）",
-    );
-  }
-
-  return triggeredResult(
-    origin,
-    !match,
-    newOrigin.content_sha256,
-    { code: "content_evidence_unavailable", content_evidence: "unavailable" },
-  );
-}
-
-function publishConfirmedTool(deps: PublishLocalDeps): ToolDefinition {
-  return defineTool({
-    name: "publish_confirmed",
-    label: "觸發發布",
-    description:
-      "客戶明確確認後觸發預覽內容發布回 demo。工具目前只會回 status=triggered；"
-      + "exit 0 或 HTTP 200 不代表內容一致，不得據此宣稱已完成上線。"
-      + "只有對外站的目標內容逐項比對或權威 runner receipt 才能證明發布成功。"
-      + "偵測到來源語系資料庫指紋 drift 時，需客戶提供強制發布原因。",
-    promptGuidelines: [
-      "publish_confirmed 回傳 ok=true 只表示發布命令被接受；若 status=triggered 或 content_verified=false，"
-      + "禁止向客戶宣稱內容已上線、發布成功、套用完成或已驗證。"
-      + "只有對外站目標內容逐項比對或權威 runner receipt 才能宣稱發布成功。",
-    ],
-    parameters: Type.Object({
-      force_reason: Type.Optional(
-        Type.String({
-          description:
-            "僅在偵測到來源語系資料庫指紋 drift（可能含 _version 等系統表或檔案層差異）時需要："
-            + "客戶說明為何仍要強制發布（會寫入審計 log）。",
-        }),
-      ),
-    }),
-    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const result = await runPublishFlow(deps, params.force_reason);
-      return {
-        content: [{ type: "text", text: JSON.stringify(result) }],
-        details: result,
-      };
-    },
-  }) as ToolDefinition;
-}
-
-export function buildCustomerPublishTools(deps: PublishLocalDeps): ToolDefinition[] {
-  return [publishConfirmedTool(deps)];
-}
-
-// ── 本地流程的實際 I/O（fetch origin + 讀 data/preview-meta.json + spawn CLI）──
-
-export function buildOriginVersionUrl(baseUrl: string): string {
-  return `${baseUrl.replace(/\/$/, "")}/readyscript/capps/pc2-p/service/?m=source&a=version`;
-}
-
-/** m=log&a=pgc-force-publish 審計 URL（who/desc/params 走 URL 查詢參數）。 */
-export function buildForcePublishAuditUrl(
-  baseUrl: string,
-  query: { who: string; desc: string; params: string },
-): string {
-  const sp = new URLSearchParams({
-    m: "log",
-    a: "pgc-force-publish",
-    who: query.who,
-    desc: query.desc,
-    params: query.params,
+    let stdout = "";
+    // 不把上游 stderr、參數或 exception 暴露給 model。
+    child.stdout?.on("data", (d: Buffer) => { stdout += d.toString("utf-8"); });
+    child.stderr?.resume();
+    child.on("error", () => resolve({ exitCode: -1, stdout: "", stderr: "" }));
+    child.on("close", code => resolve({ exitCode: code ?? -1, stdout, stderr: "" }));
   });
-  return `${baseUrl.replace(/\/$/, "")}/readyscript/capps/pc2-p/service/?${sp.toString()}`;
 }
-
-export function buildPushBackArgs(
-  appName: string,
-  opts: { force: boolean; reason?: string },
-): string[] {
-  // --http：客戶預覽機沒有 origin 的 SSH 通道（也不該有），走 R2+HTTP+站台 token。
-  // 少了它 CLI 會落到 SSH 分支要 ORIGIN_SSH_HOST，publish 直接失敗。
-  const args = ["preview", "push-back", "--http", "--name", appName];
-  if (opts.force) {
-    args.push("--force");
-    if (opts.reason) args.push("--reason", opts.reason);
-  }
+function command(config: LocalPublishConfig, action: string, id?: string, reason?: string): string[] {
+  const args = ["preview", "publication", action, "--name", config.appName];
+  if (action === "start") args.push("--scope", "pgc", "--lng", config.languages.join(","));
+  if (id) args.push("--publication-id", id);
+  if (reason) args.push("--force", "--reason", reason);
+  args.push("--json");
   return args;
 }
 
-export function buildPushDbArgs(
-  appName: string,
-  languages: string[],
-  opts: { force: boolean; reason?: string },
-): string[] {
-  // 注意：push-db 不加 --http——該指令本身已 HTTP 化（--host 是 no-op），CLI 沒有這個
-  // flag，帶上會被 click 以 "No such option" 拒絕。它同樣讀 .env 的 ORIGIN_HOSTNAME。
-  const args = ["preview", "push-db", "--name", appName, "--lng", languages.join(",")];
-  if (opts.force) {
-    args.push("--force");
-    if (opts.reason) args.push("--reason", opts.reason);
+/** 原子建立唯讀 mapping，不存 token／原因／原始確認文字；既有紀錄絕不覆蓋。 */
+async function mappingFile(config: LocalPublishConfig, mapping: Mapping): Promise<{ existing: boolean; value: Mapping }> {
+  const root = await realpath(config.cwd);
+  for (const dir of [join(root, "data"), join(root, "data/customer-publications")]) {
+    await mkdir(dir, { mode: 0o700 }).catch(e => { if (e.code !== "EEXIST") throw e; });
+    const stat = await lstat(dir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("unsafe mapping directory");
   }
-  return args;
-}
-
-export interface LocalPublishConfig {
-  /** 專案目錄（data/preview-meta.json 所在、CLI 執行處）。 */
-  cwd: string;
-  /** origin 站 base_url（PC2_SERVICE_HOST_ORIGINAL）。 */
-  originBaseUrl: string;
-  /** Bearer 站台 token（PC2_API_TOKEN）。 */
-  siteToken: string;
-  /** Fly app 名 → push-back / push-db 的 --name。 */
-  appName: string;
-  /** push-db 的語系清單（--lng 逗號串接）。 */
-  languages: string[];
-  /** 強制發布審計 who 欄位（PGC_CONFIRMATION_ID），缺省 "cli"。 */
-  confirmationId?: string;
-  /** 供測試替換 fetch。 */
-  fetch?: typeof globalThis.fetch;
+  const dir = join(root, "data/customer-publications");
+  const path = join(dir, `${mapping.confirmation_hash}.json`);
+  const temporary = join(dir, `.pending-${randomUUID()}`);
+  let existing = false;
+  try {
+    const file = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try { await file.writeFile(JSON.stringify(mapping)); await file.sync(); } finally { await file.close(); }
+    try { await link(temporary, path); } catch (e) { if (e.code === "EEXIST") existing = true; else throw e; }
+  } finally { await unlink(temporary).catch(e => { if (e.code !== "ENOENT") throw e; }); }
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o077)) throw new Error("unsafe mapping file");
+    const value = JSON.parse(await file.readFile("utf-8"));
+    if (!object(value) || value.schema !== 1 || !ID.test(value.publication_id) || !DIGEST.test(value.candidate_digest)
+      || value.confirmation_hash !== mapping.confirmation_hash || value.scope !== "pgc"
+      || value.app !== mapping.app || value.origin !== mapping.origin
+      || !sameLanguages(value.languages, mapping.languages)
+      || value.publication_id !== `pgc-${hash([mapping.confirmation_hash, value.candidate_digest])}`) throw new Error("invalid mapping");
+    const directory = await open(dir, constants.O_RDONLY);
+    try { await directory.sync(); } finally { await directory.close(); }
+    return { existing, value: value as Mapping };
+  } finally { await file.close(); }
 }
 
 export function createLocalPublishDeps(config: LocalPublishConfig): PublishLocalDeps {
-  const fetchImpl = config.fetch ?? globalThis.fetch;
-  const originVersionUrl = buildOriginVersionUrl(config.originBaseUrl);
-
-  async function fetchOriginVersion(): Promise<OriginSourceVersion> {
-    const resp = await fetchImpl(originVersionUrl, {
-      headers: { Authorization: `Bearer ${config.siteToken}` },
-    });
-    if (!resp.ok) throw new Error(`origin version HTTP ${resp.status}`);
-    const data = (await resp.json()) as Record<string, unknown>;
-    const source_lng = String(data.source_lng || "en");
-    const content_sha256 = String(data.content_sha256 || "");
-    if (!content_sha256) throw new Error("origin version missing content_sha256");
-    return {
-      schema: typeof data.schema === "string" ? data.schema : undefined,
-      source_lng,
-      content_sha256,
-    };
-  }
-
-  async function readRecordedOriginVersion(): Promise<RecordedOriginVersion | null> {
+  return { async publish(input) {
+    let id = input.publication_id;
     try {
-      const text = await readFile(`${config.cwd}/data/preview-meta.json`, "utf-8");
-      return parsePreviewMetaOriginVersion(text);
-    } catch {
-      return null;
-    }
-  }
-
-  async function writeForcePublishAudit(input: ForcePublishAuditInput): Promise<void> {
-    const url = buildForcePublishAuditUrl(config.originBaseUrl, {
-      who: config.confirmationId ?? "cli",
-      desc: input.reason,
-      params: JSON.stringify({
-        recorded: input.recorded
-          ? {
-              source_lng: input.recorded.source_lng,
-              content_sha256: input.recorded.content_sha256,
-            }
-          : null,
-        current: {
-          source_lng: input.current.source_lng,
-          content_sha256: input.current.content_sha256,
-        },
-      }),
-    });
-    const resp = await fetchImpl(url, {
-      headers: { Authorization: `Bearer ${config.siteToken}` },
-    });
-    if (!resp.ok) throw new Error(`force publish audit HTTP ${resp.status}`);
-  }
-
-  // args 已由 buildPushBackArgs / buildPushDbArgs 組妥（含 --force / --reason）；
-  // 這裡不再附加，否則會送出重複的 --force --reason X --force --reason X。
-  function runCli(args: string[]): Promise<CliRunResult> {
-    const full = args;
-    return new Promise((resolve) => {
-      let settled = false;
-      const done = (r: CliRunResult) => {
-        if (settled) return;
-        settled = true;
-        resolve(r);
-      };
-      const child = spawn("readyai-project", full, {
-        cwd: config.cwd,
-        env: { ...process.env, READYAI_SKIP_GLOBAL_SKILL_SYNC: "1" },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      let stdout = "";
-      let stderr = "";
-      child.stdout?.on("data", (d: Buffer) => { stdout += d.toString("utf-8"); });
-      child.stderr?.on("data", (d: Buffer) => { stderr += d.toString("utf-8"); });
-      child.on("error", (err) => done({ exitCode: -1, stdout, stderr: String(err) }));
-      child.on("close", (code) => done({ exitCode: code ?? -1, stdout, stderr }));
-    });
-  }
-
-  async function writeRecordedOriginVersion(version: RecordedOriginVersion): Promise<void> {
-    const metaPath = `${config.cwd}/data/preview-meta.json`;
-    // 讀現有 meta，合併更新 origin_source_version（保留其他 key 不動）
-    let meta: Record<string, unknown> = {};
-    try {
-      const text = await readFile(metaPath, "utf-8");
-      const parsed = JSON.parse(text);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        meta = parsed as Record<string, unknown>;
+      const origin = originIdentity(config.originBaseUrl);
+      if (!config.appName || !config.languages.length || new Set(config.languages).size !== config.languages.length
+        || !config.languages.every(l => /^[a-zA-Z0-9-]+$/.test(l))) return failure("invalid_config", "缺少正確的 app／語系設定", id);
+      const confirmation = input.confirmation_id ?? config.confirmationId;
+      if (!id && (!confirmation || confirmation === "cli")) return failure("confirmation_required", "請提供本次客戶明確確認的穩定 confirmation_id；重試沿用相同值。", id);
+      const dryArgs = command(config, "start");
+      dryArgs.splice(dryArgs.length - 1, 0, "--dry-run");
+      const prepared = decode(await runCli(config, dryArgs));
+      if (!prepared.ok) return { ...failure("candidate_unavailable", prepared.error.message, id), details: {
+        code: "candidate_unavailable", error_class: prepared.error.error_class, retryable: prepared.error.retryable, hint: prepared.error.hint,
+      } };
+      // dry-run 的必要契約只有 candidate_digest；正式 start/status 再核對完整 target。
+      const candidate = prepared.data.candidate_digest;
+      if (!DIGEST.test(candidate)) return failure("invalid_cli_output", "CLI 未提供有效候選指紋", id);
+      let exists = !!id;
+      if (!id) {
+        const confirmationHash = hash(["pgc-confirmation-v1", config.appName, origin, confirmation]);
+        id = `pgc-${hash([confirmationHash, candidate])}`;
+        const stored = await mappingFile(config, {
+          schema: 1, confirmation_hash: confirmationHash, publication_id: id, candidate_digest: candidate,
+          scope: "pgc", app: config.appName, origin, languages: [...config.languages].sort(),
+        });
+        id = stored.value.publication_id;
+        if (stored.value.candidate_digest !== candidate) return failure("candidate_changed", "同一確認的候選內容已變更，請重新取得客戶確認並使用新的 confirmation_id。", id);
+        exists = stored.existing;
       }
+      if (exists) {
+        const status = decode(await runCli(config, command(config, "status", id)));
+        if (!status.ok) {
+          // 只有 CLI 明確確認 session 不存在，且有本機確認 mapping，才可同 ID start。
+          if (!(input.publication_id === undefined && status.error.details?.code === "session_not_found")) {
+            return fromEnvelope(status, config, id, candidate);
+          }
+        } else {
+          validateData(status.data, config, id, candidate);
+          return fromEnvelope(decode(await runCli(config, command(config, "resume", id, input.reason))), config, id, candidate);
+        }
+      }
+      return fromEnvelope(decode(await runCli(config, command(config, "start", id, input.reason))), config, id, candidate);
     } catch {
-      // 檔案不存在或格式異常 → 從頭建立
+      return failure("invalid_cli_output", "無法確認 publication 狀態或本機確認紀錄；請保留 ID 並查核後恢復，不可盲目重新發布。", id);
     }
-    meta.origin_source_version = {
-      source_lng: version.source_lng,
-      content_sha256: version.content_sha256,
-      recorded_at: version.recorded_at ?? new Date().toISOString(),
-    };
-    // 原子寫入：先寫 tmp，再 rename 取代
-    const tmpPath = `${metaPath}.tmp`;
-    await writeFile(tmpPath, JSON.stringify(meta, null, 2), "utf-8");
-    await rename(tmpPath, metaPath);
-  }
+  } };
+}
 
-  return {
-    fetchOriginVersion,
-    readRecordedOriginVersion,
-    writeRecordedOriginVersion,
-    writeForcePublishAudit,
-    pushBack: (opts) =>
-      runCli(buildPushBackArgs(config.appName, opts)),
-    pushDb: (opts) =>
-      runCli(buildPushDbArgs(config.appName, config.languages, opts)),
-  };
+export async function runPublishFlow(deps: PublishLocalDeps, reasonRaw: unknown, input: Record<string, unknown> = {}): Promise<PublishResult> {
+  if (Object.keys(input).some(k => !["force_reason", "confirmation_id", "publication_id"].includes(k))
+    || (reasonRaw !== undefined && typeof reasonRaw !== "string")) return failure("invalid_input", "發布參數無效");
+  const reason = (reasonRaw as string | undefined)?.trim();
+  if (reason && Buffer.byteLength(reason, "utf-8") > 512) return failure("invalid_input", "force_reason 超過 512 bytes 上限");
+  for (const key of ["confirmation_id", "publication_id"]) {
+    if (input[key] !== undefined && (typeof input[key] !== "string" || !(input[key] as string).trim()
+      || Buffer.byteLength(input[key] as string, "utf-8") > 512)) return failure("invalid_input", `${key} 無效`);
+  }
+  const publication_id = (input.publication_id as string | undefined)?.trim();
+  const confirmation_id = (input.confirmation_id as string | undefined)?.trim();
+  if ((publication_id && !ID.test(publication_id)) || confirmation_id === "cli") return failure("invalid_input", "publication／confirmation ID 無效");
+  return deps.publish({ reason, confirmation_id, publication_id });
+}
+
+export function buildCustomerPublishTools(deps: PublishLocalDeps): ToolDefinition[] {
+  return [defineTool({
+    name: "publish_confirmed", label: "觸發發布",
+    description: "客戶明確確認後，以單一 PGC publication session 發布圖片附件與指定語系 DB。提供穩定 confirmation_id，重試不得更換；恢復可提供 publication_id。drift 與強制發布審計由 CLI 主持。",
+    promptGuidelines: ["status=triggered 或 content_verified=false 時，禁止宣稱已上線、發布成功或驗證完成。相同確認的候選變更需重新取得確認；409 不一定是 drift，不可自行加入 force。"],
+    parameters: Type.Object({
+      confirmation_id: Type.Optional(Type.String({ description: "本次客戶明確確認的唯一身分；重試沿用，候選變更需新的確認。PGC_CONFIRMATION_ID 缺省 cli 時必填。" })),
+      publication_id: Type.Optional(Type.String({ description: "既有 publication ID；先查核 status 再恢復，不建立新 lease。" })),
+      force_reason: Type.Optional(Type.String({ description: "僅在 CLI 回報來源語系資料庫指紋 drift 時，由客戶提供的強制發布原因；CLI 寫入審計。不可用來繞過 schema 或 lease 衝突。" })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      const result = await runPublishFlow(deps, params.force_reason, params);
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+    },
+  }) as ToolDefinition];
 }

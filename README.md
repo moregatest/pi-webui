@@ -447,6 +447,16 @@ readyai-webui --profile customer --tunnel \
   --password "$(cat .secret)"                # customer interface, public URL
 ```
 
+### 客戶確認發布（PGC publication）
+
+`publish_confirmed` 只使用 readyAI 的 `preview publication` session，固定 `--scope pgc`，發布圖片／附件與指定語系 DB；客戶不能選 staff scope，也不會回退至 `push-back`／`push-db`。需搭配支援 publication、候選 dry-run 與 JSON 契約的 readyAI CLI（Issue 144 companion；CLI 契約為 readyAI `d801eed`，實作需成套整合）；不支援時直接回報錯誤。
+
+- 每次明確確認使用唯一 `confirmation_id`（或設定 `PGC_CONFIRMATION_ID`）；重試必須沿用。缺省 `cli` 不算唯一確認。工具先以 `start --dry-run --json` 取得 `candidate_digest`，再把確認／候選／publication ID 對應以 mode 0600 保存於專案 `data/customer-publications/`。同一確認的候選變更會拒絕，需重新取得客戶確認。
+- 新建時使用 `start --name APP --scope pgc --lng CSV --publication-id ID --json`。重試或提供 `publication_id` 時先 `status` 核對 app、origin、scope、languages 與候選指紋，再 `resume --name APP --publication-id ID --json`；只有已有確認對應且 status 明確回 `session_not_found` 才可同 ID start。其他錯誤保留 ID，不盲目新建 lease。
+- CLI stdout 最後一個非空行必須是 JSON envelope：`{ok:true,data:{...}}`（兼容現行 adapter 的 `result`）或 `{ok:false,error:{...}}`，並核對程序退出碼。回傳 publication ID、stage 與錯誤分類，部分套用仍可恢復。
+- CLI session 統一主持 drift guard、force audit 與 baseline。工具只把客戶提供的 `force_reason` 轉成一次 `--force --reason`；schema／lease 409 不等同 drift，不自動 force。工具不自行寫 audit 或回寫 `preview-meta.json`。
+- 工具尚無完整公開頁面／瀏覽器證據，接受命令仍回 `status=triggered`、`content_verified=false`，不可據此宣稱已上線；檔案數、HTTP 200 與資料庫指紋變化也不是發布完成證據。
+
 ### `.pi/profiles/<name>.toml` schema
 
 ```toml
