@@ -324,6 +324,9 @@ describe('customer publication CLI boundary', () => {
         [{ code: 'lease_conflict', http_status: 409 }, undefined],
         [{ code: 'schema_conflict', http_status: 409 }, undefined],
         [{ drift_gate: { result: 'blocked' } }, 'origin_drift'],
+        [{ code: 'source_drift' }, 'origin_drift'],
+        [{ code: 'schema_diff' }, undefined],
+        [{ code: 'lease_conflict' }, undefined],
       ]) {
         respond({ ok: false, error: { message: 'review required', error_class: 'needs_review', retryable: false,
           hint: 'Inspect publication status', details: { ...evidence, publication_id: 'PUBLICATION_ID', stage: 'db_partial', ...details } } }, 2);

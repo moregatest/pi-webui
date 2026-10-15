@@ -133,7 +133,8 @@ function fromEnvelope(envelope: Record<string, any>, config: LocalPublishConfig,
     ok: false, publication_id: id, ...(data ? { stage: data.stage } : {}), candidate_digest: digest,
     ...(data ? { scope: data.scope, app: data.app, origin: originIdentity(data.origin), languages: data.languages } : {}),
     content_verified: false, error: error.message,
-    ...(object(details.drift_gate) && details.drift_gate.result === "blocked" ? { status: "origin_drift" as const } : {}),
+    ...(details.code === "source_drift" || (object(details.drift_gate) && details.drift_gate.result === "blocked")
+      ? { status: "origin_drift" as const } : {}),
     details: {
       error_class: error.error_class, retryable: error.retryable, hint: error.hint,
       ...(typeof details.code === "string" ? { code: details.code } : {}),
