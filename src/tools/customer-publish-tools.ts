@@ -156,7 +156,7 @@ function runCli(config: LocalPublishConfig, args: string[]): Promise<CliRunResul
 }
 function command(config: LocalPublishConfig, action: string, id?: string, reason?: string, expectedCandidateDigest?: string): string[] {
   const args = ["preview", "publication", action, "--name", config.appName, "--expected-origin", originIdentity(config.originBaseUrl)];
-  if (action === "start") args.push("--scope", "pgc", "--lng", config.languages.join(","));
+  if (action === "start" || action === "candidate") args.push("--scope", "pgc", "--lng", config.languages.join(","));
   if (id) args.push("--publication-id", id);
   if (id && (action === "start" || action === "resume")) {
     if (!isDigest(expectedCandidateDigest)) throw new Error("missing expected candidate digest");
@@ -215,14 +215,13 @@ export function createLocalPublishDeps(config: LocalPublishConfig, io: Publicati
         || !config.languages.every(l => /^[a-zA-Z0-9-]+$/.test(l))) return failure("invalid_config", "缺少正確的 app／語系設定", id);
       const confirmation = input.confirmation_id ?? config.confirmationId;
       if (!id && (!confirmation || confirmation === "cli")) return failure("confirmation_required", "請提供本次客戶明確確認的穩定 confirmation_id；重試沿用相同值。", id);
-      const dryArgs = command(config, "start");
-      dryArgs.splice(dryArgs.length - 1, 0, "--dry-run");
-      const prepared = decode(await runCli(config, dryArgs));
+      // candidate 只讀本機候選內容；不能用帶 origin equality guard 的 dry-run 阻斷 own-write 後的恢復。
+      const prepared = decode(await runCli(config, command(config, "candidate")));
       if (!prepared.ok) return { ...failure("candidate_unavailable", prepared.error.message, id), details: {
         code: typeof prepared.error.details?.code === "string" ? prepared.error.details.code : "candidate_unavailable",
         error_class: prepared.error.error_class, retryable: prepared.error.retryable, hint: prepared.error.hint,
       } };
-      // dry-run 就必須核對完整 target，不能等到正式發布後才發現 env 指向別站。
+      // candidate 就必須核對完整 target；內容指紋不代表已通過正式發布的 preflight。
       const candidate = validateCandidate(prepared.data, config).candidate_digest;
       let exists = !!id;
       if (!id) {
