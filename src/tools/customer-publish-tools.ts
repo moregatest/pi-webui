@@ -244,8 +244,15 @@ export function createLocalPublishDeps(config: LocalPublishConfig, io: Publicati
             return fromEnvelope(status, config, id, candidate);
           }
         } else {
-          validateData(status.data, config, id, candidate);
-          return fromEnvelope(decode(await runCli(config, command(config, "resume", id, input.reason, candidate))), config, id, candidate);
+          const current = validateData(status.data, config, id, candidate);
+          const resumed = fromEnvelope(decode(await runCli(config, command(config, "resume", id, input.reason, candidate))), config, id, candidate);
+          if (current.stage === "prepared" && !resumed.ok
+            && resumed.details?.error_class === "reconcile" && resumed.details?.code === "preparation_incomplete") {
+            // One exact-ID preparation repair. CLI rechecks all phases pending,
+            // immutable bytes, and absence of audit/cache mutation intent.
+            return fromEnvelope(decode(await runCli(config, command(config, "start", id, input.reason, candidate))), config, id, candidate);
+          }
+          return resumed;
         }
       }
       return fromEnvelope(decode(await runCli(config, command(config, "start", id, input.reason, candidate))), config, id, candidate);

@@ -57,7 +57,7 @@ if ((action === 'start' && !args.includes('--dry-run')) || action === 'resume') 
   }
   fs.appendFileSync('mutation.jsonl', JSON.stringify({ action, id }) + '\\n');
 }
-const selected = action === 'candidate' || args.includes('--dry-run') ? response.candidate : action === 'status' ? (response.status || response) : response;
+const selected = action === 'candidate' || args.includes('--dry-run') ? response.candidate : action === 'status' ? (response.status || response) : action === 'start' ? (response.start || response) : response;
 const out = selected.stdout.replaceAll('PUBLICATION_ID', id);
 process.stdout.write(out);
 process.stderr.write(response.stderr || '');
@@ -70,13 +70,14 @@ process.exitCode = selected.exitCode;
     fetch: async () => { throw new Error('Tool must not fetch/audit origin'); }, ...extra,
   };
   const tool = (io) => buildCustomerPublishTools(createLocalPublishDeps(config, io))[0];
-  const respond = (body, exitCode = 0, prefix = 'human progress\n', { digest = 'sha256:' + 'ab'.repeat(32), status, changeAfterPreflight, candidateData, resolvedOrigins, sourceDriftOnDryRun } = {}) => {
+  const respond = (body, exitCode = 0, prefix = 'human progress\n', { digest = 'sha256:' + 'ab'.repeat(32), status, start, changeAfterPreflight, candidateData, resolvedOrigins, sourceDriftOnDryRun } = {}) => {
     fs.writeFileSync(path.join(cwd, 'response.json'), JSON.stringify({
       stdout: `${prefix}${typeof body === 'string' ? body : JSON.stringify(body)}\n\n`, exitCode,
       stderr: 'upstream private output must not escape',
       changeAfterPreflight, resolvedOrigins, sourceDriftOnDryRun,
       candidate: { stdout: JSON.stringify({ok:true,data:candidateData ?? {...evidence,candidate_digest:digest}}) + '\n', exitCode: 0 },
       status: status ? { stdout: JSON.stringify(status) + '\n', exitCode: status.ok ? 0 : 3 } : undefined,
+      start: start ? { stdout: JSON.stringify(start) + '\n', exitCode: start.ok ? 0 : 3 } : undefined,
     }));
   };
   const calls = () => fs.existsSync(path.join(cwd, 'argv.jsonl'))
@@ -117,6 +118,32 @@ function tracedFileIO(cwd, events, fail = () => false) {
 }
 
 describe('customer publication CLI boundary', () => {
+  it('repairs only an explicitly incomplete pre-begin session with one guarded same-ID start', async () => {
+    for (const [stage, code, errorClass, repair] of [
+      ['prepared', 'preparation_incomplete', 'reconcile', true],
+      ['awaiting_raw_verification', 'preparation_incomplete', 'reconcile', false],
+      ['prepared', 'audit_unknown', 'reconcile', false],
+      ['prepared', 'transport_unknown', 'reconcile', false],
+      ['prepared', 'preparation_incomplete', 'fatal', false],
+    ]) {
+      await fixture(async ({ tool, respond, calls }) => {
+        respond(success());
+        const initial = await execute(tool());
+        respond({ok:false,error:{message:'Preparation incomplete', error_class:errorClass, retryable:false,
+          hint:'Reconcile the same ID',details:{code}}}, errorClass === 'fatal' ? 1 : 3, '', {
+          status:success({stage}), start:success(),
+        });
+        const result = await execute(tool());
+        assert.equal(result.ok, repair);
+        assert.equal(result.publication_id, initial.publication_id);
+        assert.equal(calls().filter(args => args[2] === 'start').length, repair ? 2 : 1);
+        if (repair) {
+          const starts = calls().filter(args => args[2] === 'start');
+          assert.deepEqual(starts[1], starts[0], 'Repair retains exact ID, digest, scope, languages and origin');
+        }
+      });
+    }
+  });
   it('syncs every directory parent then mapping bytes and entry before start', async () => {
     await fixture(async ({ tool, respond, config }) => {
       respond(success());
