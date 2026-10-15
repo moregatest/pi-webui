@@ -146,10 +146,14 @@ function runCli(config: LocalPublishConfig, args: string[]): Promise<CliRunResul
     child.on("close", code => resolve({ exitCode: code ?? -1, stdout, stderr: "" }));
   });
 }
-function command(config: LocalPublishConfig, action: string, id?: string, reason?: string): string[] {
+function command(config: LocalPublishConfig, action: string, id?: string, reason?: string, expectedCandidateDigest?: string): string[] {
   const args = ["preview", "publication", action, "--name", config.appName];
   if (action === "start") args.push("--scope", "pgc", "--lng", config.languages.join(","));
   if (id) args.push("--publication-id", id);
+  if (id && (action === "start" || action === "resume")) {
+    if (!DIGEST.test(expectedCandidateDigest ?? "")) throw new Error("missing expected candidate digest");
+    args.push("--expected-candidate-digest", expectedCandidateDigest);
+  }
   if (reason) args.push("--force", "--reason", reason);
   args.push("--json");
   return args;
@@ -227,10 +231,10 @@ export function createLocalPublishDeps(config: LocalPublishConfig): PublishLocal
           }
         } else {
           validateData(status.data, config, id, candidate);
-          return fromEnvelope(decode(await runCli(config, command(config, "resume", id, input.reason))), config, id, candidate);
+          return fromEnvelope(decode(await runCli(config, command(config, "resume", id, input.reason, candidate))), config, id, candidate);
         }
       }
-      return fromEnvelope(decode(await runCli(config, command(config, "start", id, input.reason))), config, id, candidate);
+      return fromEnvelope(decode(await runCli(config, command(config, "start", id, input.reason, candidate))), config, id, candidate);
     } catch {
       return failure("invalid_cli_output", "無法確認 publication 狀態或本機確認紀錄；請保留 ID 並查核後恢復，不可盲目重新發布。", id);
     }

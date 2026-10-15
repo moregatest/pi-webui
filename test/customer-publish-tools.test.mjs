@@ -33,6 +33,18 @@ if (action === 'start' && !args.includes('--dry-run')) {
   const records = fs.readdirSync(stateDir).filter(name => name.endsWith('.json')).map(name => JSON.parse(fs.readFileSync(stateDir + '/' + name, 'utf8')));
   if (!records.some(record => record.publication_id === id)) throw new Error('Mapping must be durable before start');
 }
+if (args.includes('--dry-run') && response.changeAfterPreflight) {
+  fs.writeFileSync('candidate-digest.txt', response.changeAfterPreflight);
+}
+if ((action === 'start' && !args.includes('--dry-run')) || action === 'resume') {
+  const expectedIndex = args.indexOf('--expected-candidate-digest');
+  const current = fs.existsSync('candidate-digest.txt') ? fs.readFileSync('candidate-digest.txt', 'utf8') : undefined;
+  if (expectedIndex >= 0 && current && args[expectedIndex + 1] !== current) {
+    process.stdout.write(JSON.stringify({ ok:false, error:{ message:'Candidate changed before apply', error_class:'needs_review', retryable:false, hint:'Obtain new confirmation', details:{code:'candidate_changed'} } }) + '\\n');
+    process.exit(2);
+  }
+  fs.appendFileSync('mutation.jsonl', JSON.stringify({ action, id }) + '\\n');
+}
 const selected = args.includes('--dry-run') ? response.dryRun : action === 'status' ? (response.status || response) : response;
 const out = selected.stdout.replaceAll('PUBLICATION_ID', id);
 process.stdout.write(out);
@@ -46,10 +58,11 @@ process.exitCode = selected.exitCode;
     fetch: async () => { throw new Error('Tool must not fetch/audit origin'); }, ...extra,
   };
   const tool = () => buildCustomerPublishTools(createLocalPublishDeps(config))[0];
-  const respond = (body, exitCode = 0, prefix = 'human progress\n', { digest = 'sha256:' + 'ab'.repeat(32), status } = {}) => {
+  const respond = (body, exitCode = 0, prefix = 'human progress\n', { digest = 'sha256:' + 'ab'.repeat(32), status, changeAfterPreflight } = {}) => {
     fs.writeFileSync(path.join(cwd, 'response.json'), JSON.stringify({
       stdout: `${prefix}${typeof body === 'string' ? body : JSON.stringify(body)}\n\n`, exitCode,
       stderr: 'upstream private output must not escape',
+      changeAfterPreflight,
       dryRun: { stdout: JSON.stringify({ok:true,data:{candidate_digest:digest}}) + '\n', exitCode: 0 },
       status: status ? { stdout: JSON.stringify(status) + '\n', exitCode: status.ok ? 0 : 3 } : undefined,
     }));
@@ -86,7 +99,8 @@ describe('customer publication CLI boundary', () => {
       assert.deepEqual(calls().map(args => args.includes('--dry-run') ? 'dry-run' : args[2]), ['dry-run', 'start', 'dry-run', 'status', 'resume']);
       assert.deepEqual(calls()[1], [
         'preview', 'publication', 'start', '--name', 'my-preview', '--scope', 'pgc',
-        '--lng', 'en,zh-TW', '--publication-id', first.publication_id, '--json',
+        '--lng', 'en,zh-TW', '--publication-id', first.publication_id,
+        '--expected-candidate-digest', 'sha256:' + 'ab'.repeat(32), '--json',
       ]);
       assert.equal(first.changed_records, 'unknown');
       const stateDir = path.join(config.cwd, 'data/customer-publications');
@@ -106,7 +120,8 @@ describe('customer publication CLI boundary', () => {
       assert.equal(result.publication_id, publicationId);
       assert.equal(result.stage, 'db_partial');
       assert.deepEqual(calls().filter(args => !args.includes('--dry-run')), ['status', 'resume'].map(action => [
-        'preview', 'publication', action, '--name', 'my-preview', '--publication-id', publicationId, '--json',
+        'preview', 'publication', action, '--name', 'my-preview', '--publication-id', publicationId,
+        ...(action === 'resume' ? ['--expected-candidate-digest', 'sha256:' + 'ab'.repeat(32)] : []), '--json',
       ]));
     }, { confirmationId: 'cli' });
   });
@@ -210,6 +225,25 @@ describe('customer publication CLI boundary', () => {
       assert.equal(retry.details.code, 'candidate_changed');
       assert.deepEqual(calls().map(args => args.includes('--dry-run') ? 'dry-run' : args[2]), ['dry-run', 'start', 'dry-run']);
     });
+  });
+
+  it('candidate changes after preflight are rejected by start/resume before CLI writes', async () => {
+    for (const publication_id of [undefined, publicationId]) {
+      await fixture(async ({ tool, respond, calls, config }) => {
+        respond(success(), 0, '', { status: success(), changeAfterPreflight: 'sha256:' + 'cd'.repeat(32) });
+        const result = await execute(tool(), publication_id ? { publication_id } : {});
+        assert.equal(result.ok, false);
+        assert.equal(result.details.code, 'candidate_changed');
+        assert.equal(result.details.error_class, 'needs_review');
+        assert.equal(result.content_verified, false);
+        assert.equal(result.status, undefined, 'Candidate change is not origin drift');
+        assert.equal(fs.existsSync(path.join(config.cwd, 'mutation.jsonl')), false);
+        const mutating = calls().filter(args => (args[2] === 'start' && !args.includes('--dry-run')) || args[2] === 'resume');
+        assert.equal(mutating.length, 1, 'No automatic retry, start or force after rejection');
+        assert.equal(mutating[0][mutating[0].indexOf('--expected-candidate-digest') + 1], 'sha256:' + 'ab'.repeat(32));
+        assert.equal(mutating[0].includes('--force'), false);
+      });
+    }
   });
 
   it('does not resume when status cannot establish exact session identity', async () => {
