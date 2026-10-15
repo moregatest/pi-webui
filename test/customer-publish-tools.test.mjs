@@ -539,3 +539,44 @@ describe('customer publication CLI boundary', () => {
     }, { confirmationId: '' });
   });
 });
+
+
+describe('verified publication export bridge', () => {
+  it('uses status then read-only export with the actual callback call ID and never resumes verified sessions', async () => {
+    await fixture(async ({ tool, respond, calls, config }) => {
+      respond(success());
+      const first = await execute(tool());
+      const mappingDir = path.join(config.cwd, 'data/customer-publications');
+      const before = fs.readdirSync(mappingDir).map(n => [n, fs.readFileSync(path.join(mappingDir, n), 'utf8')]);
+      respond({ok:true,result:{content_verified:true}}, 0, '', {status: success({stage:'verified',content_verified:true})});
+      const result = await execute(tool());
+      assert.equal(result.content_verified, false, 'incomplete producer output cannot promote');
+      assert.deepEqual(calls().slice(-3).map(a => a[2]), ['candidate','status','export-evidence']);
+      const args = calls().at(-1);
+      assert.equal(args[args.indexOf('--tool-call-id') + 1], 'not-a-stable-confirmation');
+      assert.equal(args[args.indexOf('--confirmation-id') + 1], config.confirmationId);
+      assert.equal(args[args.indexOf('--publication-id') + 1], first.publication_id);
+      assert.deepEqual(fs.readdirSync(mappingDir).map(n => [n, fs.readFileSync(path.join(mappingDir, n), 'utf8')]), before);
+    });
+  });
+  it('cannot export a verified explicit ID without its existing matching confirmation mapping', async () => {
+    await fixture(async ({ tool, respond, calls, config }) => {
+      respond(success(), 0, '', {status:success({stage:'verified',content_verified:true})});
+      const result = await execute(tool(), {publication_id: publicationId});
+      assert.equal(result.content_verified, false);
+      assert.equal(result.ok, false);
+      assert.equal(calls().some(a => ['resume','export-evidence','start'].includes(a[2])), false);
+      assert.equal(fs.existsSync(path.join(config.cwd, 'data/customer-publications')), false);
+    });
+  });
+});
+
+
+it('rejects oversized CLI output instead of accepting its trailing success envelope', async () => {
+  await fixture(async ({ tool, respond }) => {
+    respond(success(), 0, 'x'.repeat(17*1024*1024) + '\n');
+    const result = await execute(tool());
+    assert.equal(result.ok, false);
+    assert.equal(result.content_verified, false);
+  });
+});
