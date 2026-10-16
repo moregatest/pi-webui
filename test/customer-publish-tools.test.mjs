@@ -1,574 +1,582 @@
-// test/customer-publish-tools.test.mjs
-// PGC publish_confirmed 本地流程：origin 版本比對 → push-back → push-db，
-// drift 時需客戶原因（force）。對應 Phase 4 凍結契約：
-//   baseline 落點 data/preview-meta.json 的 origin_source_version；
-//   輸出對齊 {ok:true,status:"succeeded",...} / {ok:false,status:"origin_drift",recorded_sha,current_sha}。
-import { describe, it } from "node:test";
-import assert from "node:assert";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import {
-  buildCustomerPublishTools,
-  runPublishFlow,
-  sourceVersionMatches,
-  parsePreviewMetaOriginVersion,
-  createLocalPublishDeps,
-  buildOriginVersionUrl,
-  buildForcePublishAuditUrl,
-  buildPushBackArgs,
-  buildPushDbArgs,
-} from "../dist/tools/customer-publish-tools.js";
+// 以本機 CLI fixture 執行真 subprocess；不連 origin、不改任何站台。
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { createHash } from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
+import { buildCustomerPublishTools, createLocalPublishDeps } from '../dist/tools/customer-publish-tools.js';
 
-const SHA = "sha256:" + "ab".repeat(32);
-const OTHER_SHA = "sha256:" + "cd".repeat(32);
-const ORIGIN = { schema: "pgc-source-version-v1", source_lng: "en", content_sha256: SHA };
-const RECORD = { source_lng: "en", content_sha256: SHA, recorded_at: "2026-08-18T10:00:00+08:00" };
+const origin = 'https://demo.example.com';
+const publicationId = 'pgc-confirmed-1';
+const evidence = {
+  publication_id: publicationId, stage: 'awaiting_browser', content_verified: false,
+  scope: 'pgc', app: 'my-preview', origin, languages: ['en', 'zh-TW'], candidate_digest: 'sha256:' + 'ab'.repeat(32),
+};
 
-function makeDeps(overrides = {}) {
-  const calls = { fetch: 0, pushBack: [], pushDb: [], writeAudit: [], writeRecorded: [] };
-  const deps = {
-    fetchOriginVersion: async () => {
-      calls.fetch++;
-      return ORIGIN;
-    },
-    readRecordedOriginVersion: async () => RECORD,
-    writeRecordedOriginVersion: async (version) => {
-      calls.writeRecorded.push(version);
-    },
-    writeForcePublishAudit: async (input) => {
-      calls.writeAudit.push(input);
-    },
-    pushBack: async (opts) => {
-      calls.pushBack.push(opts);
-      return { exitCode: 0, stdout: "", stderr: "" };
-    },
-    pushDb: async (opts) => {
-      calls.pushDb.push(opts);
-      return { exitCode: 0, stdout: "", stderr: "" };
-    },
-    ...overrides,
+async function fixture(run, { confirmationId = 'customer-confirmation-42', initialData = true, ...extra } = {}) {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'customer-publication-'));
+  const oldPath = process.env.PATH;
+  fs.mkdirSync(path.join(cwd, 'bin'));
+  if (initialData) fs.mkdirSync(path.join(cwd, 'data'));
+  const meta = JSON.stringify({ keep: true, origin_source_version: { source_lng: 'en', content_sha256: 'before' } });
+  if (initialData) fs.writeFileSync(path.join(cwd, 'data/preview-meta.json'), meta);
+  const executable = path.join(cwd, 'bin/readyai-project');
+  fs.writeFileSync(executable, `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync('argv.jsonl', JSON.stringify(args) + '\\n');
+const response = JSON.parse(fs.readFileSync('response.json', 'utf8'));
+const id = args[args.indexOf('--publication-id') + 1];
+const action = args[2];
+const operation = action;
+const expectedOriginIndex = args.indexOf('--expected-origin');
+if (expectedOriginIndex >= 0 && response.resolvedOrigins?.[operation] && response.resolvedOrigins[operation] !== args[expectedOriginIndex + 1]) {
+  process.stdout.write(JSON.stringify({ok:false,error:{message:'Origin mismatch',error_class:'fatal',retryable:false,hint:'Check target configuration',details:{code:'origin_mismatch'}}}) + '\\n');
+  process.exit(1);
+}
+if (action !== 'candidate') fs.appendFileSync('credential.jsonl', JSON.stringify({operation}) + '\\n');
+if (response.sourceDriftOnDryRun && action === 'start' && args.includes('--dry-run')) {
+  process.stdout.write(JSON.stringify({ok:false,error:{message:'Own DB phase changed origin',error_class:'needs_review',retryable:false,hint:'Use session resume',details:{code:'source_drift'}}}) + '\\n');
+  process.exit(2);
+}
+if (action === 'start' && !args.includes('--dry-run')) {
+  const stateDir = 'data/customer-publications';
+  const records = fs.readdirSync(stateDir).filter(name => name.endsWith('.json')).map(name => JSON.parse(fs.readFileSync(stateDir + '/' + name, 'utf8')));
+  if (!records.some(record => record.publication_id === id)) throw new Error('Mapping must be durable before start');
+}
+if ((action === 'candidate' || args.includes('--dry-run')) && response.changeAfterPreflight) {
+  fs.writeFileSync('candidate-digest.txt', response.changeAfterPreflight);
+}
+if ((action === 'start' && !args.includes('--dry-run')) || action === 'resume') {
+  const expectedIndex = args.indexOf('--expected-candidate-digest');
+  const current = fs.existsSync('candidate-digest.txt') ? fs.readFileSync('candidate-digest.txt', 'utf8') : undefined;
+  if (expectedIndex >= 0 && current && args[expectedIndex + 1] !== current) {
+    process.stdout.write(JSON.stringify({ ok:false, error:{ message:'Candidate changed before apply', error_class:'needs_review', retryable:false, hint:'Obtain new confirmation', details:{code:'candidate_changed'} } }) + '\\n');
+    process.exit(2);
+  }
+  fs.appendFileSync('mutation.jsonl', JSON.stringify({ action, id }) + '\\n');
+}
+const selected = action === 'candidate' || args.includes('--dry-run') ? response.candidate : action === 'status' ? (response.status || response) : action === 'start' ? (response.start || response) : response;
+const out = selected.stdout.replaceAll('PUBLICATION_ID', id);
+process.stdout.write(out);
+process.stderr.write(response.stderr || '');
+process.exitCode = selected.exitCode;
+`, { mode: 0o700 });
+  process.env.PATH = `${path.join(cwd, 'bin')}${path.delimiter}${oldPath}`;
+  const config = {
+    cwd, originBaseUrl: origin + '/', siteToken: 'never-send-me', appName: 'my-preview',
+    languages: ['en', 'zh-TW'], confirmationId,
+    fetch: async () => { throw new Error('Tool must not fetch/audit origin'); }, ...extra,
   };
-  return { deps, calls };
+  const tool = (io) => buildCustomerPublishTools(createLocalPublishDeps(config, io))[0];
+  const respond = (body, exitCode = 0, prefix = 'human progress\n', { digest = 'sha256:' + 'ab'.repeat(32), status, start, changeAfterPreflight, candidateData, resolvedOrigins, sourceDriftOnDryRun } = {}) => {
+    fs.writeFileSync(path.join(cwd, 'response.json'), JSON.stringify({
+      stdout: `${prefix}${typeof body === 'string' ? body : JSON.stringify(body)}\n\n`, exitCode,
+      stderr: 'upstream private output must not escape',
+      changeAfterPreflight, resolvedOrigins, sourceDriftOnDryRun,
+      candidate: { stdout: JSON.stringify({ok:true,data:candidateData ?? {...evidence,candidate_digest:digest}}) + '\n', exitCode: 0 },
+      status: status ? { stdout: JSON.stringify(status) + '\n', exitCode: status.ok ? 0 : 3 } : undefined,
+      start: start ? { stdout: JSON.stringify(start) + '\n', exitCode: start.ok ? 0 : 3 } : undefined,
+    }));
+  };
+  const calls = () => fs.existsSync(path.join(cwd, 'argv.jsonl'))
+    ? fs.readFileSync(path.join(cwd, 'argv.jsonl'), 'utf8').trim().split('\n').map(JSON.parse) : [];
+  try {
+    await run({ tool, respond, calls, config });
+    if (initialData) assert.equal(fs.readFileSync(path.join(cwd, 'data/preview-meta.json'), 'utf8'), meta, 'Tool must preserve drift baseline');
+    else assert.equal(fs.existsSync(path.join(cwd, 'data/preview-meta.json')), false);
+  } finally {
+    if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+}
+const execute = async (tool, params = {}) => {
+  const result = await tool.execute('not-a-stable-confirmation', params, undefined, undefined, {});
+  assert.deepEqual(JSON.parse(result.content[0].text), result.details);
+  return result.details;
+};
+const success = (overrides = {}) => ({ ok: true, data: { ...evidence, publication_id: 'PUBLICATION_ID', ...overrides } });
+
+// 真實 FileHandle 的 open 邊界：記錄 sync，並可在特定持久化階段故障。
+function tracedFileIO(cwd, events, fail = () => false) {
+  return { async open(filePath, ...args) {
+    const handle = await fs.promises.open(filePath, ...args);
+    const relative = path.relative(fs.realpathSync(cwd), filePath) || '.';
+    const label = path.basename(relative).startsWith('.pending-') ? 'mapping_file' : relative;
+    return new Proxy(handle, { get(target, key) {
+      if (key === 'sync') return async () => {
+        events.push(label);
+        assert.equal(fs.existsSync(path.join(cwd, 'mutation.jsonl')), false, 'Entire durability chain precedes start');
+        if (fail(label)) throw new Error('Injected fsync failure');
+        await target.sync();
+      };
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  } };
 }
 
-describe("runPublishFlow（核心決策邏輯）", () => {
-  it("相符：觸發 push-back → push-db（無 force），回 succeeded，且回寫 baseline", async () => {
-    const { deps, calls } = makeDeps();
-    const result = await runPublishFlow(deps, undefined);
-    assert.strictEqual(result.ok, true);
-    assert.strictEqual(result.status, "succeeded");
-    assert.strictEqual(result.forced, false);
-    assert.strictEqual(result.source_lng, "en");
-    assert.strictEqual(result.content_sha256, SHA);
-    assert.strictEqual(calls.writeAudit.length, 0);
-    assert.deepStrictEqual(calls.pushBack, [{ force: false }]);
-    assert.deepStrictEqual(calls.pushDb, [{ force: false }]);
-    // 發布後重新 fetch origin 並回寫 recorded baseline（P0-3 修復）
-    assert.strictEqual(calls.fetch, 2);
-    assert.strictEqual(calls.writeRecorded.length, 1);
-    assert.strictEqual(calls.writeRecorded[0].content_sha256, SHA);
-    assert.strictEqual(calls.writeRecorded[0].source_lng, "en");
-  });
-
-  it("drift 且無原因：拒絕，不觸發 CLI，回 origin_drift", async () => {
-    const { deps, calls } = makeDeps({
-      readRecordedOriginVersion: async () => ({ ...RECORD, content_sha256: OTHER_SHA }),
-    });
-    const result = await runPublishFlow(deps, undefined);
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.status, "origin_drift");
-    assert.strictEqual(result.recorded_sha, OTHER_SHA);
-    assert.strictEqual(result.current_sha, SHA);
-    assert.strictEqual(result.details.code, "drift_requires_reason");
-    assert.strictEqual(result.details.current.content_sha256, SHA);
-    assert.strictEqual(result.details.recorded.content_sha256, OTHER_SHA);
-    assert.strictEqual(calls.pushBack.length, 0);
-    assert.strictEqual(calls.pushDb.length, 0);
-  });
-
-  it("drift 且有原因：先寫 audit 再帶 --force --reason 觸發，回 succeeded，且回寫 baseline", async () => {
-    const { deps, calls } = makeDeps({
-      readRecordedOriginVersion: async () => ({ ...RECORD, content_sha256: OTHER_SHA }),
-    });
-    const result = await runPublishFlow(deps, "客戶要求立即上線");
-    assert.strictEqual(result.ok, true);
-    assert.strictEqual(result.status, "succeeded");
-    assert.strictEqual(result.forced, true);
-    assert.strictEqual(result.source_lng, "en");
-    assert.strictEqual(result.content_sha256, SHA);
-    assert.strictEqual(calls.writeAudit.length, 1);
-    assert.deepStrictEqual(calls.writeAudit[0], {
-      recorded: { ...RECORD, content_sha256: OTHER_SHA },
-      current: ORIGIN,
-      reason: "客戶要求立即上線",
-    });
-    assert.deepStrictEqual(calls.pushBack, [{ force: true, reason: "客戶要求立即上線" }]);
-    assert.deepStrictEqual(calls.pushDb, [{ force: true, reason: "客戶要求立即上線" }]);
-    // force 發布成功後回寫 recorded baseline，drift 才得以收斂（P0-3 修復）
-    assert.strictEqual(calls.fetch, 2);
-    assert.strictEqual(calls.writeRecorded.length, 1);
-    assert.strictEqual(calls.writeRecorded[0].content_sha256, SHA);
-    assert.strictEqual(calls.writeRecorded[0].source_lng, "en");
-  });
-
-  it("audit 寫失敗：拒絕，不觸發 CLI", async () => {
-    const { deps, calls } = makeDeps({
-      readRecordedOriginVersion: async () => ({ ...RECORD, content_sha256: OTHER_SHA }),
-      writeForcePublishAudit: async () => { throw new Error("audit boom"); },
-    });
-    const result = await runPublishFlow(deps, "客戶要求立即上線");
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.details.code, "force_audit_failed");
-    assert.strictEqual(calls.pushBack.length, 0);
-    assert.strictEqual(calls.pushDb.length, 0);
-  });
-
-  it("無記錄但有 reason：audit recorded=null 後強制發布", async () => {
-    const { deps, calls } = makeDeps({ readRecordedOriginVersion: async () => null });
-    const result = await runPublishFlow(deps, "無記錄強制");
-    assert.strictEqual(result.ok, true);
-    assert.strictEqual(result.status, "succeeded");
-    assert.strictEqual(result.forced, true);
-    assert.strictEqual(calls.writeAudit.length, 1);
-    assert.strictEqual(calls.writeAudit[0].recorded, null);
-    assert.strictEqual(calls.writeAudit[0].current, ORIGIN);
-    assert.strictEqual(calls.writeAudit[0].reason, "無記錄強制");
-  });
-
-  it("無記錄（null）：視為 drift，需原因", async () => {
-    const { deps, calls } = makeDeps({ readRecordedOriginVersion: async () => null });
-    const result = await runPublishFlow(deps, undefined);
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.status, "origin_drift");
-    assert.strictEqual(result.recorded_sha, null);
-    assert.strictEqual(result.current_sha, SHA);
-    assert.strictEqual(result.details.code, "drift_requires_reason");
-    assert.strictEqual(result.details.recorded, null);
-    assert.strictEqual(calls.pushBack.length, 0);
-    assert.strictEqual(calls.pushDb.length, 0);
-  });
-
-  it("source_lng 不符：drift", async () => {
-    const { deps } = makeDeps({
-      readRecordedOriginVersion: async () => ({ ...RECORD, source_lng: "zh-TW" }),
-    });
-    const result = await runPublishFlow(deps, undefined);
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.status, "origin_drift");
-    assert.strictEqual(result.details.code, "drift_requires_reason");
-  });
-
-  it("origin 版本讀取失敗：拒絕", async () => {
-    const { deps } = makeDeps({
-      fetchOriginVersion: async () => { throw new Error("boom"); },
-    });
-    const result = await runPublishFlow(deps, undefined);
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.details.code, "origin_version_error");
-  });
-
-  it("push-back 失敗：拒絕，不觸發 push-db", async () => {
-    const { deps, calls } = makeDeps({
-      pushBack: async () => ({ exitCode: 1, stdout: "", stderr: "fail" }),
-    });
-    const result = await runPublishFlow(deps, undefined);
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.details.code, "push_back_failed");
-    assert.strictEqual(calls.pushDb.length, 0);
-  });
-
-  it("push-db 失敗：拒絕", async () => {
-    const { deps } = makeDeps({
-      pushDb: async () => ({ exitCode: 1, stdout: "", stderr: "fail" }),
-    });
-    const result = await runPublishFlow(deps, undefined);
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.details.code, "push_db_failed");
-  });
-
-  it("發布成功但 baseline 回寫失敗：仍回 succeeded，但帶 warning details", async () => {
-    const { deps } = makeDeps({
-      writeRecordedOriginVersion: async () => { throw new Error("write boom"); },
-    });
-    const result = await runPublishFlow(deps, undefined);
-    assert.strictEqual(result.ok, true);
-    assert.strictEqual(result.status, "succeeded");
-    assert.strictEqual(result.details.code, "baseline_write_failed");
-  });
-
-  it("force_reason 超長：invalid_input，且不觸發 fetch", async () => {
-    const { deps, calls } = makeDeps();
-    const result = await runPublishFlow(deps, "x".repeat(600));
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.details.code, "invalid_input");
-    assert.strictEqual(calls.fetch, 0);
-  });
-});
-
-describe("buildCustomerPublishTools（SDK 工具形狀）", () => {
-  it("回傳 publish_confirmed SDK 工具，execute 以 content blocks 包裝結果", async () => {
-    const { deps } = makeDeps();
-    const tools = buildCustomerPublishTools(deps);
-    assert.strictEqual(tools.length, 1);
-    assert.strictEqual(tools[0].name, "publish_confirmed");
-    assert.ok(tools[0].label);
-
-    const res = await tools[0].execute("id-1", { force_reason: undefined }, undefined, undefined, {});
-    assert.ok(Array.isArray(res.content));
-    assert.strictEqual(res.content[0].type, "text");
-    const parsed = JSON.parse(res.content[0].text);
-    assert.strictEqual(parsed.ok, true);
-    assert.strictEqual(parsed.status, "succeeded");
-    assert.strictEqual(parsed.forced, false);
-    assert.deepStrictEqual(res.details, parsed);
-  });
-
-  it("drift 無原因 → execute 回傳 content 含 drift 錯誤", async () => {
-    const { deps } = makeDeps({
-      readRecordedOriginVersion: async () => ({ ...RECORD, content_sha256: OTHER_SHA }),
-    });
-    const tools = buildCustomerPublishTools(deps);
-    const res = await tools[0].execute("id-2", {}, undefined, undefined, {});
-    const parsed = JSON.parse(res.content[0].text);
-    assert.strictEqual(parsed.ok, false);
-    assert.strictEqual(parsed.status, "origin_drift");
-    assert.strictEqual(parsed.details.code, "drift_requires_reason");
-  });
-});
-
-describe("sourceVersionMatches", () => {
-  it("相符：source_lng 與 content_sha256 皆一致", () => {
-    assert.strictEqual(sourceVersionMatches(ORIGIN, RECORD), true);
-  });
-  it("content_sha256 不同", () => {
-    assert.strictEqual(sourceVersionMatches(ORIGIN, { ...RECORD, content_sha256: OTHER_SHA }), false);
-  });
-  it("source_lng 不同", () => {
-    assert.strictEqual(sourceVersionMatches(ORIGIN, { ...RECORD, source_lng: "zh-TW" }), false);
-  });
-  it("record 為 null", () => {
-    assert.strictEqual(sourceVersionMatches(ORIGIN, null), false);
-  });
-});
-
-describe("parsePreviewMetaOriginVersion", () => {
-  it("解析出 origin_source_version", () => {
-    const json = JSON.stringify({
-      preview_url: "https://x-preview.fly.dev/",
-      app_name: "x-preview",
-      domain: "www.example.com",
-      origin_source_version: {
-        source_lng: "en",
-        content_sha256: SHA,
-        recorded_at: "2026-08-18T10:00:00+08:00",
-      },
-    });
-    const r = parsePreviewMetaOriginVersion(json);
-    assert.deepStrictEqual(r, {
-      source_lng: "en",
-      content_sha256: SHA,
-      recorded_at: "2026-08-18T10:00:00+08:00",
-    });
-  });
-
-  it("無 origin_source_version → null", () => {
-    assert.strictEqual(
-      parsePreviewMetaOriginVersion(JSON.stringify({ preview_url: "https://x/" })),
-      null,
-    );
-  });
-
-  it("origin_source_version 缺 content_sha256 → null", () => {
-    assert.strictEqual(
-      parsePreviewMetaOriginVersion(
-        JSON.stringify({ origin_source_version: { source_lng: "en" } }),
-      ),
-      null,
-    );
-  });
-
-  it("origin_source_version 缺 source_lng → null", () => {
-    assert.strictEqual(
-      parsePreviewMetaOriginVersion(
-        JSON.stringify({ origin_source_version: { content_sha256: SHA } }),
-      ),
-      null,
-    );
-  });
-
-  it("無 recorded_at 也解析", () => {
-    const r = parsePreviewMetaOriginVersion(
-      JSON.stringify({ origin_source_version: { source_lng: "en", content_sha256: SHA } }),
-    );
-    assert.deepStrictEqual(r, { source_lng: "en", content_sha256: SHA });
-  });
-
-  it("非 JSON / 空字串 → null", () => {
-    assert.strictEqual(parsePreviewMetaOriginVersion("not-json"), null);
-    assert.strictEqual(parsePreviewMetaOriginVersion(""), null);
-  });
-
-  it("origin_source_version 非物件 → null", () => {
-    assert.strictEqual(
-      parsePreviewMetaOriginVersion(JSON.stringify({ origin_source_version: "en" })),
-      null,
-    );
-  });
-});
-
-describe("CLI args", () => {
-  it("buildOriginVersionUrl 去除尾斜線", () => {
-    assert.strictEqual(
-      buildOriginVersionUrl("https://demo.example.com/"),
-      "https://demo.example.com/readyscript/capps/pc2-p/service/?m=source&a=version",
-    );
-  });
-
-  it("buildPushBackArgs 無 force：帶 --http（客戶路徑無 SSH，走 ORIGIN_HOSTNAME + 站台 token）", () => {
-    assert.deepStrictEqual(
-      buildPushBackArgs("my-app", { force: false }),
-      ["preview", "push-back", "--http", "--name", "my-app"],
-    );
-  });
-
-  it("buildPushBackArgs force + reason：--force/--reason 只出現一次", () => {
-    assert.deepStrictEqual(
-      buildPushBackArgs("my-app", { force: true, reason: "客戶要求" }),
-      ["preview", "push-back", "--http", "--name", "my-app", "--force", "--reason", "客戶要求"],
-    );
-  });
-
-  it("buildPushDbArgs 多語系 + force：不帶 --http（push-db 已 HTTP 化，CLI 無此 flag）", () => {
-    const args = buildPushDbArgs("my-app", ["en", "zh-TW"], { force: true, reason: "r" });
-    assert.deepStrictEqual(
-      args,
-      ["preview", "push-db", "--name", "my-app", "--lng", "en,zh-TW", "--force", "--reason", "r"],
-    );
-    assert.ok(!args.includes("--http"), "push-db 不接受 --http，帶上會被 click 拒絕");
-  });
-
-  it("buildForcePublishAuditUrl：組出 m=log&a=pgc-force-publish + 參數", () => {
-    const url = buildForcePublishAuditUrl("https://demo.example.com/", {
-      who: "conf-1",
-      desc: "客戶要求 & 立即",
-      params: '{"recorded":null,"current":{}}',
-    });
-    const u = new URL(url);
-    assert.strictEqual(u.pathname, "/readyscript/capps/pc2-p/service/");
-    assert.strictEqual(u.searchParams.get("m"), "log");
-    assert.strictEqual(u.searchParams.get("a"), "pgc-force-publish");
-    assert.strictEqual(u.searchParams.get("who"), "conf-1");
-    assert.strictEqual(u.searchParams.get("desc"), "客戶要求 & 立即");
-    assert.strictEqual(u.searchParams.get("params"), '{"recorded":null,"current":{}}');
-  });
-});
-
-describe("createLocalPublishDeps", () => {
-  it("fetchOriginVersion：正確 URL + Bearer header + 解析", async () => {
-    let captured;
-    const deps = createLocalPublishDeps({
-      cwd: "/tmp/x",
-      originBaseUrl: "https://demo.example.com/",
-      siteToken: "tok1234567890",
-      appName: "my-app",
-      languages: ["en"],
-      fetch: async (url, init) => {
-        captured = { url, init };
-        return {
-          ok: true,
-          json: async () => ({ schema: "pgc-source-version-v1", source_lng: "en", content_sha256: SHA }),
-        };
-      },
-    });
-    const v = await deps.fetchOriginVersion();
-    assert.strictEqual(
-      captured.url,
-      "https://demo.example.com/readyscript/capps/pc2-p/service/?m=source&a=version",
-    );
-    assert.strictEqual(captured.init.headers.Authorization, "Bearer tok1234567890");
-    assert.deepStrictEqual(v, { schema: "pgc-source-version-v1", source_lng: "en", content_sha256: SHA });
-  });
-
-  it("fetchOriginVersion：source_lng 缺省 en、缺 content_sha256 抛錯", async () => {
-    const deps = createLocalPublishDeps({
-      cwd: "/tmp/x",
-      originBaseUrl: "https://demo.example.com",
-      siteToken: "t",
-      appName: "a",
-      languages: ["en"],
-      fetch: async () => ({ ok: true, json: async () => ({ source_lng: "" }) }),
-    });
-    await assert.rejects(() => deps.fetchOriginVersion(), /content_sha256/);
-  });
-
-  it("readRecordedOriginVersion：讀 data/preview-meta.json 的 origin_source_version", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publish-"));
-    try {
-      fs.mkdirSync(path.join(dir, "data"), { recursive: true });
-      fs.writeFileSync(
-        path.join(dir, "data", "preview-meta.json"),
-        JSON.stringify({
-          preview_url: "https://x-preview.fly.dev/",
-          app_name: "x-preview",
-          origin_source_version: { source_lng: "en", content_sha256: SHA },
-        }),
-      );
-      const deps = createLocalPublishDeps({
-        cwd: dir, originBaseUrl: "https://x", siteToken: "t", appName: "a", languages: ["en"],
+describe('customer publication CLI boundary', () => {
+  it('repairs only an explicitly incomplete pre-begin session with one guarded same-ID start', async () => {
+    for (const [stage, code, errorClass, repair] of [
+      ['prepared', 'preparation_incomplete', 'reconcile', true],
+      ['awaiting_raw_verification', 'preparation_incomplete', 'reconcile', false],
+      ['prepared', 'audit_unknown', 'reconcile', false],
+      ['prepared', 'transport_unknown', 'reconcile', false],
+      ['prepared', 'preparation_incomplete', 'fatal', false],
+    ]) {
+      await fixture(async ({ tool, respond, calls }) => {
+        respond(success());
+        const initial = await execute(tool());
+        respond({ok:false,error:{message:'Preparation incomplete', error_class:errorClass, retryable:false,
+          hint:'Reconcile the same ID',details:{code}}}, errorClass === 'fatal' ? 1 : 3, '', {
+          status:success({stage}), start:success(),
+        });
+        const result = await execute(tool());
+        assert.equal(result.ok, repair);
+        assert.equal(result.publication_id, initial.publication_id);
+        assert.equal(calls().filter(args => args[2] === 'start').length, repair ? 2 : 1);
+        if (repair) {
+          const starts = calls().filter(args => args[2] === 'start');
+          assert.deepEqual(starts[1], starts[0], 'Repair retains exact ID, digest, scope, languages and origin');
+        }
       });
-      const r = await deps.readRecordedOriginVersion();
-      assert.deepStrictEqual(r, { source_lng: "en", content_sha256: SHA });
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('syncs every directory parent then mapping bytes and entry before start', async () => {
+    await fixture(async ({ tool, respond, config }) => {
+      respond(success());
+      const events = [];
+      const result = await execute(tool(tracedFileIO(config.cwd, events)));
+      assert.equal(result.ok, true);
+      assert.deepEqual(events, ['.', 'data', 'mapping_file', 'data/customer-publications']);
+      assert.equal(fs.existsSync(path.join(config.cwd, 'mutation.jsonl')), true);
+    }, { initialData: false });
+  });
+
+  it('any fsync failure prevents start; retry repairs the full parent chain', async () => {
+    for (const failedPhase of ['.', 'data', 'mapping_file', 'data/customer-publications']) {
+      await fixture(async ({ tool, respond, calls, config }) => {
+        respond(success());
+        let fail = true;
+        const events = [];
+        const io = tracedFileIO(config.cwd, events, label => fail && label === failedPhase);
+        const first = await execute(tool(io));
+        assert.equal(first.ok, false, failedPhase);
+        assert.ok(events.includes(failedPhase), 'Failure injection reached the intended sync');
+        assert.equal(fs.existsSync(path.join(config.cwd, 'mutation.jsonl')), false);
+        assert.deepEqual(calls().map(args => args[2] === 'candidate'), [true]);
+        fail = false;
+        events.length = 0;
+        assert.equal((await execute(tool(io))).ok, true);
+        assert.deepEqual(events, ['.', 'data', 'mapping_file', 'data/customer-publications']);
+      }, { initialData: false });
     }
   });
 
-  it("readRecordedOriginVersion：無檔 → null", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publish-"));
-    try {
-      const deps = createLocalPublishDeps({
-        cwd: dir, originBaseUrl: "https://x", siteToken: "t", appName: "a", languages: ["en"],
+  it('preflight rejects missing/wrong full target identity before state or content writes', async () => {
+    for (const candidateData of [
+      {candidate_digest:evidence.candidate_digest}, {...evidence,app:'other-preview'},
+      {...evidence,origin:'https://other.example.com'}, {...evidence,scope:'staff'},
+      {...evidence,languages:['en']}, {...evidence,languages:['en','en','zh-TW']},
+    ]) {
+      await fixture(async ({ tool, respond, calls, config }) => {
+        respond(success(), 0, '', { candidateData });
+        assert.equal((await execute(tool())).ok, false);
+        assert.deepEqual(calls().map(args => args[2] === 'candidate'), [true]);
+        assert.equal(fs.existsSync(path.join(config.cwd, 'data/customer-publications')), false);
+        assert.equal(fs.existsSync(path.join(config.cwd, 'mutation.jsonl')), false);
       });
-      const r = await deps.readRecordedOriginVersion();
-      assert.strictEqual(r, null);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("writeRecordedOriginVersion：原子回寫 origin_source_version，保留其他 key", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publish-"));
-    try {
-      fs.mkdirSync(path.join(dir, "data"), { recursive: true });
-      fs.writeFileSync(
-        path.join(dir, "data", "preview-meta.json"),
-        JSON.stringify({
-          preview_url: "https://x-preview.fly.dev/",
-          app_name: "x-preview",
-          origin_source_version: { source_lng: "en", content_sha256: SHA },
-        }),
-      );
-      const deps = createLocalPublishDeps({
-        cwd: dir, originBaseUrl: "https://x", siteToken: "t", appName: "a", languages: ["en"],
+  it('preflight accepts only string digests, without persisting malformed candidates', async () => {
+    for (const candidate_digest of [[evidence.candidate_digest], null, 123]) {
+      await fixture(async ({ tool, respond, calls, config }) => {
+        respond(success(), 0, '', { candidateData:{...evidence,candidate_digest} });
+        const result = await execute(tool());
+        assert.equal(result.ok, false);
+        assert.equal(result.details.code, 'invalid_cli_output');
+        assert.equal(fs.existsSync(path.join(config.cwd, 'data/customer-publications')), false);
+        assert.deepEqual(calls().map(args => args[2] === 'candidate'), [true]);
       });
-      await deps.writeRecordedOriginVersion({
-        source_lng: "en",
-        content_sha256: OTHER_SHA,
-        recorded_at: "2026-08-19T14:53:00+08:00",
-      });
-      const raw = JSON.parse(
-        fs.readFileSync(path.join(dir, "data", "preview-meta.json"), "utf-8"),
-      );
-      assert.deepStrictEqual(raw.origin_source_version, {
-        source_lng: "en",
-        content_sha256: OTHER_SHA,
-        recorded_at: "2026-08-19T14:53:00+08:00",
-      });
-      // 其他 key 保留
-      assert.strictEqual(raw.preview_url, "https://x-preview.fly.dev/");
-      assert.strictEqual(raw.app_name, "x-preview");
-      // 不留 tmp 殘檔
-      assert.ok(!fs.existsSync(path.join(dir, "data", "preview-meta.json.tmp")));
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("writeRecordedOriginVersion：無既有檔時從頭建立", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publish-"));
-    try {
-      fs.mkdirSync(path.join(dir, "data"), { recursive: true });
-      const deps = createLocalPublishDeps({
-        cwd: dir, originBaseUrl: "https://x", siteToken: "t", appName: "a", languages: ["en"],
+  it('malformed status/response/mapping digests never become valid publication evidence', async () => {
+    await fixture(async ({ tool, respond, config, calls }) => {
+      const malformed = [evidence.candidate_digest];
+      respond(success(), 0, '', { status:success({candidate_digest:malformed}) });
+      assert.equal((await execute(tool(), {publication_id:publicationId})).ok, false);
+      assert.equal(calls().some(args => args[2] === 'resume'), false);
+      respond(success({candidate_digest:malformed}));
+      assert.equal((await execute(tool())).ok, false);
+      // 手動損壞既有 mapping，並匹配舊版會對陣列進行 coercion 的衍生 ID。
+      const stateDir = path.join(config.cwd, 'data/customer-publications');
+      const stateFile = path.join(stateDir, fs.readdirSync(stateDir)[0]);
+      const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      saved.candidate_digest = malformed;
+      saved.publication_id = 'pgc-' + createHash('sha256').update(JSON.stringify([saved.confirmation_hash,malformed])).digest('hex');
+      fs.writeFileSync(stateFile, JSON.stringify(saved));
+      const before = calls().length;
+      respond(success());
+      const result = await execute(tool());
+      assert.equal(result.ok, false);
+      assert.equal(result.details.code, 'invalid_cli_output');
+      assert.equal(calls().length, before + 1);
+    });
+  });
+
+  it('pins every CLI target before credential/cache/content access, including changed env between commands', async () => {
+    for (const operation of ['candidate', 'start', 'status', 'resume']) {
+      await fixture(async ({ tool, respond, calls, config }) => {
+        respond(success(), 0, '', { status:success(), resolvedOrigins:{[operation]:'https://wrong.example.com'} });
+        const params = ['status','resume'].includes(operation) ? {publication_id:publicationId} : {};
+        const result = await execute(tool(), params);
+        assert.equal(result.ok, false, operation);
+        assert.equal(result.details.error_class, 'fatal');
+        assert.equal(result.details.code, 'origin_mismatch');
+        assert.equal(fs.existsSync(path.join(config.cwd, 'mutation.jsonl')), false);
+        const credentialPath = path.join(config.cwd, 'credential.jsonl');
+        const accesses = fs.existsSync(credentialPath) ? fs.readFileSync(credentialPath,'utf8').trim().split('\n').map(JSON.parse) : [];
+        assert.equal(accesses.some(entry => entry.operation === operation), false);
+        assert.ok(calls().every(args => args[args.indexOf('--expected-origin') + 1] === origin));
       });
-      await deps.writeRecordedOriginVersion({
-        source_lng: "zh-TW",
-        content_sha256: OTHER_SHA,
-      });
-      const raw = JSON.parse(
-        fs.readFileSync(path.join(dir, "data", "preview-meta.json"), "utf-8"),
-      );
-      assert.strictEqual(raw.origin_source_version.content_sha256, OTHER_SHA);
-      assert.strictEqual(raw.origin_source_version.source_lng, "zh-TW");
-      assert.ok(raw.origin_source_version.recorded_at);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("writeForcePublishAudit：GET m=log&a=pgc-force-publish + Bearer header + params", async () => {
-    let captured;
-    const deps = createLocalPublishDeps({
-      cwd: "/tmp/x",
-      originBaseUrl: "https://demo.example.com/",
-      siteToken: "tok1234567890",
-      appName: "my-app",
-      languages: ["en"],
-      confirmationId: "conf-42",
-      fetch: async (url, init) => {
-        captured = { url, init };
-        return { ok: true };
-      },
+  it('candidate preflight has fixed PGC scope, no force/reason, and cannot start on invalid candidate', async () => {
+    await fixture(async ({ tool, respond, calls, config }) => {
+      respond(success(), 0, '', { candidateData:{...evidence,app:'wrong-preview'} });
+      const result = await execute(tool(), { force_reason:'Customer-approved drift reason' });
+      assert.equal(result.ok, false);
+      assert.deepEqual(calls(), [[
+        'preview', 'publication', 'candidate', '--name', 'my-preview', '--expected-origin', origin,
+        '--scope', 'pgc', '--lng', 'en,zh-TW', '--json',
+      ]]);
+      assert.equal(fs.existsSync(path.join(config.cwd, 'credential.jsonl')), false);
+      assert.equal(fs.existsSync(path.join(config.cwd, 'mutation.jsonl')), false);
+      assert.equal(fs.existsSync(path.join(config.cwd, 'data/customer-publications')), false);
+      assert.equal(tool().parameters.properties.scope, undefined);
+      assert.equal((await execute(tool(), {scope:'staff',force_reason:'Not a scope grant'})).ok, false);
+      assert.equal(calls().length, 1, 'Scope override rejected before any CLI call');
     });
-    await deps.writeForcePublishAudit({
-      recorded: { source_lng: "en", content_sha256: OTHER_SHA },
-      current: { source_lng: "en", content_sha256: SHA },
-      reason: "客戶要求立即上線",
-    });
-    const u = new URL(captured.url);
-    assert.strictEqual(u.searchParams.get("m"), "log");
-    assert.strictEqual(u.searchParams.get("a"), "pgc-force-publish");
-    assert.strictEqual(u.searchParams.get("who"), "conf-42");
-    assert.strictEqual(u.searchParams.get("desc"), "客戶要求立即上線");
-    assert.strictEqual(
-      u.searchParams.get("params"),
-      JSON.stringify({
-        recorded: { source_lng: "en", content_sha256: OTHER_SHA },
-        current: { source_lng: "en", content_sha256: SHA },
-      }),
-    );
-    assert.strictEqual(captured.init.headers.Authorization, "Bearer tok1234567890");
   });
 
-  it("writeForcePublishAudit：HTTP 非 2xx 抛錯", async () => {
-    const deps = createLocalPublishDeps({
-      cwd: "/tmp/x",
-      originBaseUrl: "https://demo.example.com",
-      siteToken: "t",
-      appName: "a",
-      languages: ["en"],
-      confirmationId: "cli",
-      fetch: async () => ({ ok: false, status: 500 }),
+  it('candidate preflight reaches status/resume after own DB apply would block start dry-run', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      respond(success());
+      const first = await execute(tool());
+      assert.equal(first.ok, true);
+      respond(success({stage:'db_applied'}), 0, '', {sourceDriftOnDryRun:true});
+      const retry = await execute(tool());
+      assert.equal(retry.ok, true);
+      assert.equal(retry.publication_id, first.publication_id);
+      assert.equal(retry.stage, 'db_applied');
+      assert.equal(retry.content_verified, false);
+      assert.deepEqual(calls().map(args => args[2]), ['candidate','start','candidate','status','resume']);
+      assert.equal(calls().some(args => args.includes('--dry-run')), false);
     });
-    await assert.rejects(
-      () => deps.writeForcePublishAudit({
-        recorded: { source_lng: "en", content_sha256: OTHER_SHA },
-        current: { source_lng: "en", content_sha256: SHA },
-        reason: "r",
-      }),
-      /500/,
-    );
   });
 
-  it("writeForcePublishAudit：confirmationId 缺省 cli", async () => {
-    let captured;
-    const deps = createLocalPublishDeps({
-      cwd: "/tmp/x",
-      originBaseUrl: "https://demo.example.com",
-      siteToken: "t",
-      appName: "a",
-      languages: ["en"],
-      fetch: async (url) => {
-        captured = url;
-        return { ok: true };
-      },
+  it('starts one PGC publication; retry after tool recreation reuses confirmation identity', async () => {
+    await fixture(async ({ tool, respond, calls, config }) => {
+      respond(success());
+      const first = await execute(tool());
+      const second = await execute(tool());
+      assert.equal(first.ok, true);
+      assert.equal(first.status, 'triggered');
+      assert.equal(first.content_verified, false);
+      assert.equal(first.stage, 'awaiting_browser');
+      assert.match(first.publication_id, /^pgc-[a-f0-9]{64}$/);
+      assert.equal(second.publication_id, first.publication_id);
+      assert.deepEqual(calls().map(args => args[2]), ['candidate', 'start', 'candidate', 'status', 'resume']);
+      assert.deepEqual(calls()[1], [
+        'preview', 'publication', 'start', '--name', 'my-preview', '--expected-origin', origin, '--scope', 'pgc',
+        '--lng', 'en,zh-TW', '--publication-id', first.publication_id,
+        '--expected-candidate-digest', 'sha256:' + 'ab'.repeat(32), '--json',
+      ]);
+      for (const args of calls()) {
+        assert.equal(args[args.indexOf('--expected-origin') + 1], origin);
+        assert.equal(args.filter(arg => arg === '--expected-origin').length, 1);
+      }
+      assert.equal(first.changed_records, 'unknown');
+      const stateDir = path.join(config.cwd, 'data/customer-publications');
+      const [stateName] = fs.readdirSync(stateDir);
+      const stateFile = path.join(stateDir, stateName);
+      assert.equal(fs.statSync(stateFile).mode & 0o777, 0o600);
+      const saved = fs.readFileSync(stateFile, 'utf8');
+      assert.doesNotMatch(saved, /customer-confirmation-42|never-send-me|Bearer/);
+      assert.equal(JSON.parse(saved).publication_id, first.publication_id);
     });
-    await deps.writeForcePublishAudit({
-      recorded: { source_lng: "en", content_sha256: OTHER_SHA },
-      current: { source_lng: "en", content_sha256: SHA },
-      reason: "r",
+  });
+
+  it('resumes the supplied ID without starting or selecting scope/languages', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      respond(success({ stage: 'db_partial' }));
+      const result = await execute(tool(), { publication_id: publicationId });
+      assert.equal(result.publication_id, publicationId);
+      assert.equal(result.stage, 'db_partial');
+      assert.deepEqual(calls().filter(args => args[2] !== 'candidate'), ['status', 'resume'].map(action => [
+        'preview', 'publication', action, '--name', 'my-preview', '--expected-origin', origin, '--publication-id', publicationId,
+        ...(action === 'resume' ? ['--expected-candidate-digest', 'sha256:' + 'ab'.repeat(32)] : []), '--json',
+      ]));
+    }, { confirmationId: 'cli' });
+  });
+
+  it('uses adapter_output result envelope and leaves partial content unverified', async () => {
+    await fixture(async ({ tool, respond }) => {
+      respond({ ok: true, result: { ...evidence, publication_id: 'PUBLICATION_ID', stage: 'files_applied' } });
+      const result = await execute(tool());
+      assert.equal(result.ok, true);
+      assert.equal(result.stage, 'files_applied');
+      assert.equal(result.content_verified, false);
     });
-    assert.strictEqual(new URL(captured).searchParams.get("who"), "cli");
+  });
+
+  it('forwards explicit drift force/reason exactly once; CLI owns all audit I/O', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      respond(success());
+      const result = await execute(tool(), { force_reason: ' 客戶已確認外部修改 ' });
+      assert.equal(result.ok, true);
+      assert.deepEqual(calls()[1].slice(-4), ['--force', '--reason', '客戶已確認外部修改', '--json']);
+      assert.equal(calls()[1].filter(x => x === '--force').length, 1);
+    });
+  });
+
+  it('retains partial session on structured failure; only blocked drift asks for force', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      for (const [details, status] of [
+        [{ code: 'lease_conflict', http_status: 409 }, undefined],
+        [{ code: 'schema_conflict', http_status: 409 }, undefined],
+        [{ drift_gate: { result: 'blocked' } }, 'origin_drift'],
+        [{ code: 'source_drift' }, 'origin_drift'],
+        [{ code: 'schema_diff' }, undefined],
+        [{ code: 'lease_conflict' }, undefined],
+      ]) {
+        respond({ ok: false, error: { message: 'review required', error_class: 'needs_review', retryable: false,
+          hint: 'Inspect publication status', details: { ...evidence, publication_id: 'PUBLICATION_ID', stage: 'db_partial', ...details } } }, 2);
+        const result = await execute(tool());
+        assert.equal(result.ok, false);
+        assert.equal(result.stage, 'db_partial');
+        assert.equal(result.status, status);
+        assert.equal(result.content_verified, false);
+        assert.match(result.publication_id, /^pgc-/);
+        assert.equal(result.details.error_class, 'needs_review');
+      }
+      assert.equal(calls().filter(args => args[2] === 'start').length, 1, 'No duplicate start after failure');
+      assert.ok(calls().every(args => !args.includes('--force')));
+    });
+  });
+
+  it('preserves resume ID and classified retryable/reconcile/fatal errors', async () => {
+    await fixture(async ({ tool, respond }) => {
+      for (const [error_class, exitCode] of [['fatal', 1], ['reconcile', 3], ['retryable', 4]]) {
+        respond({ ok: false, error: { message: 'operation incomplete', error_class, retryable: error_class === 'retryable', hint: 'Read status' } }, exitCode, '', { status: success() });
+        const result = await execute(tool(), { publication_id: publicationId });
+        assert.equal(result.ok, false);
+        assert.equal(result.publication_id, publicationId);
+        assert.equal(result.details.error_class, error_class);
+        assert.equal(result.content_verified, false);
+      }
+    });
+  });
+
+  it('fails closed for malformed/legacy JSON, wrong identity and exit/envelope disagreement', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      for (const [body, exitCode] of [
+        ['not JSON', 0], ['{"ok":true,"data":{}}', 0], [{ ok: true, data: evidence }, 0],
+        [success({ scope: 'staff' }), 0], [success({ app: 'other' }), 0],
+        [success({ origin: 'https://other.example.com' }), 0], [success({ languages: ['en'] }), 0],
+        [success({ candidate_digest: 'sha256:' + 'cd'.repeat(32) }), 0], [success({ content_verified: 'false' }), 0], [success({ stage: '' }), 0],
+        [success({ languages: ['en', 'en', 'zh-TW'] }), 0],
+        [success(), 4], [{ ok: false, error: { message: 'bad' } }, 0],
+        [`${JSON.stringify(success())}\ntrailing noise`, 0],
+      ]) {
+        respond(body, exitCode);
+        const result = await execute(tool());
+        assert.equal(result.ok, false, JSON.stringify(body));
+        assert.equal(result.content_verified, false);
+        assert.doesNotMatch(JSON.stringify(result), /upstream private|never-send-me/);
+      }
+      assert.equal(calls().filter(args => args[2] === 'start').length, 1);
+    });
+  });
+
+  it('lost response recovers persisted mapping with status then resume, never another start', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      respond('lost response');
+      const first = await execute(tool());
+      assert.equal(first.ok, false);
+      respond(success());
+      const retry = await execute(tool());
+      assert.equal(retry.ok, true);
+      assert.equal(first.publication_id, retry.publication_id);
+      assert.deepEqual(calls().map(args => args[2]), ['candidate', 'start', 'candidate', 'status', 'resume']);
+    });
+  });
+
+  it('same confirmation with changed candidate refuses before resume or new start', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      respond(success());
+      await execute(tool());
+      respond(success(), 0, '', { digest: 'sha256:' + 'cd'.repeat(32) });
+      const retry = await execute(tool());
+      assert.equal(retry.ok, false);
+      assert.equal(retry.details.code, 'candidate_changed');
+      assert.deepEqual(calls().map(args => args[2]), ['candidate', 'start', 'candidate']);
+    });
+  });
+
+  it('candidate changes after preflight are rejected by start/resume before CLI writes', async () => {
+    for (const publication_id of [undefined, publicationId]) {
+      await fixture(async ({ tool, respond, calls, config }) => {
+        respond(success(), 0, '', { status: success(), changeAfterPreflight: 'sha256:' + 'cd'.repeat(32) });
+        const result = await execute(tool(), publication_id ? { publication_id } : {});
+        assert.equal(result.ok, false);
+        assert.equal(result.details.code, 'candidate_changed');
+        assert.equal(result.details.error_class, 'needs_review');
+        assert.equal(result.content_verified, false);
+        assert.equal(result.status, undefined, 'Candidate change is not origin drift');
+        assert.equal(fs.existsSync(path.join(config.cwd, 'mutation.jsonl')), false);
+        const mutating = calls().filter(args => (args[2] === 'start') || args[2] === 'resume');
+        assert.equal(mutating.length, 1, 'No automatic retry, start or force after rejection');
+        assert.equal(mutating[0][mutating[0].indexOf('--expected-candidate-digest') + 1], 'sha256:' + 'ab'.repeat(32));
+        assert.equal(mutating[0].includes('--force'), false);
+      });
+    }
+  });
+
+  it('does not resume when status cannot establish exact session identity', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      respond(success(), 0, '', { status: { ok:true, data:{ ...evidence, publication_id:'PUBLICATION_ID', app:'wrong' } } });
+      const result = await execute(tool(), { publication_id: publicationId });
+      assert.equal(result.ok, false);
+      assert.equal(calls().some(args => args[2] === 'resume'), false);
+    });
+  });
+
+  it('same-ID start is allowed only after status explicitly says session_not_found', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      respond('response lost');
+      const first = await execute(tool());
+      respond(success(), 0, '', { status: { ok:false, error:{ message:'not found', error_class:'reconcile', retryable:false, hint:'same ID start', details:{code:'session_not_found'} } } });
+      const retry = await execute(tool());
+      assert.equal(retry.ok, true);
+      assert.equal(retry.publication_id, first.publication_id);
+      const starts = calls().filter(args => args[2] === 'start');
+      assert.equal(starts.length, 2);
+      assert.equal(starts[0][starts[0].indexOf('--publication-id') + 1], starts[1][starts[1].indexOf('--publication-id') + 1]);
+      assert.equal(calls().some(args => args[2] === 'resume'), false);
+    });
+  });
+
+  it('rejects changed status candidate before resume', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      respond(success(), 0, '', { status:{ok:true,data:{...evidence,publication_id:'PUBLICATION_ID',candidate_digest:'sha256:'+'cd'.repeat(32)}} });
+      const result = await execute(tool(), { publication_id:publicationId });
+      assert.equal(result.ok, false);
+      assert.equal(calls().some(args => args[2] === 'resume'), false);
+    });
+  });
+
+  it('refuses corrupt or redirected persisted mapping before status/start', async () => {
+    await fixture(async ({ tool, respond, calls, config }) => {
+      respond(success());
+      await execute(tool());
+      const stateDir = path.join(config.cwd, 'data/customer-publications');
+      const stateFile = path.join(stateDir, fs.readdirSync(stateDir)[0]);
+      const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      fs.writeFileSync(stateFile, JSON.stringify({...saved, publication_id:'pgc-other-confirmation'}));
+      const before = calls().length;
+      assert.equal((await execute(tool())).ok, false);
+      assert.equal(calls().length, before + 1);
+      assert.ok(calls().at(-1)[2] === 'candidate');
+    });
+  });
+
+  it('rejects symlink state directories before any mutating command', async () => {
+    await fixture(async ({ tool, respond, calls, config }) => {
+      const state = path.join(config.cwd, 'data/customer-publications');
+      fs.symlinkSync(config.cwd, state);
+      respond(success());
+      assert.equal((await execute(tool())).ok, false);
+      assert.deepEqual(calls().map(args => args[2] === 'candidate'), [true]);
+    });
+  });
+
+  it('does not promote a CLI true flag to public/browser verification', async () => {
+    await fixture(async ({ tool, respond }) => {
+      respond(success({ content_verified: true, stage: 'receiver_verified' }));
+      const result = await execute(tool());
+      assert.equal(result.status, 'triggered');
+      assert.equal(result.content_verified, false);
+    });
+  });
+
+  it('rejects missing stable identity, staff scope and invalid arguments before CLI', async () => {
+    await fixture(async ({ tool, calls }) => {
+      for (const params of [ {}, { scope: 'staff' }, { publication_id: '../bad' },
+        { force_reason: 'x'.repeat(513) }, { force_reason: {} }, { confirmation_id: 'cli' } ]) {
+        const result = await execute(tool(), params);
+        assert.equal(result.ok, false);
+      }
+      assert.deepEqual(calls(), []);
+      assert.equal(tool().parameters.properties.scope, undefined);
+    }, { confirmationId: 'cli' });
+  });
+
+  it('accepts explicit stable confirmation identity when env identity is absent', async () => {
+    await fixture(async ({ tool, respond }) => {
+      respond(success());
+      const first = await execute(tool(), { confirmation_id: 'confirmation-99' });
+      const retry = await execute(tool(), { confirmation_id: 'confirmation-99' });
+      const next = await execute(tool(), { confirmation_id: 'confirmation-100' });
+      assert.equal(first.ok, true);
+      assert.equal(first.publication_id, retry.publication_id);
+      assert.notEqual(first.publication_id, next.publication_id);
+    }, { confirmationId: '' });
+  });
+});
+
+
+describe('verified publication export bridge', () => {
+  it('uses status then read-only export with the actual callback call ID and never resumes verified sessions', async () => {
+    await fixture(async ({ tool, respond, calls, config }) => {
+      respond(success());
+      const first = await execute(tool());
+      const mappingDir = path.join(config.cwd, 'data/customer-publications');
+      const before = fs.readdirSync(mappingDir).map(n => [n, fs.readFileSync(path.join(mappingDir, n), 'utf8')]);
+      respond({ok:true,result:{content_verified:true}}, 0, '', {status: success({stage:'verified',content_verified:true})});
+      const result = await execute(tool());
+      assert.equal(result.content_verified, false, 'incomplete producer output cannot promote');
+      assert.deepEqual(calls().slice(-3).map(a => a[2]), ['candidate','status','export-evidence']);
+      const args = calls().at(-1);
+      assert.equal(args[args.indexOf('--tool-call-id') + 1], 'not-a-stable-confirmation');
+      assert.equal(args[args.indexOf('--confirmation-id') + 1], config.confirmationId);
+      assert.equal(args[args.indexOf('--publication-id') + 1], first.publication_id);
+      assert.deepEqual(fs.readdirSync(mappingDir).map(n => [n, fs.readFileSync(path.join(mappingDir, n), 'utf8')]), before);
+    });
+  });
+  it('cannot export a verified explicit ID without its existing matching confirmation mapping', async () => {
+    await fixture(async ({ tool, respond, calls, config }) => {
+      respond(success(), 0, '', {status:success({stage:'verified',content_verified:true})});
+      const result = await execute(tool(), {publication_id: publicationId});
+      assert.equal(result.content_verified, false);
+      assert.equal(result.ok, false);
+      assert.equal(calls().some(a => ['resume','export-evidence','start'].includes(a[2])), false);
+      assert.equal(fs.existsSync(path.join(config.cwd, 'data/customer-publications')), false);
+    });
+  });
+});
+
+
+it('rejects oversized CLI output instead of accepting its trailing success envelope', async () => {
+  await fixture(async ({ tool, respond }) => {
+    respond(success(), 0, 'x'.repeat(17*1024*1024) + '\n');
+    const result = await execute(tool());
+    assert.equal(result.ok, false);
+    assert.equal(result.content_verified, false);
   });
 });

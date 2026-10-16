@@ -447,6 +447,18 @@ readyai-webui --profile customer --tunnel \
   --password "$(cat .secret)"                # customer interface, public URL
 ```
 
+### 客戶確認發布（PGC publication）
+
+`publish_confirmed` 只使用 readyAI 的 `preview publication` session，固定 `--scope pgc`，發布圖片／附件與指定語系 DB；客戶不能選 staff scope，也不會回退至 `push-back`／`push-db`。需搭配支援 publication、唯讀 candidate 與 JSON 契約的 readyAI CLI（Issue 144 companion；readyAI 實作 `b6542a7`／候選 CLI 0.6.5，template `c62e35c`，需成套整合）；不支援時直接回報錯誤。
+
+- 每次明確確認使用唯一 `confirmation_id`（或設定 `PGC_CONFIRMATION_ID`）；重試必須沿用。缺省 `cli` 不算唯一確認。工具先以 `candidate --name APP --scope pgc --lng CSV --expected-origin ORIGIN --json` 核對 app／origin／scope／languages 與字串 `candidate_digest`，再把確認／候選／publication ID 對應以 mode 0600 保存於專案 `data/customer-publications/`；每層目錄的 parent entry、mapping bytes 與最終目錄 entry 全部 fsync 成功後才可 start。同一確認的候選變更會拒絕，需重新取得客戶確認。
+- `candidate` 只計算指定 PGC 圖片／附件與語系 DB 的本機內容指紋及 target identity，不執行 origin equality preflight、cache、audit、session 或寫入；指紋不代表候選已可發布。工具恢復時先讀 candidate，再 status／resume，避免 own DB 套用後被另一輪 `start --dry-run` 的 source drift guard 擋住；正式 start／resume／operator dry-run 的 guards 保留。
+- 新建時使用 `start --name APP --expected-origin ORIGIN --scope pgc --lng CSV --publication-id ID --expected-candidate-digest SHA --json`。重試或提供 `publication_id` 時先 `status` 核對 app、origin、scope、languages 與候選指紋，再 `resume --name APP --expected-origin ORIGIN --publication-id ID --expected-candidate-digest SHA --json`；已有確認對應且 status 明確回 `session_not_found` 可同 ID start；另一個受限修復是完整身分／digest 相符、status 為 `prepared` 且 resume 明確回 `reconcile/preparation_incomplete`，才以相同參數做一次同 ID start。CLI 再檢查全 phase pending、無 cache／audit mutation intent，僅補齊相同凍結 bytes。其他錯誤保留 ID，不盲目新建 lease。start／resume 必帶已確認的候選指紋；CLI 在 cache／origin 寫入前重新計算並比對，變更則回 `needs_review`／`candidate_changed`。
+- 所有 CLI candidate／start（含 operator dry-run）／status／resume 都帶 config 的 canonical `--expected-origin`；CLI 必須在任何 credential HTTP／cache／audit／content 寫入前核對 env 解析出的 origin，不符回 `fatal`／`origin_mismatch`，不可採用 CLI 回傳的另一站作新 target。
+- CLI stdout 最後一個非空行必須是 JSON envelope：`{ok:true,data:{...}}`（兼容現行 adapter 的 `result`）或 `{ok:false,error:{...}}`，並核對程序退出碼。回傳 publication ID、stage 與錯誤分類，部分套用仍可恢復。
+- CLI session 統一主持 drift guard、force audit 與 baseline。工具只把客戶提供的 `force_reason` 轉成一次 `--force --reason`；schema／lease 409 不等同 drift，不自動 force。工具不自行寫 audit 或回寫 `preview-meta.json`。
+- 工具尚無完整公開頁面／瀏覽器證據，接受命令仍回 `status=triggered`、`content_verified=false`，不可據此宣稱已上線；檔案數、HTTP 200 與資料庫指紋變化也不是發布完成證據。
+
 ### `.pi/profiles/<name>.toml` schema
 
 ```toml

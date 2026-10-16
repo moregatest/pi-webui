@@ -29,7 +29,7 @@ export interface UiProfile {
   // hideToolCalls=true 下的 tool 白名單:清單內 tool 的「結果」仍送給客戶
   // (tool_execution_end 事件 + toolResult 訊息 / tool_result block)。
   // 目的是給客戶一條獨立驗證管道 —— 例如 publish_confirmed 的 ok / status /
-  // source_lng / content_sha256 / forced 原始回傳值,客戶可自行核對,而不是
+  // source_lng / origin_sha_before / content_verified / forced 原始回傳值,客戶可自行核對,而不是
   // 只能單方面相信 agent 的轉述。tool_call(參數)不在白名單範圍,一律照舊隱藏。
   showToolResultsFor: string[];
   // custom(extension pi.sendMessage 注入)訊息出口 fail-closed(#102):

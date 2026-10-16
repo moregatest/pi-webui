@@ -13,6 +13,7 @@
 ## done
 
 ```
+[x] customer publish_confirmed uses one PGC publication session with durable confirmation/candidate mapping, status-before-resume, classified JSON errors and honest triggered/content_verified=false evidence; CLI owns drift/audit/baseline (Issue 144 companion required)
 [x] continue most recent pi session on startup
 [x] list sessions in the current project
 [x] sessions default to project-local `<cwd>/.pi/sessions/` (`--session-dir` / `PI_SESSION_DIR` override; legacy cross-project picker removed)
