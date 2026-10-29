@@ -18,13 +18,14 @@ export interface AcceptDeps {
   disabled?: boolean;
 }
 export type AcceptLaunch = "started" | "running" | "finished" | "disabled" | "unavailable";
-export type PublicationState = "verified" | "running" | "expired_unverified" | "failed" | "unknown";
+export type PublicationState = "verified" | "running" | "expired_unverified" | "superseded" | "failed" | "unknown";
 
 /** C3 對客戶用語；不得出現「已通知」任何人。 */
 export const ACCEPT_WORDING: Record<PublicationState, string> = {
   verified: "已完成上線驗收",
   running: "正在做上線驗收",
   expired_unverified: "內容已更新到網站，但沒來得及完成完整驗收，已記錄由後勤追蹤",
+  superseded: "這次的修改已被之後的發布涵蓋，以最新一次發布為準",
   failed: "上線驗收沒有通過，已記錄由後勤追蹤",
   unknown: "目前還查不到最終結果，請稍後再問我",
 };
@@ -150,11 +151,13 @@ export interface CliStatus { ok: boolean; stage?: string; content_verified?: boo
 
 /**
  * 依 CLI status 與 accept 結果分類。優先序：
- * status verified（content_verified=true）＞ status expired_unverified ＞ 執行中 ＞ accept 結果 ＞ unknown。
+ * status verified（content_verified=true）＞ status expired_unverified／superseded（終止）＞ 執行中 ＞ accept 結果 ＞ unknown。
  */
 export function classifyPublication(status: CliStatus, accept: AcceptSnapshot): PublicationState {
   if (status.ok && status.stage === "verified" && status.content_verified === true) return "verified";
   if (status.ok && status.stage === "expired_unverified") return "expired_unverified";
+  // 被同站後續發布取代（終止 stage，content_verified=false）；不再補跑 accept。
+  if (status.ok && status.stage === "superseded") return "superseded";
   if (accept.running) return "running";
   if (accept.resultInvalid) return "failed";
   const r = accept.result;

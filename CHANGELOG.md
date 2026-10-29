@@ -13,6 +13,7 @@
 - 新工具 `publication_status`：讀 `preview publication status`＋accept 結果，分類 verified／running／expired_unverified／failed／unknown
   並回客戶用語；`content_verified` 只轉述 CLI。stage 仍是 `awaiting_(raw|normal)_(verification|browser)` 且無結果、無執行中程序時自動補跑
 - 內建 `show_tool_results_for` 預設加入 `publication_status`
+- `publication_status` 新增終止狀態 `superseded`（被同站後續發布取代，`content_verified=false`）→「這次的修改已被之後的發布涵蓋，以最新一次發布為準」，不補跑 accept
 
 ## 2026-08-20 (publish_confirmed 結果對客戶可見)
 

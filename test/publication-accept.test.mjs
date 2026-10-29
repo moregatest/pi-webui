@@ -137,6 +137,21 @@ describe('publication accept（readyai#162 C3）', () => {
     }, fake.deps);
   });
 
+  it('superseded（被同站後續發布取代）→ 固定用語、content_verified=false、不補跑', async () => {
+    const fake = fakeAccept({ alive: false });
+    await fixture(async ({ call, setState }) => {
+      await call('publish_confirmed');
+      setState({ status: { stage: 'superseded', content_verified: false } });
+      const s = await call('publication_status');
+      assert.deepEqual([s.state, s.message, s.content_verified, s.stage], ['superseded', '這次的修改已被之後的發布涵蓋，以最新一次發布為準', false, 'superseded']);
+      assert.equal(s.acceptance, undefined);
+      assert.equal(fake.spawned.length, 1);
+    }, fake.deps);
+    // 即使 accept 結果寫 failed，CLI 終止 stage 仍優先
+    assert.equal(classifyPublication({ ok: true, stage: 'superseded', content_verified: false }, { running: false, result: { ok: true, result: 'failed' } }), 'superseded');
+    assert.equal(classifyPublication({ ok: true, stage: 'superseded', content_verified: false }, { running: true }), 'superseded');
+  });
+
   it('content_verified 只信 CLI：accept 說 verified 但 status 不是 → failed；status 查不到才採信 accept', () => {
     const acc = { running: false, result: { ok: true, result: 'verified', content_verified: true } };
     assert.equal(classifyPublication({ ok: true, stage: 'awaiting_normal_verification', content_verified: false }, acc), 'failed');
