@@ -10,6 +10,13 @@ import {
   type LocalPublishConfig,
   type PublishLocalDeps,
 } from "../tools/customer-publish-tools.js";
+import {
+  createPreviewDbHasher,
+  parseSourceBaseline,
+  selectChangedLanguages,
+  type PreviewDbHasher,
+  type SourceBaseline,
+} from "./publish-languages.js";
 
 export interface CustomerInjectionInput {
   isCustomer: boolean;
@@ -64,12 +71,15 @@ export function shouldInjectHostGuards(input: {
 export interface PreviewMetaConfig {
   appName?: string | null;
   sourceLng?: string | null;
+  /** source-version v2 主語系 baseline；舊 meta 無 sources 時為 undefined。 */
+  sourceBaseline?: SourceBaseline;
 }
 
 /**
  * 從 data/preview-meta.json 文字解析 publish 所需欄位：
  *   - app_name（Fly app 名）
- *   - origin_source_version.source_lng（來源語系）
+ *   - origin_source_version.source_lng（來源語系，v1）
+ *   - origin_source_version.sources / sources_order（主語系 baseline，v2）
  * Phase 4 凍結契約：baseline 落點 preview-meta.json，不再讀 .onboard-status.yaml。
  */
 export function parsePreviewMetaConfig(text: string | null): PreviewMetaConfig {
@@ -91,6 +101,8 @@ export function parsePreviewMetaConfig(text: string | null): PreviewMetaConfig {
   if (ov && typeof ov === "object") {
     const o = ov as Record<string, unknown>;
     if (typeof o.source_lng === "string" && o.source_lng) out.sourceLng = o.source_lng;
+    const baseline = parseSourceBaseline(o);
+    if (baseline) out.sourceBaseline = baseline;
   }
   return out;
 }
@@ -109,19 +121,34 @@ export function subdomainOfHost(host: string | undefined): string | null {
   }
 }
 
-/** 解析 LocalPublishConfig；缺 originBaseUrl / token 時回 null（不注入 publish tool）。 */
+/**
+ * 解析 LocalPublishConfig；缺 originBaseUrl / token 時回 null（不注入 publish tool）。
+ * 發布語系：
+ *   - meta 有 v2 sources：每次發布時才比對「預覽站 db_<lng> 與 baseline」，只發布有變動的主語系
+ *     （session 開啟後客戶仍會繼續修改，不能在注入時就定死）
+ *   - 舊 meta 無 sources：退回 v1 行為 [source_lng]
+ */
 export function resolveLocalPublishConfig(
   env: Record<string, string | undefined>,
   meta: PreviewMetaConfig,
   appCwd: string,
+  previewHash?: PreviewDbHasher,
 ): LocalPublishConfig | null {
   const originBaseUrl = (env.PC2_SERVICE_HOST_ORIGINAL ?? "").trim();
   const siteToken = (env.PC2_API_TOKEN ?? "").trim();
   if (!originBaseUrl || !siteToken) return null;
 
   const sourceLng = (meta.sourceLng ?? "").trim() || "en";
-  // preview-meta.json 無 languages 清單（Phase 4 契約：僅來源語系參與 drift 比對）
-  const languages = [sourceLng];
+  const baseline = meta.sourceBaseline;
+  const languages = baseline ? [...baseline.order] : [sourceLng];
+  let resolveLanguages: (() => Promise<string[]>) | undefined;
+  if (baseline) {
+    const host = (env.PC2_SERVICE_HOST ?? "").trim();
+    const hasher = previewHash ?? (host ? createPreviewDbHasher(host, siteToken) : undefined);
+    resolveLanguages = hasher
+      ? () => selectChangedLanguages(baseline, hasher)
+      : () => Promise.reject(new Error("PC2_SERVICE_HOST 未設定，無法比對預覽站 DB"));
+  }
 
   const appName = (meta.appName ?? "").trim()
     || subdomainOfHost(env.PC2_SERVICE_HOST)
@@ -129,7 +156,10 @@ export function resolveLocalPublishConfig(
 
   const confirmationId = (env.PGC_CONFIRMATION_ID ?? "").trim() || "cli";
 
-  return { cwd: appCwd, originBaseUrl, siteToken, appName, languages, confirmationId };
+  return {
+    cwd: appCwd, originBaseUrl, siteToken, appName, languages, confirmationId,
+    ...(resolveLanguages ? { resolveLanguages } : {}),
+  };
 }
 
 /** 預設 deps 解析：從 process.env + <appCwd>/data/preview-meta.json 建 publish deps。 */

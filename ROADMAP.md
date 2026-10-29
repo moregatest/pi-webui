@@ -14,6 +14,7 @@
 
 ```
 [x] customer publish_confirmed uses one PGC publication session with durable confirmation/candidate mapping, status-before-resume, classified JSON errors and honest triggered/content_verified=false evidence; CLI owns drift/audit/baseline (Issue 144 companion required)
+[x] publish_confirmed 依 source-version v2 只發布有變動的主語系（預覽站 `db_<lng>` sha256 對 baseline `sources.<lng>`；舊 meta 退回 `[source_lng]`；都沒變回 `no_changes`；`check_only` 先列出將發布語系供客戶確認）
 [x] continue most recent pi session on startup
 [x] list sessions in the current project
 [x] sessions default to project-local `<cwd>/.pi/sessions/` (`--session-dir` / `PI_SESSION_DIR` override; legacy cross-project picker removed)

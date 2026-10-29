@@ -11,7 +11,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 export interface CliRunResult { exitCode: number; stdout: string; stderr: string }
 export interface PublishResult {
   ok: boolean;
-  status?: "triggered" | "origin_drift" | "verified";
+  status?: "triggered" | "origin_drift" | "verified" | "no_changes" | "pending_confirmation";
   publication_id?: string;
   stage?: string;
   candidate_digest?: string;
@@ -30,7 +30,7 @@ export interface PublishResult {
   changed_records?: "unknown";
   details?: Record<string, unknown>;
 }
-interface PublishInput { reason?: string; confirmation_id?: string; publication_id?: string }
+interface PublishInput { reason?: string; confirmation_id?: string; publication_id?: string; check_only?: boolean }
 export interface PublishExecutionContext { toolCallId: string }
 export interface PublishLocalDeps { publish: (input: PublishInput, context?: PublishExecutionContext) => Promise<PublishResult> }
 /** 可替換的檔案開啟邊界；預設使用真實 FileHandle，包含每個必要 fsync。 */
@@ -41,6 +41,11 @@ export interface LocalPublishConfig {
   siteToken: string;
   appName: string;
   languages: string[];
+  /**
+   * 發布當下才決定語系（source-version v2：主語系中預覽站 DB 與 baseline 不同者）。
+   * 有值時覆蓋 languages；回傳空陣列＝沒有需要發布的變更。
+   */
+  resolveLanguages?: () => Promise<string[]>;
   /** PGC_CONFIRMATION_ID；缺省 cli 不構成客戶確認的唯一身分。 */
   confirmationId?: string;
   /** 保留既有 config 相容；工具不自行連 origin 或寫 audit。 */
@@ -127,7 +132,7 @@ function fromEnvelope(envelope: Record<string, any>, config: LocalPublishConfig,
       scope: "pgc", app: data.app, origin: originIdentity(data.origin), languages: data.languages,
       // 本工具尚未接收 public/raw/normal/browser 證據；不能只升格 CLI 的布林值。
       content_verified: false, changed_records: "unknown",
-      message: "發布命令已接受；尚無完整公開頁面與瀏覽器驗證，不可宣稱已完成上線。",
+      message: `發布命令已接受（語系：${data.languages.join("、")}）；尚無完整公開頁面與瀏覽器驗證，不可宣稱已完成上線。`,
     };
   }
   const error = envelope.error;
@@ -335,9 +340,30 @@ function verifiedExport(data: unknown, config: LocalPublishConfig, id: string, d
     publication_evidence:proof, changed_records:"unknown", message:"同一發布的完整實體證據已通過重新驗證。" };
 }
 
-export function createLocalPublishDeps(config: LocalPublishConfig, io: PublicationFileIO = { open }): PublishLocalDeps {
+/** 依 resolveLanguages 決定本次語系；失敗或沒有變更時回 PublishResult 讓呼叫端直接結束。 */
+async function resolveConfig(base: LocalPublishConfig, id?: string): Promise<LocalPublishConfig | PublishResult> {
+  if (!base.resolveLanguages) return base;
+  let languages: string[];
+  try { languages = await base.resolveLanguages(); }
+  catch { return failure("language_detection_failed", "無法比對預覽站與原站各主語系的資料庫，暫不發布；請稍後重試或聯絡顧問。", id); }
+  if (!languages.length) return {
+    ok: false, status: "no_changes", languages: [], content_verified: false,
+    ...(id ? { publication_id: id } : {}),
+    error: "沒有需要發布的變更：各主語系預覽站資料庫與原站基準相同。", details: { code: "no_changes" },
+  };
+  return { ...base, languages };
+}
+
+export function createLocalPublishDeps(baseConfig: LocalPublishConfig, io: PublicationFileIO = { open }): PublishLocalDeps {
   return { async publish(input, context) {
     let id = input.publication_id;
+    const resolved = await resolveConfig(baseConfig, id);
+    if ("ok" in resolved) return resolved;
+    const config = resolved;
+    if (input.check_only) return {
+      ok: true, status: "pending_confirmation", languages: [...config.languages], content_verified: false,
+      message: `將發布語系：${config.languages.join("、")}。請向客戶列出這些語系並取得明確確認後，再帶 confirmation_id 呼叫發布。`,
+    };
     try {
       const origin = originIdentity(config.originBaseUrl);
       if (!config.appName || !config.languages.length || new Set(config.languages).size !== config.languages.length
@@ -407,8 +433,9 @@ export function createLocalPublishDeps(config: LocalPublishConfig, io: Publicati
 }
 
 export async function runPublishFlow(deps: PublishLocalDeps, reasonRaw: unknown, input: Record<string, unknown> = {}, context?: PublishExecutionContext): Promise<PublishResult> {
-  if (Object.keys(input).some(k => !["force_reason", "confirmation_id", "publication_id"].includes(k))
-    || (reasonRaw !== undefined && typeof reasonRaw !== "string")) return failure("invalid_input", "發布參數無效");
+  if (Object.keys(input).some(k => !["force_reason", "confirmation_id", "publication_id", "check_only"].includes(k))
+    || (reasonRaw !== undefined && typeof reasonRaw !== "string")
+    || (input.check_only !== undefined && typeof input.check_only !== "boolean")) return failure("invalid_input", "發布參數無效");
   const reason = (reasonRaw as string | undefined)?.trim();
   if (reason && Buffer.byteLength(reason, "utf-8") > 512) return failure("invalid_input", "force_reason 超過 512 bytes 上限");
   for (const key of ["confirmation_id", "publication_id"]) {
@@ -418,17 +445,19 @@ export async function runPublishFlow(deps: PublishLocalDeps, reasonRaw: unknown,
   const publication_id = (input.publication_id as string | undefined)?.trim();
   const confirmation_id = (input.confirmation_id as string | undefined)?.trim();
   if ((publication_id && !ID.test(publication_id)) || confirmation_id === "cli") return failure("invalid_input", "publication／confirmation ID 無效");
+  if (input.check_only === true) return deps.publish({ check_only: true }, context);
   return deps.publish({ reason, confirmation_id, publication_id }, context);
 }
 
 export function buildCustomerPublishTools(deps: PublishLocalDeps): ToolDefinition[] {
   return [defineTool({
     name: "publish_confirmed", label: "觸發發布",
-    description: "客戶明確確認後，以單一 PGC publication session 發布圖片附件與指定語系 DB。提供穩定 confirmation_id，重試不得更換；恢復可提供 publication_id。drift 與強制發布審計由 CLI 主持。",
-    promptGuidelines: ["status=triggered 或 content_verified=false 時，禁止宣稱已上線、發布成功或驗證完成。相同確認的候選變更需重新取得確認；409 不一定是 drift，不可自行加入 force。"],
+    description: "客戶明確確認後，以單一 PGC publication session 發布圖片附件與有變動的主語系 DB。先以 check_only=true 取得將發布的語系，列給客戶確認。提供穩定 confirmation_id，重試不得更換；恢復可提供 publication_id。drift 與強制發布審計由 CLI 主持。",
+    promptGuidelines: ["請客戶確認發布前，先呼叫 check_only=true，並在確認訊息中逐一列出回傳的 languages；status=no_changes 代表沒有需要發布的變更，不可說已發布。", "status=triggered 或 content_verified=false 時，禁止宣稱已上線、發布成功或驗證完成。相同確認的候選變更需重新取得確認；409 不一定是 drift，不可自行加入 force。"],
     parameters: Type.Object({
       confirmation_id: Type.Optional(Type.String({ description: "本次客戶明確確認的唯一身分；重試沿用，候選變更需新的確認。PGC_CONFIRMATION_ID 缺省 cli 時必填。" })),
       publication_id: Type.Optional(Type.String({ description: "既有 publication ID；先查核 status 再恢復，不建立新 lease。" })),
+      check_only: Type.Optional(Type.Boolean({ description: "true＝只回報將發布的語系（不發布、不需 confirmation_id），用於向客戶確認前列出語系。" })),
       force_reason: Type.Optional(Type.String({ description: "僅在 CLI 回報來源語系資料庫指紋 drift 時，由客戶提供的強制發布原因；CLI 寫入審計。不可用來繞過 schema 或 lease 衝突。" })),
     }),
     async execute(toolCallId, params, _signal, _onUpdate, _ctx) {

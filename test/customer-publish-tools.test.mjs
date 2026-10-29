@@ -580,3 +580,59 @@ it('rejects oversized CLI output instead of accepting its trailing success envel
     assert.equal(result.content_verified, false);
   });
 });
+
+describe('source-version v2 dynamic languages', () => {
+  it('no changed primary language → no_changes without any CLI call', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      respond(success());
+      const result = await execute(tool());
+      assert.equal(result.ok, false);
+      assert.equal(result.status, 'no_changes');
+      assert.deepEqual(result.languages, []);
+      assert.equal(calls().length, 0);
+    }, { resolveLanguages: async () => [] });
+  });
+
+  it('language detection failure blocks publish without CLI calls', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      respond(success());
+      const result = await execute(tool());
+      assert.equal(result.ok, false);
+      assert.equal(result.details.code, 'language_detection_failed');
+      assert.equal(calls().length, 0);
+    }, { resolveLanguages: async () => { throw new Error('boom'); } });
+  });
+
+  it('check_only lists languages to publish and never touches CLI', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      respond(success());
+      const result = await execute(tool(), { check_only: true });
+      assert.equal(result.ok, true);
+      assert.equal(result.status, 'pending_confirmation');
+      assert.deepEqual(result.languages, ['en', 'zh-TW']);
+      assert.match(result.message, /en、zh-TW/);
+      assert.equal(calls().length, 0);
+    }, { resolveLanguages: async () => ['en', 'zh-TW'] });
+  });
+
+  it('resolved languages are passed to --lng and listed in the triggered message', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      respond(success({ languages: ['zh-TW'] }), 0, '', { candidateData: { ...evidence, languages: ['zh-TW'] } });
+      const result = await execute(tool());
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.deepEqual(result.languages, ['zh-TW']);
+      assert.match(result.message, /語系：zh-TW/);
+      const candidate = calls().find(a => a[2] === 'candidate');
+      assert.equal(candidate[candidate.indexOf('--lng') + 1], 'zh-TW');
+    }, { resolveLanguages: async () => ['zh-TW'] });
+  });
+
+  it('rejects non-boolean check_only', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      respond(success());
+      const result = await execute(tool(), { check_only: 'yes' });
+      assert.equal(result.details.code, 'invalid_input');
+      assert.equal(calls().length, 0);
+    });
+  });
+});
