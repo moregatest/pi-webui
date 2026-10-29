@@ -147,6 +147,20 @@ export function readAcceptSnapshot(cwd: string, id: string, deps: AcceptDeps = {
   return { running: false, resultInvalid: true };
 }
 
+const isRecord = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
+/**
+ * 取出 C1 的內層結果。支援三種形狀：
+ * - JsonCommand 慣例（W8 實際輸出）：{ok, result:{result, stage, content_verified, …}}，外層 result 是物件
+ * - {ok, data:{…}}
+ * - 平鋪：{ok, result:"verified|…", content_verified, …}，外層 result 是字串
+ */
+export function acceptPayload(r: Record<string, any>): Record<string, any> {
+  if ("data" in r && "result" in r && isRecord(r.data) && isRecord(r.result)) return {}; // 雙重權威，不採信
+  if (isRecord(r.result)) return r.result;
+  if (isRecord(r.data)) return r.data;
+  return r;
+}
+
 export interface CliStatus { ok: boolean; stage?: string; content_verified?: boolean }
 
 /**
@@ -162,8 +176,9 @@ export function classifyPublication(status: CliStatus, accept: AcceptSnapshot): 
   if (accept.resultInvalid) return "failed";
   const r = accept.result;
   if (r) {
-    const data = r.ok === true && r.data && typeof r.data === "object" ? r.data : r;
     if (r.ok !== true) return "failed";
+    const data = acceptPayload(r);
+    if (data.stage === "superseded") return "superseded";
     if (data.result === "verified" && data.content_verified === true) {
       // status 查不到時採信 accept；status 查得到卻不是 verified＝前後不一致，交後勤。
       return status.ok ? "failed" : "verified";

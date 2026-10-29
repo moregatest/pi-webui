@@ -14,6 +14,7 @@
   並回客戶用語；`content_verified` 只轉述 CLI。stage 仍是 `awaiting_(raw|normal)_(verification|browser)` 且無結果、無執行中程序時自動補跑
 - 內建 `show_tool_results_for` 預設加入 `publication_status`
 - `publication_status` 新增終止狀態 `superseded`（被同站後續發布取代，`content_verified=false`）→「這次的修改已被之後的發布涵蓋，以最新一次發布為準」，不補跑 accept
+- accept 結果解析支援 C1 JsonCommand 實際形狀 `{ok, result:{result, stage, content_verified, …}}`，保留 `{ok, data:{…}}` 與平鋪形狀；內層 `stage:"superseded"` 歸 superseded；`data` 與 `result` 物件並存視為雙重權威不採信
 
 ## 2026-08-20 (publish_confirmed 結果對客戶可見)
 

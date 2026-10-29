@@ -161,6 +161,62 @@ describe('publication accept（readyai#162 C3）', () => {
     assert.equal(classifyPublication({ ok: false }, { running: false, result: { ok: true, data: { result: 'expired_unverified', content_verified: false } } }), 'expired_unverified');
   });
 
+  it('C1 JsonCommand 形狀 {ok, result:{result,…}}：verified／expired_unverified／failed／superseded 都正確分類', () => {
+    const c1 = (inner) => ({ running: false, result: { ok: true, result: {
+      publication_id: 'pgc-1', stage: 'verified', content_verified: false,
+      phases: { raw: 'verified', end: 'done', normal: 'verified' }, evidence_dir: '/tmp/e', error: null, ...inner } } });
+    const noStatus = { ok: false };
+    const verified = c1({ result: 'verified', stage: 'verified', content_verified: true });
+    assert.equal(classifyPublication(noStatus, verified), 'verified');
+    // status 查得到且 verified 時一致
+    assert.equal(classifyPublication({ ok: true, stage: 'verified', content_verified: true }, verified), 'verified');
+    // status 查得到卻未 verified：前後不一致交後勤
+    assert.equal(classifyPublication({ ok: true, stage: 'awaiting_normal_verification', content_verified: false }, verified), 'failed');
+    // verified 但 content_verified 不是 true：不升格
+    assert.equal(classifyPublication(noStatus, c1({ result: 'verified', content_verified: false })), 'failed');
+    const expired = c1({ result: 'expired_unverified', stage: 'expired_unverified', content_verified: false,
+      phases: { raw: 'skipped', end: 'skipped', normal: 'skipped' } });
+    assert.equal(classifyPublication(noStatus, expired), 'expired_unverified');
+    assert.equal(classifyPublication({ ok: true, stage: 'awaiting_raw_verification', content_verified: false }, expired), 'expired_unverified');
+    const failed = c1({ result: 'failed', stage: 'awaiting_raw_verification', content_verified: false,
+      phases: { raw: 'failed', end: 'skipped', normal: 'skipped' }, error: { code: 'raw_mismatch', message: 'x' } });
+    assert.equal(classifyPublication(noStatus, failed), 'failed');
+    const superseded = c1({ result: 'failed', stage: 'superseded', content_verified: false,
+      phases: { raw: 'skipped', end: 'skipped', normal: 'skipped' }, error: { code: 'superseded', message: 'x' } });
+    assert.equal(classifyPublication(noStatus, superseded), 'superseded');
+    // ok:false（用法錯誤）一律 failed
+    assert.equal(classifyPublication(noStatus, { running: false, result: { ok: false, error: { code: 'usage' } } }), 'failed');
+    // 另兩種相容形狀仍有效
+    assert.equal(classifyPublication(noStatus, { running: false, result: { ok: true, result: 'verified', content_verified: true } }), 'verified');
+    assert.equal(classifyPublication(noStatus, { running: false, result: { ok: true, data: { result: 'expired_unverified', content_verified: false } } }), 'expired_unverified');
+    // data 與 result 物件同時出現＝雙重權威，不採信
+    assert.equal(classifyPublication(noStatus, { running: false, result: { ok: true, data: { result: 'verified', content_verified: true }, result: { result: 'verified', content_verified: true } } }), 'failed');
+  });
+
+  it('結果檔為 C1 JsonCommand 形狀（status 查不到）→ publication_status 依此分類', async () => {
+    const fake = fakeAccept({ alive: false });
+    await fixture(async ({ dir, call, setState }) => {
+      const { publication_id: id } = await call('publish_confirmed');
+      const file = path.join(dir, `${id}.accept.json`);
+      const write = inner => fs.writeFileSync(file, 'progress line\n' + JSON.stringify({ ok: true, result: { publication_id: id, phases: {}, evidence_dir: null, error: null, ...inner } }) + '\n', { mode: 0o600 });
+      setState({ status: 'missing' });
+      write({ result: 'verified', stage: 'verified', content_verified: true });
+      let s = await call('publication_status');
+      assert.deepEqual([s.state, s.content_verified], ['verified', true]);
+      fs.unlinkSync(file);
+      write({ result: 'expired_unverified', stage: 'expired_unverified', content_verified: false });
+      assert.equal((await call('publication_status')).state, 'expired_unverified');
+      fs.unlinkSync(file);
+      write({ result: 'failed', stage: 'awaiting_raw_verification', content_verified: false, error: { code: 'x', message: 'y' } });
+      assert.equal((await call('publication_status')).state, 'failed');
+      fs.unlinkSync(file);
+      write({ result: 'failed', stage: 'superseded', content_verified: false });
+      s = await call('publication_status');
+      assert.deepEqual([s.state, s.content_verified], ['superseded', false]);
+      assert.equal(fake.spawned.length, 1);
+    }, fake.deps);
+  });
+
   it('沒有任何發布紀錄 → 查不到，不亂猜', async () => {
     await fixture(async ({ call }) => {
       const s = await call('publication_status');
