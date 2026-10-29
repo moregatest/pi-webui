@@ -449,7 +449,7 @@ readyai-webui --profile customer --tunnel \
 
 ### 客戶確認發布（PGC publication）
 
-`publish_confirmed` 只使用 readyAI 的 `preview publication` session，固定 `--scope pgc`，發布圖片／附件與指定語系 DB；客戶不能選 staff scope，也不會回退至 `push-back`／`push-db`。需搭配支援 publication、唯讀 candidate 與 JSON 契約的 readyAI CLI（Issue 144 companion；readyAI 實作 `b6542a7`／候選 CLI 0.6.5，template `c62e35c`，需成套整合）；不支援時直接回報錯誤。
+`publish_confirmed` 只使用 readyAI 的 `preview publication` session，固定 `--scope pgc`，發布圖片／附件與指定語系 DB；客戶不能選 staff scope，也不會回退至 `push-back`／`push-db`。需搭配支援 publication、唯讀 candidate 與 JSON 契約的 readyAI CLI（Issue 144 companion；readyAI 實作 `b6542a7`／候選 CLI 0.6.5，template `c62e35c`，需成套整合）；不支援時直接回報錯誤。`check_only=true` 唯讀呼叫 `preview publication summary`，回傳 `changes`（各語系變動的資料表與新增／修改／刪除筆數，不含記錄內容）；舊版 readyAI 沒有此子命令時回 `changes_available=false`，只列語系。
 
 - 每次明確確認使用唯一 `confirmation_id`（或設定 `PGC_CONFIRMATION_ID`）；重試必須沿用。缺省 `cli` 不算唯一確認。工具先以 `candidate --name APP --scope pgc --lng CSV --expected-origin ORIGIN --json` 核對 app／origin／scope／languages 與字串 `candidate_digest`，再把確認／候選／publication ID 對應以 mode 0600 保存於專案 `data/customer-publications/`；每層目錄的 parent entry、mapping bytes 與最終目錄 entry 全部 fsync 成功後才可 start。同一確認的候選變更會拒絕，需重新取得客戶確認。
 - `candidate` 只計算指定 PGC 圖片／附件與語系 DB 的本機內容指紋及 target identity，不執行 origin equality preflight、cache、audit、session 或寫入；指紋不代表候選已可發布。工具恢復時先讀 candidate，再 status／resume，避免 own DB 套用後被另一輪 `start --dry-run` 的 source drift guard 擋住；正式 start／resume／operator dry-run 的 guards 保留。

@@ -57,7 +57,7 @@ if ((action === 'start' && !args.includes('--dry-run')) || action === 'resume') 
   }
   fs.appendFileSync('mutation.jsonl', JSON.stringify({ action, id }) + '\\n');
 }
-const selected = action === 'candidate' || args.includes('--dry-run') ? response.candidate : action === 'status' ? (response.status || response) : action === 'start' ? (response.start || response) : response;
+const selected = action === 'summary' ? (response.summary || {stdout:'', exitCode:1}) : action === 'candidate' || args.includes('--dry-run') ? response.candidate : action === 'status' ? (response.status || response) : action === 'start' ? (response.start || response) : response;
 const out = selected.stdout.replaceAll('PUBLICATION_ID', id);
 process.stdout.write(out);
 process.stderr.write(response.stderr || '');
@@ -70,7 +70,7 @@ process.exitCode = selected.exitCode;
     fetch: async () => { throw new Error('Tool must not fetch/audit origin'); }, ...extra,
   };
   const tool = (io) => buildCustomerPublishTools(createLocalPublishDeps(config, io))[0];
-  const respond = (body, exitCode = 0, prefix = 'human progress\n', { digest = 'sha256:' + 'ab'.repeat(32), status, start, changeAfterPreflight, candidateData, resolvedOrigins, sourceDriftOnDryRun } = {}) => {
+  const respond = (body, exitCode = 0, prefix = 'human progress\n', { digest = 'sha256:' + 'ab'.repeat(32), status, start, changeAfterPreflight, candidateData, resolvedOrigins, sourceDriftOnDryRun, summary } = {}) => {
     fs.writeFileSync(path.join(cwd, 'response.json'), JSON.stringify({
       stdout: `${prefix}${typeof body === 'string' ? body : JSON.stringify(body)}\n\n`, exitCode,
       stderr: 'upstream private output must not escape',
@@ -78,6 +78,7 @@ process.exitCode = selected.exitCode;
       candidate: { stdout: JSON.stringify({ok:true,data:candidateData ?? {...evidence,candidate_digest:digest}}) + '\n', exitCode: 0 },
       status: status ? { stdout: JSON.stringify(status) + '\n', exitCode: status.ok ? 0 : 3 } : undefined,
       start: start ? { stdout: JSON.stringify(start) + '\n', exitCode: start.ok ? 0 : 3 } : undefined,
+      summary: summary ? { stdout: (typeof summary === 'string' ? summary : JSON.stringify(summary)) + '\n', exitCode: summary.ok === false ? 2 : 0 } : undefined,
     }));
   };
   const calls = () => fs.existsSync(path.join(cwd, 'argv.jsonl'))
@@ -603,17 +604,75 @@ describe('source-version v2 dynamic languages', () => {
     }, { resolveLanguages: async () => { throw new Error('boom'); } });
   });
 
-  it('check_only lists languages to publish and never touches CLI', async () => {
-    await fixture(async ({ tool, respond, calls }) => {
-      respond(success());
+  const summaryOk = (changes) => ({ ok: true, result: { scope: 'pgc', app: 'my-preview', origin, languages: ['en', 'zh-TW'], changes } });
+  const counts = (tables) => ({ tables, totals: {
+    inserted: tables.reduce((n, t) => n + t.inserted, 0), updated: tables.reduce((n, t) => n + t.updated, 0), deleted: tables.reduce((n, t) => n + t.deleted, 0) } });
+
+  it('check_only returns per-language table counts from the read-only summary only', async () => {
+    await fixture(async ({ tool, respond, calls, config }) => {
+      respond(success(), 0, '', { summary: summaryOk({
+        en: counts([{ table: 'product', inserted: 0, updated: 1, deleted: 0 }]),
+        'zh-TW': counts([]),
+      }) });
       const result = await execute(tool(), { check_only: true });
       assert.equal(result.ok, true);
       assert.equal(result.status, 'pending_confirmation');
       assert.deepEqual(result.languages, ['en', 'zh-TW']);
-      assert.match(result.message, /en、zh-TW/);
-      assert.equal(calls().length, 0);
+      assert.deepEqual(result.changes, [
+        { lng: 'en', tables: [{ table: 'product', inserted: 0, updated: 1, deleted: 0 }], totals: { inserted: 0, updated: 1, deleted: 0 } },
+        { lng: 'zh-TW', tables: [], totals: { inserted: 0, updated: 0, deleted: 0 } },
+      ]);
+      assert.match(result.message, /en：product 修改 1 筆/);
+      assert.match(result.message, /zh-TW：資料庫沒有記錄變動/);
+      // 只呼叫唯讀 summary：不 candidate／start、不寫 mapping
+      assert.deepEqual(calls().map(a => a.slice(0, 3)), [['preview', 'publication', 'summary']]);
+      const args = calls()[0];
+      assert.equal(args[args.indexOf('--scope') + 1], 'pgc');
+      assert.equal(args[args.indexOf('--lng') + 1], 'en,zh-TW');
+      assert.equal(args[args.indexOf('--expected-origin') + 1], origin);
+      assert.equal(args.includes('--force'), false);
+      assert.equal(fs.existsSync(path.join(config.cwd, 'mutation.jsonl')), false);
+      assert.equal(fs.existsSync(path.join(config.cwd, 'data/customer-publications')), false);
     }, { resolveLanguages: async () => ['en', 'zh-TW'] });
   });
+
+  it('check_only strips anything beyond table names and counts', async () => {
+    await fixture(async ({ tool, respond }) => {
+      respond(success(), 0, '', { summary: summaryOk({
+        en: { tables: [{ table: 'product', inserted: 1, updated: 0, deleted: 0, schema_changed: true, title: 'SECRET', url: 'https://x/?token=t' }],
+          totals: { inserted: 1, updated: 0, deleted: 0 }, token: 'never' },
+        'zh-TW': counts([]),
+      }) });
+      const result = await execute(tool(), { check_only: true });
+      const text = JSON.stringify(result);
+      assert.equal(/SECRET|token|https:\/\/x/.test(text), false, text);
+      assert.deepEqual(result.changes[0].tables, [{ table: 'product', inserted: 1, updated: 0, deleted: 0, schema_changed: true }]);
+    }, { resolveLanguages: async () => ['en', 'zh-TW'] });
+  });
+
+  for (const [label, summary] of [
+    ['CLI failure', { ok: false, error: { message: 'x', error_class: 'retryable', retryable: true, hint: 'h', details: { code: 'db_readback_unavailable' } } }],
+    ['language mismatch', { ok: true, result: { languages: ['en'], changes: { en: { tables: [], totals: { inserted: 0, updated: 0, deleted: 0 } } } } }],
+    ['bad table name', { ok: true, result: { languages: ['en', 'zh-TW'], changes: {
+      en: { tables: [{ table: 'a b; drop', inserted: 1, updated: 0, deleted: 0 }], totals: { inserted: 1, updated: 0, deleted: 0 } },
+      'zh-TW': { tables: [], totals: { inserted: 0, updated: 0, deleted: 0 } } } } }],
+    ['negative count', { ok: true, result: { languages: ['en', 'zh-TW'], changes: {
+      en: { tables: [{ table: 'product', inserted: -1, updated: 0, deleted: 0 }], totals: { inserted: -1, updated: 0, deleted: 0 } },
+      'zh-TW': { tables: [], totals: { inserted: 0, updated: 0, deleted: 0 } } } } }],
+  ]) {
+    it(`check_only still lists languages but marks changes unavailable on ${label}`, async () => {
+      await fixture(async ({ tool, respond }) => {
+        respond(success(), 0, '', { summary });
+        const result = await execute(tool(), { check_only: true });
+        assert.equal(result.ok, true);
+        assert.equal(result.status, 'pending_confirmation');
+        assert.deepEqual(result.languages, ['en', 'zh-TW']);
+        assert.equal(result.changes, undefined);
+        assert.equal(result.changes_available, false);
+        assert.match(result.message, /無法取得逐表變動摘要/);
+      }, { resolveLanguages: async () => ['en', 'zh-TW'] });
+    });
+  }
 
   it('resolved languages are passed to --lng and listed in the triggered message', async () => {
     await fixture(async ({ tool, respond, calls }) => {

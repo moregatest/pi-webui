@@ -28,8 +28,15 @@ export interface PublishResult {
   message?: string;
   error?: string;
   changed_records?: "unknown";
+  /** check_only：各語系逐表記錄數（只含表名與計數，不含記錄內容）。 */
+  changes?: LanguageChanges[];
+  /** check_only：false＝讀不到逐表摘要（仍可依語系確認）。 */
+  changes_available?: boolean;
   details?: Record<string, unknown>;
 }
+export interface TableChange { table: string; inserted: number; updated: number; deleted: number; schema_changed?: true }
+export interface ChangeTotals { inserted: number; updated: number; deleted: number }
+export interface LanguageChanges { lng: string; tables: TableChange[]; totals: ChangeTotals }
 interface PublishInput { reason?: string; confirmation_id?: string; publication_id?: string; check_only?: boolean }
 export interface PublishExecutionContext { toolCallId: string }
 export interface PublishLocalDeps { publish: (input: PublishInput, context?: PublishExecutionContext) => Promise<PublishResult> }
@@ -174,7 +181,7 @@ function runCli(config: LocalPublishConfig, args: string[]): Promise<CliRunResul
 }
 function command(config: LocalPublishConfig, action: string, id?: string, reason?: string, expectedCandidateDigest?: string): string[] {
   const args = ["preview", "publication", action, "--name", config.appName, "--expected-origin", originIdentity(config.originBaseUrl)];
-  if (action === "start" || action === "candidate") args.push("--scope", "pgc", "--lng", config.languages.join(","));
+  if (action === "start" || action === "candidate" || action === "summary") args.push("--scope", "pgc", "--lng", config.languages.join(","));
   if (id) args.push("--publication-id", id);
   if (id && (action === "start" || action === "resume" || action === "export-evidence")) {
     if (!isDigest(expectedCandidateDigest)) throw new Error("missing expected candidate digest");
@@ -340,6 +347,65 @@ function verifiedExport(data: unknown, config: LocalPublishConfig, id: string, d
     publication_evidence:proof, changed_records:"unknown", message:"同一發布的完整實體證據已通過重新驗證。" };
 }
 
+const TABLE = /^[A-Za-z0-9_]{1,64}$/;
+const COUNT_KEYS = ["inserted", "updated", "deleted"] as const;
+const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
+
+/**
+ * 嚴格解析 readyAI `preview publication summary` 的結果，只挑出表名與計數（readyai#160）。
+ * 語系必須與本次發布語系完全相同；任何格式不符都 throw，由呼叫端標成摘要不可用。
+ */
+export function parseChangeSummary(data: unknown, languages: string[]): LanguageChanges[] {
+  if (!object(data) || !sameLanguages(data.languages, languages) || !object(data.changes)
+    || !sameLanguages(Object.keys(data.changes), languages)) throw new Error("summary languages mismatch");
+  return languages.map(lng => {
+    const entry = data.changes[lng];
+    if (!object(entry) || !Array.isArray(entry.tables) || entry.tables.length > 1000 || !object(entry.totals)) throw new Error("invalid summary");
+    const seen = new Set<string>();
+    const tables = entry.tables.map((row: unknown): TableChange => {
+      if (!object(row) || typeof row.table !== "string" || !TABLE.test(row.table) || seen.has(row.table)
+        || !COUNT_KEYS.every(k => isCount(row[k])) || (row.schema_changed !== undefined && row.schema_changed !== true)) throw new Error("invalid table");
+      seen.add(row.table);
+      return { table: row.table, inserted: row.inserted, updated: row.updated, deleted: row.deleted, ...(row.schema_changed ? { schema_changed: true as const } : {}) };
+    });
+    const totals = Object.fromEntries(COUNT_KEYS.map(k => [k, tables.reduce((n, t) => n + t[k], 0)])) as unknown as ChangeTotals;
+    if (COUNT_KEYS.some(k => entry.totals[k] !== totals[k])) throw new Error("summary totals mismatch");
+    return { lng, tables, totals };
+  });
+}
+
+/** 給 agent 照念的中文摘要：「en：product 修改 1 筆、news 新增 2 筆」。 */
+export function describeChanges(changes: LanguageChanges[]): string {
+  const label = { inserted: "新增", updated: "修改", deleted: "刪除" } as const;
+  return changes.map(({ lng, tables }) => {
+    if (!tables.length) return `${lng}：資料庫沒有記錄變動`;
+    const parts = tables.map(t => {
+      const counts = COUNT_KEYS.filter(k => t[k] > 0).map(k => `${label[k]} ${t[k]} 筆`).join("、");
+      return `${t.table} ${counts || "沒有記錄增減"}${t.schema_changed ? "（表結構不同）" : ""}`;
+    });
+    return `${lng}：${parts.join("；")}`;
+  }).join("。");
+}
+
+async function checkOnly(config: LocalPublishConfig): Promise<PublishResult> {
+  const languages = [...config.languages];
+  let changes: LanguageChanges[] | undefined;
+  try {
+    const out = decode(await runCli(config, command(config, "summary")));
+    if (out.ok) changes = parseChangeSummary(out.data, languages);
+  } catch { changes = undefined; }
+  const head = `將發布語系：${languages.join("、")}。`;
+  const tail = "圖片與附件依預覽站現況一併發布。請向客戶逐項列出以上語系與變動並取得明確確認後，再帶 confirmation_id 呼叫發布。";
+  if (!changes) return {
+    ok: true, status: "pending_confirmation", languages, content_verified: false, changes_available: false,
+    message: `${head}目前無法取得逐表變動摘要，請如實告知客戶只能確認語系。${tail}`,
+  };
+  return {
+    ok: true, status: "pending_confirmation", languages, content_verified: false, changes, changes_available: true,
+    message: `${head}資料庫變動（預覽站與原站目前內容比對）：${describeChanges(changes)}。${tail}`,
+  };
+}
+
 /** 依 resolveLanguages 決定本次語系；失敗或沒有變更時回 PublishResult 讓呼叫端直接結束。 */
 async function resolveConfig(base: LocalPublishConfig, id?: string): Promise<LocalPublishConfig | PublishResult> {
   if (!base.resolveLanguages) return base;
@@ -360,10 +426,8 @@ export function createLocalPublishDeps(baseConfig: LocalPublishConfig, io: Publi
     const resolved = await resolveConfig(baseConfig, id);
     if ("ok" in resolved) return resolved;
     const config = resolved;
-    if (input.check_only) return {
-      ok: true, status: "pending_confirmation", languages: [...config.languages], content_verified: false,
-      message: `將發布語系：${config.languages.join("、")}。請向客戶列出這些語系並取得明確確認後，再帶 confirmation_id 呼叫發布。`,
-    };
+    // check_only 只呼叫唯讀 summary：不 candidate／start、不寫 mapping、不開 lease
+    if (input.check_only) return checkOnly(config);
     try {
       const origin = originIdentity(config.originBaseUrl);
       if (!config.appName || !config.languages.length || new Set(config.languages).size !== config.languages.length
@@ -452,12 +516,12 @@ export async function runPublishFlow(deps: PublishLocalDeps, reasonRaw: unknown,
 export function buildCustomerPublishTools(deps: PublishLocalDeps): ToolDefinition[] {
   return [defineTool({
     name: "publish_confirmed", label: "觸發發布",
-    description: "客戶明確確認後，以單一 PGC publication session 發布圖片附件與有變動的主語系 DB。先以 check_only=true 取得將發布的語系，列給客戶確認。提供穩定 confirmation_id，重試不得更換；恢復可提供 publication_id。drift 與強制發布審計由 CLI 主持。",
-    promptGuidelines: ["請客戶確認發布前，先呼叫 check_only=true，並在確認訊息中逐一列出回傳的 languages；status=no_changes 代表沒有需要發布的變更，不可說已發布。", "status=triggered 或 content_verified=false 時，禁止宣稱已上線、發布成功或驗證完成。相同確認的候選變更需重新取得確認；409 不一定是 drift，不可自行加入 force。"],
+    description: "客戶明確確認後，以單一 PGC publication session 發布圖片附件與有變動的主語系 DB。先以 check_only=true 取得將發布的語系與逐表變動筆數，列給客戶確認。提供穩定 confirmation_id，重試不得更換；恢復可提供 publication_id。drift 與強制發布審計由 CLI 主持。",
+    promptGuidelines: ["請客戶確認發布前，先呼叫 check_only=true，並在確認訊息中逐一列出回傳的 languages 與 changes（各語系變動的資料表與新增／修改／刪除筆數）；changes_available=false 時要告知客戶目前只能確認語系；status=no_changes 代表沒有需要發布的變更，不可說已發布。", "status=triggered 或 content_verified=false 時，禁止宣稱已上線、發布成功或驗證完成。相同確認的候選變更需重新取得確認；409 不一定是 drift，不可自行加入 force。"],
     parameters: Type.Object({
       confirmation_id: Type.Optional(Type.String({ description: "本次客戶明確確認的唯一身分；重試沿用，候選變更需新的確認。PGC_CONFIRMATION_ID 缺省 cli 時必填。" })),
       publication_id: Type.Optional(Type.String({ description: "既有 publication ID；先查核 status 再恢復，不建立新 lease。" })),
-      check_only: Type.Optional(Type.Boolean({ description: "true＝只回報將發布的語系（不發布、不需 confirmation_id），用於向客戶確認前列出語系。" })),
+      check_only: Type.Optional(Type.Boolean({ description: "true＝只回報將發布的語系與各語系逐表記錄數變動（唯讀，不發布、不需 confirmation_id），用於向客戶確認前列出。" })),
       force_reason: Type.Optional(Type.String({ description: "僅在 CLI 回報來源語系資料庫指紋 drift 時，由客戶提供的強制發布原因；CLI 寫入審計。不可用來繞過 schema 或 lease 衝突。" })),
     }),
     async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
