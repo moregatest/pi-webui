@@ -196,7 +196,7 @@ export function resolveCustomerInjection({
       noExtensions: false,
       noSkills: false,
       noTools: undefined,
-      tools: publishTools.length > 0 ? ["read", "bash", "publish_confirmed"] : ["read", "bash"],
+      tools: ["read", "bash", ...publishTools.map((t) => t.name)],
       customTools: sandboxTools ?? undefined,
       extraTools: publishTools.length > 0 ? publishTools : undefined,
     };
@@ -215,7 +215,7 @@ export function resolveCustomerInjection({
       noExtensions: true,
       noSkills: true,
       noTools: "builtin",
-      tools: deps ? ["upload_image", "publish_confirmed"] : ["upload_image"],
+      tools: apiTools.map((t) => t.name),
       customTools: apiTools,
     };
   }

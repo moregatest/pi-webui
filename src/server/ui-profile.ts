@@ -112,7 +112,8 @@ export function parseUiProfile(
     restrictCustomMessages: false,
     // 內建預設放行 publish_confirmed:hideToolCalls=false 的 profile 本來就全顯示,
     // 這個預設實際只對 customer(hideToolCalls=true)生效。
-    showToolResultsFor: ["publish_confirmed"],
+    // publication_status(readyai#162)同理:客戶可自行對照 state／content_verified。
+    showToolResultsFor: ["publish_confirmed", "publication_status"],
     chatLayout: "log",
     brand: {
       name: null,

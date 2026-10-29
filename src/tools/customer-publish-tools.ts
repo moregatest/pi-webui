@@ -3,10 +3,14 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, link, unlink, realpath } from "node:fs/promises";
+import { lstat, mkdir, open, link, unlink, realpath, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import {
+  ACCEPT_ELIGIBLE_STAGE, ACCEPT_WORDING, TRIGGERED_WORDING, classifyPublication, ensureAcceptStarted, readAcceptSnapshot,
+  type AcceptDeps, type AcceptLaunch, type CliStatus, type PublicationState,
+} from "./publication-accept.js";
 
 export interface CliRunResult { exitCode: number; stdout: string; stderr: string }
 export interface PublishResult {
@@ -33,13 +37,31 @@ export interface PublishResult {
   /** check_only：false＝讀不到逐表摘要（仍可依語系確認）。 */
   changes_available?: boolean;
   details?: Record<string, unknown>;
+  /** triggered 後背景上線驗收（readyai#162）的啟動結果。 */
+  acceptance?: AcceptLaunch;
+}
+export interface StatusResult {
+  ok: boolean;
+  state: PublicationState;
+  /** 給 agent 照念的客戶用語（C3）。 */
+  message: string;
+  publication_id?: string;
+  stage?: string;
+  /** 只轉述 CLI 的值，本工具不自行判斷。 */
+  content_verified: boolean;
+  acceptance?: AcceptLaunch;
+  error?: string;
 }
 export interface TableChange { table: string; inserted: number; updated: number; deleted: number; schema_changed?: true }
 export interface ChangeTotals { inserted: number; updated: number; deleted: number }
 export interface LanguageChanges { lng: string; tables: TableChange[]; totals: ChangeTotals }
 interface PublishInput { reason?: string; confirmation_id?: string; publication_id?: string; check_only?: boolean }
 export interface PublishExecutionContext { toolCallId: string }
-export interface PublishLocalDeps { publish: (input: PublishInput, context?: PublishExecutionContext) => Promise<PublishResult> }
+export interface PublishLocalDeps {
+  publish: (input: PublishInput, context?: PublishExecutionContext) => Promise<PublishResult>;
+  /** 客戶問「發布好了沒」：讀 publication status＋背景驗收結果。 */
+  status?: (input: { publication_id?: string }) => Promise<StatusResult>;
+}
 /** 可替換的檔案開啟邊界；預設使用真實 FileHandle，包含每個必要 fsync。 */
 export interface PublicationFileIO { open: typeof open }
 export interface LocalPublishConfig {
@@ -420,8 +442,95 @@ async function resolveConfig(base: LocalPublishConfig, id?: string): Promise<Loc
   return { ...base, languages };
 }
 
-export function createLocalPublishDeps(baseConfig: LocalPublishConfig, io: PublicationFileIO = { open }): PublishLocalDeps {
-  return { async publish(input, context) {
+/** triggered 後立刻在背景啟動 accept（不等它跑完），並把客戶用語換成 C3 版本。 */
+function withBackgroundAccept(result: PublishResult, config: LocalPublishConfig, accept: AcceptDeps): PublishResult {
+  if (!result.ok || result.status !== "triggered" || !result.publication_id || !isDigest(result.candidate_digest)) return result;
+  const acceptance = ensureAcceptStarted(
+    { cwd: config.cwd, appName: config.appName, originBaseUrl: originIdentity(config.originBaseUrl) },
+    { publication_id: result.publication_id, candidate_digest: result.candidate_digest }, accept);
+  if (acceptance === "disabled") return result;
+  const tail = acceptance === "unavailable"
+    ? "背景上線驗收沒有啟動成功，請告知客戶：發布已送出，尚待後勤完成上線驗收。"
+    : `請告知客戶：「${TRIGGERED_WORDING}」。不可承諾會主動通知。`;
+  return { ...result, acceptance, message: `${result.message}${tail}` };
+}
+
+const MAPPING_NAME = /^[a-f0-9]{64}\.json$/;
+
+/** 找本站 mapping：指定 publication_id 就找那筆，否則取最新一筆。 */
+async function findMapping(config: LocalPublishConfig, id: string | undefined, io: PublicationFileIO): Promise<Mapping | undefined> {
+  const root = await realpath(config.cwd);
+  const dir = join(root, "data/customer-publications");
+  let names: string[];
+  try { names = (await readdir(dir)).filter(n => MAPPING_NAME.test(n)); } catch (e) { if (e.code === "ENOENT") return undefined; throw e; }
+  const origin = originIdentity(config.originBaseUrl);
+  let best: { mapping: Mapping; mtime: number } | undefined;
+  for (const name of names) {
+    const path = join(dir, name);
+    const file = await io.open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const st = await file.stat();
+      if (!st.isFile() || st.nlink !== 1 || (st.mode & 0o077) || st.size > 65536
+        || (process.getuid && st.uid !== process.getuid())) continue;
+      const value = JSON.parse(await file.readFile("utf-8"));
+      if (!object(value) || value.schema !== 1 || `${value.confirmation_hash}.json` !== name || value.scope !== "pgc"
+        || value.app !== config.appName || value.origin !== origin || !ID.test(value.publication_id)
+        || !isDigest(value.candidate_digest) || !Array.isArray(value.languages)
+        || value.publication_id !== `pgc-${hash([value.confirmation_hash, value.candidate_digest])}`) continue;
+      if (id !== undefined && value.publication_id !== id) continue;
+      if (!best || st.mtimeMs > best.mtime) best = { mapping: value as Mapping, mtime: st.mtimeMs };
+    } catch { continue; } finally { await file.close(); }
+  }
+  return best?.mapping;
+}
+
+async function publicationStatus(config: LocalPublishConfig, input: { publication_id?: string }, io: PublicationFileIO, accept: AcceptDeps): Promise<StatusResult> {
+  const reply = (state: PublicationState, extra: Partial<StatusResult> = {}): StatusResult =>
+    ({ ok: true, state, message: ACCEPT_WORDING[state], content_verified: false, ...extra });
+  let mapping: Mapping | undefined;
+  try { mapping = await findMapping(config, input.publication_id, io); }
+  catch { return { ...reply("unknown"), ok: false, error: "無法讀取本機發布紀錄" }; }
+  if (!mapping) return { ...reply("unknown"), ok: false, message: "找不到這個網站的發布紀錄；請確認是否已經送出發布。", error: "publication_not_found" };
+  const id = mapping.publication_id;
+  // status 依 publication 自己的語系核對身分，不用本次動態偵測的語系。
+  const scoped: LocalPublishConfig = { ...config, languages: [...mapping.languages] };
+  let status: CliStatus = { ok: false };
+  try {
+    const out = decode(await runCli(scoped, command(scoped, "status", id)));
+    if (out.ok) {
+      const data = validateData(out.data, scoped, id, mapping.candidate_digest);
+      status = { ok: true, stage: data.stage, content_verified: data.content_verified };
+    }
+  } catch { status = { ok: false }; }
+  const acceptCfg = { cwd: config.cwd, appName: config.appName, originBaseUrl: originIdentity(config.originBaseUrl) };
+  let snapshot;
+  try { snapshot = readAcceptSnapshot(config.cwd, id, accept); }
+  catch { return { ...reply("unknown", { publication_id: id, ...(status.stage ? { stage: status.stage } : {}) }), ok: false, error: "背景驗收紀錄無法讀取" }; }
+  let state = classifyPublication(status, snapshot);
+  let acceptance: AcceptLaunch | undefined;
+  // 補跑：沒有結果、沒有執行中程序，且 CLI 說仍在等驗收（例如 runner 被殺或機器重開）。
+  if (state === "unknown" && status.ok && ACCEPT_ELIGIBLE_STAGE.test(status.stage ?? "")) {
+    acceptance = ensureAcceptStarted(acceptCfg, { publication_id: id, candidate_digest: mapping.candidate_digest }, accept);
+    if (acceptance === "started" || acceptance === "running") state = "running";
+  }
+  const verified = state === "verified";
+  return reply(state, {
+    publication_id: id, ...(status.stage ? { stage: status.stage } : {}),
+    content_verified: verified, ...(acceptance ? { acceptance } : {}),
+  });
+}
+
+export function createLocalPublishDeps(baseConfig: LocalPublishConfig, io: PublicationFileIO = { open }, accept: AcceptDeps = {}): PublishLocalDeps {
+  return {
+  status: input => publicationStatus(baseConfig, input, io, accept),
+  async publish(input, context) {
+    const result = await publishOnce(baseConfig, io, input, context);
+    return result.ok && result.status === "triggered" ? withBackgroundAccept(result, { ...baseConfig, languages: result.languages ?? baseConfig.languages }, accept) : result;
+  } };
+}
+
+async function publishOnce(baseConfig: LocalPublishConfig, io: PublicationFileIO, input: PublishInput, context?: PublishExecutionContext): Promise<PublishResult> {
+  {
     let id = input.publication_id;
     const resolved = await resolveConfig(baseConfig, id);
     if ("ok" in resolved) return resolved;
@@ -493,7 +602,7 @@ export function createLocalPublishDeps(baseConfig: LocalPublishConfig, io: Publi
     } catch {
       return failure("invalid_cli_output", "無法確認 publication 狀態或本機確認紀錄；請保留 ID 並查核後恢復，不可盲目重新發布。", id);
     }
-  } };
+  }
 }
 
 export async function runPublishFlow(deps: PublishLocalDeps, reasonRaw: unknown, input: Record<string, unknown> = {}, context?: PublishExecutionContext): Promise<PublishResult> {
@@ -528,5 +637,24 @@ export function buildCustomerPublishTools(deps: PublishLocalDeps): ToolDefinitio
       const result = await runPublishFlow(deps, params.force_reason, params, { toolCallId });
       return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
     },
-  }) as ToolDefinition];
+  }) as ToolDefinition, ...(deps.status ? [buildStatusTool(deps.status)] : [])];
+}
+
+function buildStatusTool(status: NonNullable<PublishLocalDeps["status"]>): ToolDefinition {
+  return defineTool({
+    name: "publication_status", label: "查詢發布狀態",
+    description: "客戶問「發布好了沒」「上線了嗎」時使用。唯讀查詢最近一次（或指定 publication_id）發布的狀態與背景上線驗收結果，回傳 state 與可直接告知客戶的 message。",
+    promptGuidelines: ["回覆客戶發布狀態時照 message 的意思說，不可自行升格：只有 state=verified 才能說已完成上線驗收；state=running 說正在做上線驗收；不可說已通知任何人，也不可承諾完成後主動通知。"],
+    parameters: Type.Object({
+      publication_id: Type.Optional(Type.String({ description: "指定 publication ID；省略則查本站最近一次發布。" })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      const raw = (params as { publication_id?: unknown }).publication_id;
+      const id = typeof raw === "string" ? raw.trim() : undefined;
+      const result: StatusResult = raw !== undefined && (typeof raw !== "string" || !ID.test(id))
+        ? { ok: false, state: "unknown", message: ACCEPT_WORDING.unknown, content_verified: false, error: "publication_id 無效" }
+        : await status({ ...(id ? { publication_id: id } : {}) });
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+    },
+  }) as ToolDefinition;
 }

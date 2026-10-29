@@ -14,7 +14,7 @@ const evidence = {
   scope: 'pgc', app: 'my-preview', origin, languages: ['en', 'zh-TW'], candidate_digest: 'sha256:' + 'ab'.repeat(32),
 };
 
-async function fixture(run, { confirmationId = 'customer-confirmation-42', initialData = true, ...extra } = {}) {
+async function fixture(run, { confirmationId = 'customer-confirmation-42', initialData = true, accept = { disabled: true }, ...extra } = {}) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'customer-publication-'));
   const oldPath = process.env.PATH;
   fs.mkdirSync(path.join(cwd, 'bin'));
@@ -69,7 +69,8 @@ process.exitCode = selected.exitCode;
     languages: ['en', 'zh-TW'], confirmationId,
     fetch: async () => { throw new Error('Tool must not fetch/audit origin'); }, ...extra,
   };
-  const tool = (io) => buildCustomerPublishTools(createLocalPublishDeps(config, io))[0];
+  // 既有案例預設關閉背景驗收；背景驗收另見 publication-accept.test.mjs。
+  const tool = (io) => buildCustomerPublishTools(createLocalPublishDeps(config, io, accept))[0];
   const respond = (body, exitCode = 0, prefix = 'human progress\n', { digest = 'sha256:' + 'ab'.repeat(32), status, start, changeAfterPreflight, candidateData, resolvedOrigins, sourceDriftOnDryRun, summary } = {}) => {
     fs.writeFileSync(path.join(cwd, 'response.json'), JSON.stringify({
       stdout: `${prefix}${typeof body === 'string' ? body : JSON.stringify(body)}\n\n`, exitCode,

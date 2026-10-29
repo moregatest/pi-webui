@@ -214,3 +214,13 @@ test("injection: 非 customer 不注入 publish", () => {
   });
   assert.equal(r.customTools, undefined);
 });
+
+test("injection: publish deps 有 status → 一併注入 publication_status（兩種 customer 分支）", () => {
+  const deps = { ...fakePublishDeps(), status: async () => ({ ok: true, state: "unknown", message: "", content_verified: false }) };
+  const plain = resolveCustomerInjection({ isCustomer: true, customerOpen: false, publishDeps: deps });
+  assert.deepEqual(plain.tools, ["upload_image", "publish_confirmed", "publication_status"]);
+  assert.deepEqual(plain.customTools.map((t) => t.name), plain.tools);
+  const open = resolveCustomerInjection({ isCustomer: true, customerOpen: true, publishDeps: deps });
+  assert.deepEqual(open.tools, ["read", "bash", "publish_confirmed", "publication_status"]);
+  assert.deepEqual(open.extraTools.map((t) => t.name), ["publish_confirmed", "publication_status"]);
+});

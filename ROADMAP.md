@@ -16,6 +16,7 @@
 [x] customer publish_confirmed uses one PGC publication session with durable confirmation/candidate mapping, status-before-resume, classified JSON errors and honest triggered/content_verified=false evidence; CLI owns drift/audit/baseline (Issue 144 companion required)
 [x] publish_confirmed 依 source-version v2 只發布有變動的主語系（預覽站 `db_<lng>` sha256 對 baseline `sources.<lng>`；舊 meta 退回 `[source_lng]`；都沒變回 `no_changes`；`check_only` 先列出將發布語系供客戶確認）
 [x] publish_confirmed `check_only` 回傳各語系逐表記錄數（新增／修改／刪除）摘要 `changes`，來源為 readyAI 唯讀 `preview publication summary`；只含表名與計數，讀不到時 `changes_available=false` 照舊列語系（readyai#160）
+[x] publish_confirmed triggered 後以 detached runner 背景執行 `preview publication accept`（結果／log／鎖檔 0600，同一 publication 不重複啟動，runner 死掉且無結果時由 `publication_status` 補跑）；新工具 `publication_status` 讀 CLI status＋accept 結果，回 C3 客戶用語（readyai#162）
 [x] continue most recent pi session on startup
 [x] list sessions in the current project
 [x] sessions default to project-local `<cwd>/.pi/sessions/` (`--session-dir` / `PI_SESSION_DIR` override; legacy cross-project picker removed)

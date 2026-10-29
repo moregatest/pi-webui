@@ -2,6 +2,18 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-10-29 (發布後背景上線驗收＋狀態查詢，readyai#162)
+
+### 新增
+
+- `publish_confirmed` 拿到 `status:"triggered"` 後，以 detached runner（`dist/tools/accept-runner.js`，與 pi-webui 同身分同環境）
+  背景執行 `readyai-project preview publication accept`，不阻塞工具回應。stdout 寫
+  `data/customer-publications/<publication_id>.accept.json`、stderr 寫 `.accept.log`，鎖檔 `.accept.lock`（皆 0600）
+- 防重複：已有結果檔＝不重跑；鎖檔 pid 活著＝執行中；無結果且 pid 已死（或鎖檔超過 2 小時）＝殘留，可補跑
+- 新工具 `publication_status`：讀 `preview publication status`＋accept 結果，分類 verified／running／expired_unverified／failed／unknown
+  並回客戶用語；`content_verified` 只轉述 CLI。stage 仍是 `awaiting_(raw|normal)_(verification|browser)` 且無結果、無執行中程序時自動補跑
+- 內建 `show_tool_results_for` 預設加入 `publication_status`
+
 ## 2026-08-20 (publish_confirmed 結果對客戶可見)
 
 ### 新增

@@ -860,13 +860,13 @@ test("filterEvent tool_execution_end phase=end 走 resolveLabel", () => {
 
 test("parseUiProfile: showToolResultsFor 內建預設含 publish_confirmed", () => {
   const p = parseUiProfile({}, {});
-  assert.deepEqual(p.showToolResultsFor, ["publish_confirmed"]);
+  assert.deepEqual(p.showToolResultsFor, ["publish_confirmed", "publication_status"]);
 });
 
 test("parseUiProfile: customer preset 不覆蓋 showToolResultsFor(仍是內建預設)", () => {
   const p = parseUiProfile({ uiProfile: "customer" }, {});
   assert.equal(p.hideToolCalls, true);
-  assert.deepEqual(p.showToolResultsFor, ["publish_confirmed"]);
+  assert.deepEqual(p.showToolResultsFor, ["publish_confirmed", "publication_status"]);
 });
 
 test("parseUiProfile: profileFile ui.show_tool_results_for 覆蓋預設", () => {
