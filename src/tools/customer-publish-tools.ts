@@ -417,10 +417,10 @@ async function checkOnly(config: LocalPublishConfig): Promise<PublishResult> {
     if (out.ok) changes = parseChangeSummary(out.data, languages);
   } catch { changes = undefined; }
   const head = `將發布語系：${languages.join("、")}。`;
-  const tail = "圖片與附件依預覽站現況一併發布。請向客戶逐項列出以上語系與變動並取得明確確認後，再帶 confirmation_id 呼叫發布。";
+  const tail = "圖片與附件依預覽站現況一併發布。請直接以「您」稱呼對方，逐項列出以上語系與變動並取得明確確認後，再帶 confirmation_id 呼叫發布。";
   if (!changes) return {
     ok: true, status: "pending_confirmation", languages, content_verified: false, changes_available: false,
-    message: `${head}目前無法取得逐表變動摘要，請如實告知客戶只能確認語系。${tail}`,
+    message: `${head}目前無法取得逐表變動摘要，請如實告訴對方（以「您」稱呼）目前只能確認語系。${tail}`,
   };
   return {
     ok: true, status: "pending_confirmation", languages, content_verified: false, changes, changes_available: true,
@@ -450,8 +450,8 @@ function withBackgroundAccept(result: PublishResult, config: LocalPublishConfig,
     { publication_id: result.publication_id, candidate_digest: result.candidate_digest }, accept);
   if (acceptance === "disabled") return result;
   const tail = acceptance === "unavailable"
-    ? "背景上線驗收沒有啟動成功，請告知客戶：發布已送出，尚待後勤完成上線驗收。"
-    : `請告知客戶：「${TRIGGERED_WORDING}」。不可承諾會主動通知。`;
+    ? "背景上線驗收沒有啟動成功，請直接以「您」稱呼對方告知：發布已送出，尚待後勤完成上線驗收。"
+    : `請直接對對方說：「${TRIGGERED_WORDING}」。不可承諾會主動通知。`;
   return { ...result, acceptance, message: `${result.message}${tail}` };
 }
 
@@ -542,7 +542,7 @@ async function publishOnce(baseConfig: LocalPublishConfig, io: PublicationFileIO
       if (!config.appName || !config.languages.length || new Set(config.languages).size !== config.languages.length
         || !config.languages.every(l => /^[a-zA-Z0-9-]+$/.test(l))) return failure("invalid_config", "缺少正確的 app／語系設定", id);
       const confirmation = input.confirmation_id ?? config.confirmationId;
-      if (!id && (!confirmation || confirmation === "cli")) return failure("confirmation_required", "請提供本次客戶明確確認的穩定 confirmation_id；重試沿用相同值。", id);
+      if (!id && (!confirmation || confirmation === "cli")) return failure("confirmation_required", "請提供本次對方明確確認的穩定 confirmation_id；重試沿用相同值。", id);
       // candidate 只讀本機候選內容；不能用帶 origin equality guard 的 dry-run 阻斷 own-write 後的恢復。
       const prepared = decode(await runCli(config, command(config, "candidate")));
       if (!prepared.ok) return { ...failure("candidate_unavailable", prepared.error.message, id), details: {
@@ -563,7 +563,7 @@ async function publishOnce(baseConfig: LocalPublishConfig, io: PublicationFileIO
         }, io);
         if (prior) mappingToSync = prior;
         id = stored.value.publication_id;
-        if (stored.value.candidate_digest !== candidate) return failure("candidate_changed", "同一確認的候選內容已變更，請重新取得客戶確認並使用新的 confirmation_id。", id);
+        if (stored.value.candidate_digest !== candidate) return failure("candidate_changed", "同一確認的候選內容已變更，請重新取得對方確認並使用新的 confirmation_id。", id);
         exists = stored.existing;
       }
       if (exists) {
@@ -625,13 +625,13 @@ export async function runPublishFlow(deps: PublishLocalDeps, reasonRaw: unknown,
 export function buildCustomerPublishTools(deps: PublishLocalDeps): ToolDefinition[] {
   return [defineTool({
     name: "publish_confirmed", label: "觸發發布",
-    description: "客戶明確確認後，以單一 PGC publication session 發布圖片附件與有變動的主語系 DB。先以 check_only=true 取得將發布的語系與逐表變動筆數，列給客戶確認。提供穩定 confirmation_id，重試不得更換；恢復可提供 publication_id。drift 與強制發布審計由 CLI 主持。",
-    promptGuidelines: ["請客戶確認發布前，先呼叫 check_only=true，並在確認訊息中逐一列出回傳的 languages 與 changes（各語系變動的資料表與新增／修改／刪除筆數）；changes_available=false 時要告知客戶目前只能確認語系；status=no_changes 代表沒有需要發布的變更，不可說已發布。", "status=triggered 或 content_verified=false 時，禁止宣稱已上線、發布成功或驗證完成。相同確認的候選變更需重新取得確認；409 不一定是 drift，不可自行加入 force。"],
+    description: "對方明確確認後，以單一 PGC publication session 發布圖片附件與有變動的主語系 DB。先以 check_only=true 取得將發布的語系與逐表變動筆數，列給對方確認（以「您」稱呼）。提供穩定 confirmation_id，重試不得更換；恢復可提供 publication_id。drift 與強制發布審計由 CLI 主持。",
+    promptGuidelines: ["請對方確認發布前，先呼叫 check_only=true，並在確認訊息中逐一列出回傳的 languages 與 changes（各語系變動的資料表與新增／修改／刪除筆數）；changes_available=false 時要告訴對方目前只能確認語系；對話中一律以「您」稱呼對方，不用「客戶」等第三人稱；status=no_changes 代表沒有需要發布的變更，不可說已發布。", "status=triggered 或 content_verified=false 時，禁止宣稱已上線、發布成功或驗證完成。相同確認的候選變更需重新取得確認；409 不一定是 drift，不可自行加入 force。"],
     parameters: Type.Object({
-      confirmation_id: Type.Optional(Type.String({ description: "本次客戶明確確認的唯一身分；重試沿用，候選變更需新的確認。PGC_CONFIRMATION_ID 缺省 cli 時必填。" })),
+      confirmation_id: Type.Optional(Type.String({ description: "本次對方明確確認的唯一身分；重試沿用，候選變更需新的確認。PGC_CONFIRMATION_ID 缺省 cli 時必填。" })),
       publication_id: Type.Optional(Type.String({ description: "既有 publication ID；先查核 status 再恢復，不建立新 lease。" })),
-      check_only: Type.Optional(Type.Boolean({ description: "true＝只回報將發布的語系與各語系逐表記錄數變動（唯讀，不發布、不需 confirmation_id），用於向客戶確認前列出。" })),
-      force_reason: Type.Optional(Type.String({ description: "僅在 CLI 回報來源語系資料庫指紋 drift 時，由客戶提供的強制發布原因；CLI 寫入審計。不可用來繞過 schema 或 lease 衝突。" })),
+      check_only: Type.Optional(Type.Boolean({ description: "true＝只回報將發布的語系與各語系逐表記錄數變動（唯讀，不發布、不需 confirmation_id），用於請對方確認前列出。" })),
+      force_reason: Type.Optional(Type.String({ description: "僅在 CLI 回報來源語系資料庫指紋 drift 時，由對方提供的強制發布原因；CLI 寫入審計。不可用來繞過 schema 或 lease 衝突。" })),
     }),
     async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
       const result = await runPublishFlow(deps, params.force_reason, params, { toolCallId });
@@ -643,8 +643,8 @@ export function buildCustomerPublishTools(deps: PublishLocalDeps): ToolDefinitio
 function buildStatusTool(status: NonNullable<PublishLocalDeps["status"]>): ToolDefinition {
   return defineTool({
     name: "publication_status", label: "查詢發布狀態",
-    description: "客戶問「發布好了沒」「上線了嗎」時使用。唯讀查詢最近一次（或指定 publication_id）發布的狀態與背景上線驗收結果，回傳 state 與可直接告知客戶的 message。",
-    promptGuidelines: ["回覆客戶發布狀態時照 message 的意思說，不可自行升格：只有 state=verified 才能說已完成上線驗收；state=running 說正在做上線驗收；不可說已通知任何人，也不可承諾完成後主動通知。"],
+    description: "對方問「發布好了沒」「上線了嗎」時使用。唯讀查詢最近一次（或指定 publication_id）發布的狀態與背景上線驗收結果，回傳 state 與可直接告訴對方的 message。",
+    promptGuidelines: ["回覆對方發布狀態時以「您」稱呼，照 message 的意思說，不可自行升格：只有 state=verified 才能說已完成上線驗收；state=running 說正在做上線驗收；不可說已通知任何人，也不可承諾完成後主動通知。"],
     parameters: Type.Object({
       publication_id: Type.Optional(Type.String({ description: "指定 publication ID；省略則查本站最近一次發布。" })),
     }),

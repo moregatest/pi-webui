@@ -2,6 +2,15 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-10-30 (發布工具指示改用「您」稱呼對方，readyai#163)
+
+### 修正
+
+- `publish_confirmed`／`publication_status` 回給 agent 的 message、description、promptGuidelines 不再以「客戶」第三人稱
+  指稱對話對象（如「請向客戶逐項列出…」「請告知客戶：…」），改為「對方（以「您」稱呼）」，避免 agent 對客戶說出
+  「客戶要發布，我先查一下…」這類旁白；promptGuidelines 明訂對話中一律以「您」稱呼
+- 指定給客戶的固定句 `TRIGGERED_WORDING`（「發布已送出，系統正在做上線驗收，完成後您問我就能看到結果」）逐字不變，測試加斷言
+
 ## 2026-10-30 (斷線時送出明確告知未送達，readyai#163)
 
 ### 修正

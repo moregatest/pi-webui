@@ -61,6 +61,9 @@ describe('publication accept（readyai#162 C3）', () => {
       assert.equal(r.status, 'triggered');
       assert.equal(r.acceptance, 'started');
       assert.match(r.message, /系統正在做上線驗收，完成後您問我就能看到結果/);
+      // 給客戶的固定句逐字保留；給 agent 的指示不得以「客戶」第三人稱稱呼對方（readyai#163）
+      assert.ok(r.message.includes('「發布已送出，系統正在做上線驗收，完成後您問我就能看到結果」'));
+      assert.doesNotMatch(r.message, /客戶/);
       assert.doesNotMatch(r.message, /會通知|主動通知您/);
       assert.equal(r.content_verified, false);
       assert.equal(fake.spawned.length, 1);

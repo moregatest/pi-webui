@@ -625,6 +625,9 @@ describe('source-version v2 dynamic languages', () => {
       ]);
       assert.match(result.message, /en：product 修改 1 筆/);
       assert.match(result.message, /zh-TW：資料庫沒有記錄變動/);
+      // 指示 agent 以「您」稱呼對方，不得出現「客戶」第三人稱（readyai#163）
+      assert.match(result.message, /以「您」稱呼對方/);
+      assert.doesNotMatch(result.message, /客戶/);
       // 只呼叫唯讀 summary：不 candidate／start、不寫 mapping
       assert.deepEqual(calls().map(a => a.slice(0, 3)), [['preview', 'publication', 'summary']]);
       const args = calls()[0];
@@ -671,6 +674,7 @@ describe('source-version v2 dynamic languages', () => {
         assert.equal(result.changes, undefined);
         assert.equal(result.changes_available, false);
         assert.match(result.message, /無法取得逐表變動摘要/);
+        assert.doesNotMatch(result.message, /客戶/);
       }, { resolveLanguages: async () => ['en', 'zh-TW'] });
     });
   }
