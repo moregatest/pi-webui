@@ -49,6 +49,7 @@ import { createFollowState, onScrollEvent, shouldAutoScroll } from "./scroll-fol
 import { log as logger } from "./log.mjs";
 import { createCustomOverlayHost } from "./ext-custom.mjs";
 import { routeInput } from "./route-input.mjs";
+import { decideSubmit, createUnsentTracker, saveDraft, takeDraft } from "./unsent-guard.mjs";
 
 let socket;
 let currentSessionState = null;
@@ -453,6 +454,8 @@ function isLogAtBottom() {
 // from the browser when scrollHeight shrinks past scrollTop and would
 // otherwise mistake mid-render heights for "user scrolled away".
 const followState = createFollowState();
+const unsentTracker = createUnsentTracker();
+const unsentNoticeEl = document.getElementById("unsent-notice");
 let lastUserInputAt = 0;
 const USER_INPUT_WINDOW_MS = 250;
 function markUserInput() { lastUserInputAt = performance.now(); }
@@ -820,6 +823,9 @@ function connect() {
     logger.info("ws open", { lastSeq });
     const banner = document.getElementById("disconnected-banner");
     if (banner) banner.style.display = "none";
+    // 斷線時被擋下的訊息:只提醒,不自動重送(readyai#163)
+    const reconnectNotice = unsentTracker.onReconnect();
+    if (reconnectNotice) showUnsentNotice(reconnectNotice);
     // Tell the server where our event-log cursor is. If it can replay missed
     // events, we keep all streamed UI state. Otherwise it'll send a
     // session_reset followed by a fresh bootstrap.
@@ -2432,7 +2438,20 @@ composer.addEventListener("submit", (event) => {
     showToast(`waiting for ${pendingUploads} upload(s) to finish`, "info");
     return;
   }
-  if ((!message && !hasImages && !hasFiles) || socket?.readyState !== WebSocket.OPEN) return;
+  const submitDecision = decideSubmit({
+    socketOpen: socket?.readyState === WebSocket.OPEN,
+    hasContent: !!message || hasImages || hasFiles,
+  });
+  if (submitDecision === "empty") return;
+  if (submitDecision === "blocked_disconnected") {
+    // 斷線:不送、保留輸入框與附件,明確告知尚未送出;重連後由使用者自行重送
+    logger.warn("submit blocked: disconnected", { readyState: socket?.readyState });
+    showUnsentNotice(unsentTracker.markBlocked());
+    input.focus();
+    return;
+  }
+  unsentTracker.clear();
+  showUnsentNotice("");
   if (message) pushInputHistory(message);
   inputHistoryDraft = "";
   input.value = "";
@@ -2486,6 +2505,43 @@ composer.addEventListener("submit", (event) => {
 function appendOptimisticUserMessage(text, images) {
   csSubmitUser(chatState, text, images);
   renderLog();
+}
+
+// 斷線時送出的提示(readyai#163)
+function showUnsentNotice(text) {
+  if (!unsentNoticeEl) return;
+  unsentNoticeEl.textContent = text || "";
+  unsentNoticeEl.hidden = !text;
+}
+
+function getSessionStorage() {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return undefined;
+  }
+}
+
+// 使用者自己清空輸入框 = 放棄那則未送出的訊息,提示一併收起
+input.addEventListener("input", () => {
+  if (unsentTracker.pending && !input.value.trim()) {
+    unsentTracker.clear();
+    showUnsentNotice("");
+  }
+});
+
+// 「重新連線」會 reload 頁面;先把輸入框草稿暫存,避免未送出的內容消失
+document.getElementById("reconnect-button")?.addEventListener("click", () => {
+  saveDraft(getSessionStorage(), input.value);
+  location.reload();
+});
+
+{
+  const draft = takeDraft(getSessionStorage());
+  if (draft) {
+    input.value = draft;
+    showUnsentNotice(unsentTracker.markBlocked());
+  }
 }
 
 input.focus();

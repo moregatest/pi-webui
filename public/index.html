@@ -34,12 +34,13 @@
         </header>
         <div id="disconnected-banner" class="disconnected-banner" style="display:none">
           ⚠️ 連線已中斷，以下為歷史紀錄，非當前有效狀態
-          <button onclick="location.reload()">重新連線</button>
+          <button id="reconnect-button" type="button">重新連線</button>
         </div>
         <section id="log" class="log"></section>
 
         <div class="composer-wrapper">
           <div id="slash-menu" class="slash-menu" hidden></div>
+          <div id="unsent-notice" class="unsent-notice" role="alert" hidden></div>
           <div id="composer-attachments" class="composer-attachments" hidden></div>
           <form id="composer" class="composer">
             <button id="attach" type="button" class="icon-button" aria-label="Attach file" title="Attach file">
