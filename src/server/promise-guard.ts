@@ -31,7 +31,7 @@ export function findCallbackPromise(text: string | undefined | null): string | n
 /** 不帶 readyai_customer_ 前綴：customer 出口會整則濾掉，客戶看不到指示本身（ui-profile #102）。 */
 export const PROMISE_GUARD_CUSTOM_TYPE = "readyai_promise_guard";
 
-const CORRECTION_SENTENCE = "更正：我沒辦法主動通知您，驗收結果請您之後回來問我「發布好了沒」。";
+const CORRECTION_SENTENCE = "更正：我沒辦法主動通知您，驗收結果請您之後回來問我『發布好了沒』。";
 
 type Part = { type?: string; text?: string; name?: string };
 type Msg = { role?: string; customType?: string; content?: unknown; timestamp?: number };
