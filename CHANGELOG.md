@@ -2,6 +2,20 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-11-03 (只有圖片／附件變動時也能發布，W39 F8)
+
+### 新增
+
+- `publish_confirmed`：各主語系預覽站 DB 都與原站基準相同時，改呼叫唯讀 `preview publication summary` 讀
+  `assets.origin_compare`（readyAI W39：會發布的素材逐一與原站公開網址位元組比對）。有與對外網站不同的檔案時，
+  以「只發布圖片／附件」進行：語系帶全部主語系、DB 照原樣送出（內容不變，沿用既有 drift 防護與驗收），
+  `check_only`／triggered 結果帶 `asset_only: true` 與「這次只發布圖片／附件，網站文字不會變動」說法
+- 比對讀不到、舊版 readyAI 沒有 `origin_compare` 或格式不符時，維持原本的 `no_changes`（訊息註明目前無法比對），
+  不會猜測發布；圖片都與對外網站相同時 `no_changes` 訊息也照實說明
+- `check_only` 有 `origin_compare` 時，只列出與對外網站不同的圖片／附件，另一句說明相同的檔案會照原樣送出、不改變網站
+- 不改 source-version（`m=source&a=version`）判定；DB 有變動時的語系選擇與流程不變
+- 測試：`test/customer-publish-tools.test.mjs` 新增 7 案、更新 1 案（no_changes 現在會先做一次唯讀 summary）
+
 ## 2026-10-30 (發布工具指示改用「您」稱呼對方，readyai#163)
 
 ### 修正

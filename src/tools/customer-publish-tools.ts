@@ -43,6 +43,8 @@ export interface PublishResult {
   assets?: AssetSummary;
   /** check_only：false＝讀不到素材清單（舊版 readyAI 或讀取失敗）。 */
   assets_available?: boolean;
+  /** W39 F8：資料庫沒有變動、只發布圖片／附件（各主語系 DB 照原樣送出，內容不變）。 */
+  asset_only?: true;
 }
 export interface StatusResult {
   ok: boolean;
@@ -60,7 +62,9 @@ export interface StatusResult {
 }
 export interface AssetFile { path: string; classification: "image" | "attachment" }
 export interface ExcludedAsset { path: string; reason: string; reason_text: string }
-export interface AssetSummary { files: AssetFile[]; excluded: ExcludedAsset[]; file_count: number; excluded_count: number; truncated: boolean }
+/** W39 F8：會發布的素材與對外網站公開位元組的比對（readyAI summary 的 origin_compare）。 */
+export interface OriginCompare { changed: string[]; changed_count: number; unchanged_count: number }
+export interface AssetSummary { files: AssetFile[]; excluded: ExcludedAsset[]; file_count: number; excluded_count: number; truncated: boolean; origin_compare?: OriginCompare }
 export interface TableChange { table: string; inserted: number; updated: number; deleted: number; schema_changed?: true }
 export interface ChangeTotals { inserted: number; updated: number; deleted: number }
 export interface LanguageChanges { lng: string; tables: TableChange[]; totals: ChangeTotals }
@@ -84,6 +88,8 @@ export interface LocalPublishConfig {
    * 有值時覆蓋 languages；回傳空陣列＝沒有需要發布的變更。
    */
   resolveLanguages?: () => Promise<string[]>;
+  /** W39 F8：resolveConfig 判定 DB 都沒變、但有素材與對外網站不同時為 true。 */
+  assetOnly?: boolean;
   /** PGC_CONFIRMATION_ID；缺省 cli 不構成客戶確認的唯一身分。 */
   confirmationId?: string;
   /** 保留既有 config 相容；工具不自行連 origin 或寫 audit。 */
@@ -439,7 +445,24 @@ export function parseAssetSummary(value: unknown): AssetSummary | undefined {
     return { path: unique(row.path), reason: row.reason,
       reason_text: row.reason_text ?? `系統無法發布這個檔案（代碼 ${row.reason}）。` };
   });
-  return { files, excluded, file_count: value.file_count, excluded_count: value.excluded_count, truncated: value.truncated };
+  const compare = parseOriginCompare(value.origin_compare, files);
+  return { files, excluded, file_count: value.file_count, excluded_count: value.excluded_count, truncated: value.truncated,
+    ...(compare ? { origin_compare: compare } : {}) };
+}
+
+/** origin_compare 格式不符或 available=false 時回 undefined（視同無法比對，不影響素材清單）。 */
+function parseOriginCompare(value: unknown, files: AssetFile[]): OriginCompare | undefined {
+  if (!object(value) || value.available !== true || !Array.isArray(value.changed)
+    || !isCount(value.changed_count) || !isCount(value.unchanged_count)
+    || value.changed_count !== value.changed.length || value.changed.length > ASSET_LIMIT) return undefined;
+  const known = new Set(files.map(f => f.path));
+  const changed: string[] = [];
+  for (const path of value.changed) {
+    if (!isAssetPath(path) || !known.has(path) || changed.includes(path)) return undefined;
+    changed.push(path);
+  }
+  if (changed.length + value.unchanged_count !== files.length) return undefined;
+  return { changed, changed_count: changed.length, unchanged_count: value.unchanged_count };
 }
 
 /** 讀 CLI 結果的 assets；沒有欄位（舊版 readyAI）、available=false 或格式不符都回 undefined。 */
@@ -477,10 +500,17 @@ function excludedList(excluded: ExcludedAsset[], total = excluded.length): strin
 /** check_only 用：會發布的圖片／附件、不會發布的檔案與原因；不擋發布。 */
 export function describeAssets(assets: AssetSummary | undefined): string {
   if (!assets) return "目前無法列出會發布的圖片與附件，請如實告訴對方（以「您」稱呼）目前無法列出會發布的圖片。";
-  const shown = foldThumbnails(assets.files);
-  const published = assets.files.length
-    ? `會一併發布的圖片／附件：${quoteList(shown, assets.truncated ? Math.max(assets.file_count, shown.length) : shown.length)}。`
-    : "預覽站沒有新上傳的圖片或附件，這次不會發布任何圖片或附件。";
+  const compare = assets.origin_compare;
+  // W39 F8：讀得到與對外網站的比對時，只列「與對外網站不同」的檔案；相同的照原樣重送，不影響網站
+  const listed = compare ? assets.files.filter(f => compare.changed.includes(f.path)) : assets.files;
+  const shown = foldThumbnails(listed);
+  const same = compare && compare.unchanged_count
+    ? `另有 ${compare.unchanged_count} 個圖片／附件與對外網站完全相同，會照原樣一併送出，不會改變網站。` : "";
+  const published = listed.length
+    ? `會一併發布${compare ? "、與對外網站不同" : ""}的圖片／附件：${quoteList(shown, assets.truncated && !compare ? Math.max(assets.file_count, shown.length) : shown.length)}。${same}`
+    : assets.files.length
+      ? `預覽站的圖片／附件都與對外網站相同，這次不會改變任何圖片或附件。`
+      : "預覽站沒有新上傳的圖片或附件，這次不會發布任何圖片或附件。";
   const excluded = assets.excluded.length
     ? `不會發布的檔案：${excludedList(assets.excluded, assets.excluded_count)}。請逐一告訴對方這些檔案不會發布與原因，並詢問是不是傳錯了；這不會擋下發布，對方確認後仍可照常發布，若需要這些檔案上線，請對方換成符合規定的檔案重新上傳後再確認一次。`
     : "沒有被排除的圖片或附件。";
@@ -522,16 +552,19 @@ async function checkOnly(config: LocalPublishConfig): Promise<PublishResult> {
       assets = readAssets(out.data);
     }
   } catch { changes = undefined; assets = undefined; }
-  const head = `將發布語系：${languages.join("、")}。`;
+  const head = config.assetOnly
+    ? `這次資料庫沒有變動，只發布圖片／附件；為了一起核對，會把主語系資料庫（${languages.join("、")}）照原樣一併送出，文字內容不會改變。請告訴對方「這次只發布圖片／附件，網站文字不會變動」，不要提資料庫或語系代碼。`
+    : `將發布語系：${languages.join("、")}。`;
   const assetText = describeAssets(assets);
   const tail = "請直接以「您」稱呼對方，逐項列出以上語系、資料變動與圖片／附件清單並取得明確確認後，再帶 confirmation_id 呼叫發布。";
   const assetFields = assets ? { assets, assets_available: true } : { assets_available: false };
+  const only = config.assetOnly ? { asset_only: true as const } : {};
   if (!changes) return {
-    ok: true, status: "pending_confirmation", languages, content_verified: false, changes_available: false, ...assetFields,
+    ok: true, status: "pending_confirmation", languages, content_verified: false, changes_available: false, ...assetFields, ...only,
     message: `${head}目前無法取得逐表變動摘要，請如實告訴對方（以「您」稱呼）目前只能確認語系。${assetText}${tail}`,
   };
   return {
-    ok: true, status: "pending_confirmation", languages, content_verified: false, changes, changes_available: true, ...assetFields,
+    ok: true, status: "pending_confirmation", languages, content_verified: false, changes, changes_available: true, ...assetFields, ...only,
     message: `${head}資料庫變動（預覽站與原站目前內容比對）：${describeChanges(changes)}。${assetText}${tail}`,
   };
 }
@@ -542,12 +575,36 @@ async function resolveConfig(base: LocalPublishConfig, id?: string): Promise<Loc
   let languages: string[];
   try { languages = await base.resolveLanguages(); }
   catch { return failure("language_detection_failed", "無法比對預覽站與原站各主語系的資料庫，暫不發布；請稍後重試或聯絡顧問。", id); }
-  if (!languages.length) return {
-    ok: false, status: "no_changes", languages: [], content_verified: false,
-    ...(id ? { publication_id: id } : {}),
-    error: "沒有需要發布的變更：各主語系預覽站資料庫與原站基準相同。", details: { code: "no_changes" },
-  };
+  if (!languages.length) {
+    // W39 F8：DB 都沒變時，再看預覽站的圖片／附件是否與對外網站不同（readyAI summary 唯讀比對）
+    const compare = await assetChangesAgainstOrigin(base);
+    if (compare && compare.changed_count > 0 && base.languages.length) return { ...base, assetOnly: true };
+    return {
+      ok: false, status: "no_changes", languages: [], content_verified: false,
+      ...(id ? { publication_id: id } : {}),
+      error: compare
+        ? "沒有需要發布的變更：各主語系預覽站資料庫與原站基準相同，圖片／附件也與對外網站相同。"
+        : "沒有需要發布的變更：各主語系預覽站資料庫與原站基準相同（目前無法比對圖片／附件是否與對外網站不同）。",
+      details: { code: "no_changes" },
+    };
+  }
   return { ...base, languages };
+}
+
+/** 唯讀 summary 的 origin_compare；讀不到、舊版 readyAI 或格式不符回 undefined（維持 no_changes）。 */
+async function assetChangesAgainstOrigin(base: LocalPublishConfig): Promise<OriginCompare | undefined> {
+  if (!base.languages.length) return undefined;
+  try {
+    const out = decode(await runCli(base, command(base, "summary")));
+    return out.ok ? readAssets(out.data)?.origin_compare : undefined;
+  } catch { return undefined; }
+}
+
+/** 只發布圖片／附件時，發布送出與結果的訊息加上說法（DB 照原樣送出，文字內容不變）。 */
+function markAssetOnly(result: PublishResult, config: LocalPublishConfig): PublishResult {
+  if (!config.assetOnly || !result.ok) return result;
+  return { ...result, asset_only: true,
+    message: `這次只發布圖片／附件，網站文字內容沒有變動（請照這樣告訴對方，不要提資料庫或語系代碼）。${result.message ?? ""}` };
 }
 
 /** triggered 後立刻在背景啟動 accept（不等它跑完），並把客戶用語換成 C3 版本。 */
@@ -699,7 +756,7 @@ async function publishOnce(baseConfig: LocalPublishConfig, io: PublicationFileIO
             return { ...verified, message: `${verified.message}${publishedAssetsNote(status.data)}`, ...assetField(status.data) };
           }
           if (mappingToSync) await mappingFile(config, mappingToSync, io);
-          const resumed = fromEnvelope(decode(await runCli(config, command(config, "resume", id, input.reason, candidate))), config, id, candidate);
+          const resumed = markAssetOnly(fromEnvelope(decode(await runCli(config, command(config, "resume", id, input.reason, candidate))), config, id, candidate), config);
           if (current.stage === "prepared" && !resumed.ok
             && resumed.details?.error_class === "reconcile" && resumed.details?.code === "preparation_incomplete") {
             // One exact-ID preparation repair. CLI rechecks all phases pending,
@@ -711,7 +768,7 @@ async function publishOnce(baseConfig: LocalPublishConfig, io: PublicationFileIO
         }
       }
       if (mappingToSync) await mappingFile(config, mappingToSync, io);
-      return fromEnvelope(decode(await runCli(config, command(config, "start", id, input.reason, candidate))), config, id, candidate);
+      return markAssetOnly(fromEnvelope(decode(await runCli(config, command(config, "start", id, input.reason, candidate))), config, id, candidate), config);
     } catch {
       return failure("invalid_cli_output", "無法確認 publication 狀態或本機確認紀錄；請保留 ID 並查核後恢復，不可盲目重新發布。", id);
     }

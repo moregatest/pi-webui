@@ -584,14 +584,17 @@ it('rejects oversized CLI output instead of accepting its trailing success envel
 });
 
 describe('source-version v2 dynamic languages', () => {
-  it('no changed primary language → no_changes without any CLI call', async () => {
-    await fixture(async ({ tool, respond, calls }) => {
+  it('no changed primary language → no_changes after only the read-only summary (old readyAI has no origin_compare)', async () => {
+    await fixture(async ({ tool, respond, calls, config }) => {
       respond(success());
       const result = await execute(tool());
       assert.equal(result.ok, false);
       assert.equal(result.status, 'no_changes');
       assert.deepEqual(result.languages, []);
-      assert.equal(calls().length, 0);
+      assert.match(result.error, /目前無法比對圖片／附件/);
+      // W39 F8：只多一次唯讀 summary（比對素材），不 candidate／start、不寫 mapping
+      assert.deepEqual(calls().map(a => a.slice(0, 3)), [['preview', 'publication', 'summary']]);
+      assert.equal(fs.existsSync(path.join(config.cwd, 'data/customer-publications')), false);
     }, { resolveLanguages: async () => [] });
   });
 
@@ -794,6 +797,85 @@ describe('source-version v2 dynamic languages', () => {
       const candidate = calls().find(a => a[2] === 'candidate');
       assert.equal(candidate[candidate.indexOf('--lng') + 1], 'zh-TW');
     }, { resolveLanguages: async () => ['zh-TW'] });
+  });
+
+  // W39 F8：DB 都沒變、但圖片與對外網站不同時，可以只發布圖片／附件
+  const compared = (changed, unchanged) => ({ available: true, changed, changed_count: changed.length, unchanged_count: unchanged });
+  const assetSummary = (files, compare) => summaryWithAssets(assetsOk(files, [], { origin_compare: compare }));
+
+  it('asset-only: no DB change but an image differs from the public site → check_only offers an image-only publication', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      respond(success(), 0, '', { summary: assetSummary(
+        [img('Templates/pic/new.png'), img('Templates/pic/m/new.png'), img('Templates/pic/old.png')],
+        compared(['Templates/pic/m/new.png', 'Templates/pic/new.png'], 1)) });
+      const result = await execute(tool(), { check_only: true });
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.equal(result.status, 'pending_confirmation');
+      assert.equal(result.asset_only, true);
+      assert.deepEqual(result.languages, ['en', 'zh-TW']);
+      assert.match(result.message, /這次只發布圖片／附件，網站文字不會變動/);
+      assert.match(result.message, /會一併發布、與對外網站不同的圖片／附件：「Templates\/pic\/new\.png（含縮圖）」/);
+      assert.doesNotMatch(result.message, /old\.png/);
+      assert.match(result.message, /另有 1 個圖片／附件與對外網站完全相同/);
+      assert.doesNotMatch(result.message, /客戶/);
+      assert.deepEqual(calls().map(a => a[2]), ['summary', 'summary']);
+    }, { resolveLanguages: async () => [] });
+  });
+
+  it('asset-only: start publishes all primary languages unchanged and says only images are published', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      respond(success(), 0, '', { summary: assetSummary([img('Templates/pic/new.png')], compared(['Templates/pic/new.png'], 0)) });
+      const result = await execute(tool());
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.equal(result.status, 'triggered');
+      assert.equal(result.asset_only, true);
+      assert.match(result.message, /這次只發布圖片／附件，網站文字內容沒有變動/);
+      const start = calls().find(a => a[2] === 'start' && !a.includes('--dry-run'));
+      assert.equal(start[start.indexOf('--lng') + 1], 'en,zh-TW');
+    }, { resolveLanguages: async () => [] });
+  });
+
+  it('asset-only: images identical to the public site → still no_changes', async () => {
+    await fixture(async ({ tool, respond, calls }) => {
+      respond(success(), 0, '', { summary: assetSummary([img('Templates/pic/a.png')], compared([], 1)) });
+      const result = await execute(tool());
+      assert.equal(result.status, 'no_changes');
+      assert.match(result.error, /圖片／附件也與對外網站相同/);
+      assert.deepEqual(calls().map(a => a[2]), ['summary']);
+    }, { resolveLanguages: async () => [] });
+  });
+
+  for (const [label, compare] of [
+    ['unavailable compare', { available: false, code: 'origin_unreadable' }],
+    ['unknown changed path', compared(['Templates/pic/other.png'], 0)],
+    ['count mismatch', { available: true, changed: ['Templates/pic/a.png'], changed_count: 2, unchanged_count: 0 }],
+  ]) {
+    it(`asset-only: ${label} is treated as cannot-compare → no_changes, never a guessed publication`, async () => {
+      await fixture(async ({ tool, respond, calls }) => {
+        respond(success(), 0, '', { summary: assetSummary([img('Templates/pic/a.png')], compare) });
+        const result = await execute(tool());
+        assert.equal(result.status, 'no_changes');
+        assert.match(result.error, /目前無法比對圖片／附件/);
+        assert.equal(calls().some(a => ['candidate', 'start'].includes(a[2])), false);
+      }, { resolveLanguages: async () => [] });
+    });
+  }
+
+  it('DB publication: origin_compare narrows the listed images to those that differ from the public site', async () => {
+    await fixture(async ({ tool, respond }) => {
+      respond(success(), 0, '', { summary: assetSummary(
+        [img('Templates/pic/a.png'), img('Templates/pic/b.png')], compared(['Templates/pic/b.png'], 1)) });
+      const result = await execute(tool(), { check_only: true });
+      assert.equal(result.asset_only, undefined);
+      assert.match(result.message, /將發布語系：en、zh-TW/);
+      assert.match(result.message, /與對外網站不同的圖片／附件：「Templates\/pic\/b\.png」/);
+      assert.match(result.message, /另有 1 個圖片／附件與對外網站完全相同/);
+    }, { resolveLanguages: async () => ['en', 'zh-TW'] });
+    await fixture(async ({ tool, respond }) => {
+      respond(success(), 0, '', { summary: assetSummary([img('Templates/pic/a.png')], compared([], 1)) });
+      const result = await execute(tool(), { check_only: true });
+      assert.match(result.message, /預覽站的圖片／附件都與對外網站相同，這次不會改變任何圖片或附件/);
+    }, { resolveLanguages: async () => ['en', 'zh-TW'] });
   });
 
   it('rejects non-boolean check_only', async () => {
