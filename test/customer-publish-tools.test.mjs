@@ -701,15 +701,35 @@ describe('source-version v2 dynamic languages', () => {
       assert.equal(result.status, 'pending_confirmation');
       assert.equal(result.assets_available, true);
       assert.deepEqual(result.assets.excluded.map(e => e.path), ['Templates/pic/bad.png', 'Templates/pic/logo.svg']);
-      assert.match(result.message, /會一併發布的圖片／附件：「Templates\/pic\/a\.png（含縮圖）」、「Templates\/att\/spec\.pdf」/);
+      assert.match(result.message, /會一併發布的圖片／附件：圖片「a\.png」（含縮圖）、附件「spec\.pdf」/);
       assert.doesNotMatch(result.message, /pic\/m\/a\.png/);
-      assert.match(result.message, /不會發布的檔案：「Templates\/pic\/bad\.png」（原因：檔案內容含有程式碼標記，為了網站安全不會發布）/);
+      assert.match(result.message, /不會發布的檔案：圖片「bad\.png」（原因：檔案內容含有程式碼標記，為了網站安全不會發布）/);
       // 沒有 reason_text 時用代碼說明，不留空
-      assert.match(result.message, /「Templates\/pic\/logo\.svg」（原因：系統無法發布這個檔案（代碼 outside_scope））/);
+      assert.match(result.message, /圖片「logo\.svg」（原因：系統無法發布這個檔案（代碼 outside_scope））/);
+      // W41：訊息只給檔名，結構化欄位保留完整路徑供稽核
+      assert.doesNotMatch(result.message, /Templates\//);
+      assert.match(result.message, /只講檔名/);
       assert.match(result.message, /是不是傳錯/);
       assert.match(result.message, /不會擋下發布/);
       assert.doesNotMatch(result.message, /依預覽站現況一併發布/);
       assert.doesNotMatch(result.message, /客戶/);
+    }, { resolveLanguages: async () => ['en', 'zh-TW'] });
+  });
+
+  it('check_only names same-named files distinctly without folder paths (W41)', async () => {
+    await fixture(async ({ tool, respond }) => {
+      respond(success(), 0, '', { summary: summaryWithAssets(assetsOk(
+        [img('Templates/pic/a.png'), img('Templates/pic/2026/a.png'), img('Templates/pic/m/z.png'),
+          { path: 'Templates/att/a.png', classification: 'attachment', size: 5 }],
+        [{ ...badPng, path: 'Templates/pic/old/a.png' }])) });
+      const result = await execute(tool(), { check_only: true });
+      assert.equal(result.assets_available, true);
+      assert.deepEqual(result.assets.files.map(f => f.path),
+        ['Templates/pic/a.png', 'Templates/pic/2026/a.png', 'Templates/pic/m/z.png', 'Templates/att/a.png']);
+      assert.equal(result.assets.excluded[0].path, 'Templates/pic/old/a.png');
+      assert.match(result.message, /圖片「a\.png」（同名第 1 個）、圖片「a\.png」（同名第 2 個）、圖片「z\.png」（縮圖）、附件「a\.png」。/);
+      assert.match(result.message, /不會發布的檔案：圖片「a\.png」（同名第 3 個，原因：檔案內容含有程式碼標記，為了網站安全不會發布）/);
+      assert.doesNotMatch(result.message, /Templates\/|2026\/|old\//);
     }, { resolveLanguages: async () => ['en', 'zh-TW'] });
   });
 
@@ -757,7 +777,8 @@ describe('source-version v2 dynamic languages', () => {
       assert.equal(result.changes_available, false);
       assert.equal(result.assets_available, true);
       assert.match(result.message, /無法取得逐表變動摘要/);
-      assert.match(result.message, /「Templates\/pic\/bad\.png」/);
+      assert.match(result.message, /圖片「bad\.png」/);
+      assert.doesNotMatch(result.message, /Templates\//);
     }, { resolveLanguages: async () => ['en', 'zh-TW'] });
   });
 
@@ -767,7 +788,8 @@ describe('source-version v2 dynamic languages', () => {
       const result = await execute(tool());
       assert.equal(result.status, 'triggered');
       assert.deepEqual(result.assets.excluded, [badPng]);
-      assert.match(result.message, /以下檔案沒有發布：「Templates\/pic\/bad\.png」（原因：檔案內容含有程式碼標記，為了網站安全不會發布）/);
+      assert.match(result.message, /以下檔案沒有發布：圖片「bad\.png」（原因：檔案內容含有程式碼標記，為了網站安全不會發布）/);
+      assert.doesNotMatch(result.message, /Templates\//);
     });
   });
 
@@ -814,7 +836,8 @@ describe('source-version v2 dynamic languages', () => {
       assert.equal(result.asset_only, true);
       assert.deepEqual(result.languages, ['en', 'zh-TW']);
       assert.match(result.message, /這次只發布圖片／附件，網站文字不會變動/);
-      assert.match(result.message, /會一併發布、與對外網站不同的圖片／附件：「Templates\/pic\/new\.png（含縮圖）」/);
+      assert.match(result.message, /會一併發布、與對外網站不同的圖片／附件：圖片「new\.png」（含縮圖）/);
+      assert.doesNotMatch(result.message, /Templates\//);
       assert.doesNotMatch(result.message, /old\.png/);
       assert.match(result.message, /另有 1 個圖片／附件與對外網站完全相同/);
       assert.doesNotMatch(result.message, /客戶/);
@@ -868,7 +891,7 @@ describe('source-version v2 dynamic languages', () => {
       const result = await execute(tool(), { check_only: true });
       assert.equal(result.asset_only, undefined);
       assert.match(result.message, /將發布語系：en、zh-TW/);
-      assert.match(result.message, /與對外網站不同的圖片／附件：「Templates\/pic\/b\.png」/);
+      assert.match(result.message, /與對外網站不同的圖片／附件：圖片「b\.png」。/);
       assert.match(result.message, /另有 1 個圖片／附件與對外網站完全相同/);
     }, { resolveLanguages: async () => ['en', 'zh-TW'] });
     await fixture(async ({ tool, respond }) => {

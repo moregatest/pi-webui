@@ -123,7 +123,8 @@ describe('publication accept（readyai#162 C3）', () => {
       let s = await call('publication_status');
       assert.equal(s.state, 'verified');
       assert.ok(s.message.startsWith('已完成上線驗收'));
-      assert.match(s.message, /以下檔案沒有發布：「Templates\/pic\/bad\.png」（原因：檔案內容含有程式碼標記，為了網站安全不會發布）/);
+      assert.match(s.message, /以下檔案沒有發布：圖片「bad\.png」（原因：檔案內容含有程式碼標記，為了網站安全不會發布）/);
+      assert.doesNotMatch(s.message, /Templates\//);
       assert.deepEqual(s.excluded_assets, excluded);
       setState({ status: { stage: 'verified', content_verified: true } });
       s = await call('publication_status');

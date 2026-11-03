@@ -476,11 +476,10 @@ function assetField(data: unknown): { assets?: AssetSummary } {
   return assets ? { assets } : {};
 }
 
-const quoteList = (paths: string[], total: number, max = 20) =>
-  paths.slice(0, max).map(p => `「${p}」`).join("、") + (total > Math.min(paths.length, max) ? `等，共 ${total} 個` : "");
+type ShownAsset = { path: string; withThumbs?: boolean };
 
 /** 縮圖（pic/m/、pic/s/ 底下與原圖同名者）併入原圖，避免清單重複。 */
-function foldThumbnails(files: AssetFile[]): string[] {
+function foldThumbnails(files: AssetFile[]): ShownAsset[] {
   const all = new Set(files.map(f => f.path));
   const withThumbs = new Set<string>();
   const shown: string[] = [];
@@ -489,13 +488,51 @@ function foldThumbnails(files: AssetFile[]): string[] {
     if (m && all.has(`Templates/pic/${m[1]}`)) { withThumbs.add(`Templates/pic/${m[1]}`); continue; }
     shown.push(path);
   }
-  return shown.map(p => withThumbs.has(p) ? `${p}（含縮圖）` : p);
+  return shown.map(p => (withThumbs.has(p) ? { path: p, withThumbs: true } : { path: p }));
 }
 
-function excludedList(excluded: ExcludedAsset[], total = excluded.length): string {
-  const shown = excluded.slice(0, 20).map(e => `「${e.path}」（原因：${e.reason_text.replace(/。$/, "")}）`).join("；");
+/**
+ * W41：給 agent 的訊息只講「圖片／附件＋檔名」，不出現資料夾路徑（技能禁止對客戶說路徑）；
+ * 完整路徑留在結構化欄位（assets／excluded_assets）供稽核。同類同名依出現順序標「同名第 N 個」。
+ */
+function assetNamer(paths: string[]): (path: string, notes?: string[]) => string {
+  const keyOf = (p: string) => {
+    const name = p.slice(p.lastIndexOf("/") + 1);
+    const kind = p.startsWith("Templates/pic/") ? "圖片" : "附件";
+    const thumb = /^Templates\/pic\/[ms]\//.test(p);
+    return { name, kind, thumb, key: `${kind}\u0000${thumb ? "t" : ""}\u0000${name}` };
+  };
+  const groups = new Map<string, string[]>();
+  for (const p of paths) {
+    const { key } = keyOf(p);
+    const list = groups.get(key) ?? [];
+    if (!list.includes(p)) list.push(p);
+    groups.set(key, list);
+  }
+  return (path, notes = []) => {
+    const { name, kind, thumb, key } = keyOf(path);
+    const group = groups.get(key) ?? [path];
+    const tags = [
+      ...(group.length > 1 ? [`同名第 ${group.indexOf(path) + 1} 個`] : []),
+      ...(thumb ? ["縮圖"] : []),
+      ...notes,
+    ];
+    return `${kind}「${name}」${tags.length ? `（${tags.join("，")}）` : ""}`;
+  };
+}
+
+type Namer = ReturnType<typeof assetNamer>;
+
+const nameList = (items: ShownAsset[], total: number, name: Namer, max = 20) =>
+  items.slice(0, max).map(i => name(i.path, i.withThumbs ? ["含縮圖"] : [])).join("、")
+  + (total > Math.min(items.length, max) ? `等，共 ${total} 個` : "");
+
+function excludedList(excluded: ExcludedAsset[], total = excluded.length, name: Namer = assetNamer(excluded.map(e => e.path))): string {
+  const shown = excluded.slice(0, 20).map(e => name(e.path, [`原因：${e.reason_text.replace(/。$/, "")}`])).join("；");
   return shown + (total > Math.min(excluded.length, 20) ? `；等，共 ${total} 個` : "");
 }
+
+const NAME_ONLY = "向對方說明時只講檔名，不要說出資料夾路徑。";
 
 /** check_only 用：會發布的圖片／附件、不會發布的檔案與原因；不擋發布。 */
 export function describeAssets(assets: AssetSummary | undefined): string {
@@ -504,21 +541,23 @@ export function describeAssets(assets: AssetSummary | undefined): string {
   // W39 F8：讀得到與對外網站的比對時，只列「與對外網站不同」的檔案；相同的照原樣重送，不影響網站
   const listed = compare ? assets.files.filter(f => compare.changed.includes(f.path)) : assets.files;
   const shown = foldThumbnails(listed);
+  // 會發布與不會發布的檔案一起編號，兩份清單中的同名檔才分得清
+  const name = assetNamer([...shown.slice(0, 20).map(i => i.path), ...assets.excluded.slice(0, 20).map(e => e.path)]);
   const same = compare && compare.unchanged_count
     ? `另有 ${compare.unchanged_count} 個圖片／附件與對外網站完全相同，會照原樣一併送出，不會改變網站。` : "";
   const published = listed.length
-    ? `會一併發布${compare ? "、與對外網站不同" : ""}的圖片／附件：${quoteList(shown, assets.truncated && !compare ? Math.max(assets.file_count, shown.length) : shown.length)}。${same}`
+    ? `會一併發布${compare ? "、與對外網站不同" : ""}的圖片／附件：${nameList(shown, assets.truncated && !compare ? Math.max(assets.file_count, shown.length) : shown.length, name)}。${same}`
     : assets.files.length
       ? `預覽站的圖片／附件都與對外網站相同，這次不會改變任何圖片或附件。`
       : "預覽站沒有新上傳的圖片或附件，這次不會發布任何圖片或附件。";
   const excluded = assets.excluded.length
-    ? `不會發布的檔案：${excludedList(assets.excluded, assets.excluded_count)}。請逐一告訴對方這些檔案不會發布與原因，並詢問是不是傳錯了；這不會擋下發布，對方確認後仍可照常發布，若需要這些檔案上線，請對方換成符合規定的檔案重新上傳後再確認一次。`
+    ? `不會發布的檔案：${excludedList(assets.excluded, assets.excluded_count, name)}。請逐一告訴對方這些檔案不會發布與原因，並詢問是不是傳錯了；這不會擋下發布，對方確認後仍可照常發布，若需要這些檔案上線，請對方換成符合規定的檔案重新上傳後再確認一次。`
     : "沒有被排除的圖片或附件。";
-  return `${published}${excluded}`;
+  return `${published}${excluded}${listed.length || assets.excluded.length ? NAME_ONLY : ""}`;
 }
 
 function excludedNote(excluded: ExcludedAsset[], total = excluded.length): string {
-  return `以下檔案沒有發布：${excludedList(excluded, total)}。請照實告訴對方這些檔案沒有上線，不可說全部圖片都已發布。`;
+  return `以下檔案沒有發布：${excludedList(excluded, total)}。請照實告訴對方這些檔案沒有上線，不可說全部圖片都已發布；${NAME_ONLY}`;
 }
 
 /** 發布送出／完成後的提醒：只有讀得到被排除清單時才加。 */
