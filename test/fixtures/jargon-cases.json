@@ -1,0 +1,75 @@
+{
+  "_comment": "W45 F17 內部識別字正反例。site-workflow 9dbbc7c（scripts/tests/test_e2e_soak.py）的 3 例與 W36R5 I3 原句在前；改規則時 pi-webui jargon.ts 與 site-workflow e2e-soak.py SNAKE_IDENT_RE 一起改。hit 的第二欄是應命中的識別字（依出現順序、不重複）。",
+  "hit": [
+    [
+      "產品說明內文在 desc_html 欄位。",
+      [
+        "desc_html"
+      ]
+    ],
+    [
+      "我用 check_only 查過了。",
+      [
+        "check_only"
+      ]
+    ],
+    [
+      "找到了。產品說明內文在 `desc_html` 欄位，我先看一下站上既有的圖片排版慣例。",
+      [
+        "desc_html"
+      ]
+    ],
+    [
+      "發布摘要的 candidate_digest 已經比對過，publication_id 也有了。",
+      [
+        "candidate_digest",
+        "publication_id"
+      ]
+    ],
+    [
+      "The text lives in the desc_html field.",
+      [
+        "desc_html"
+      ]
+    ],
+    [
+      "內容存在 product.desc_html 裡。",
+      [
+        "product.desc_html"
+      ]
+    ],
+    [
+      "我查了 publication.status，顯示已完成。",
+      [
+        "publication.status"
+      ]
+    ],
+    [
+      "檔案在 uploads/customer_files/ 底下。",
+      [
+        "customer_files"
+      ]
+    ],
+    [
+      "desc_html 與 desc_html 都改了",
+      [
+        "desc_html"
+      ]
+    ]
+  ],
+  "clean": [
+    "圖片「shape_of_masks.jpg」與 OEM_facial_cleanser.png 都會照原樣送出。",
+    "產品頁的說明文字已經更新，請您看一下。",
+    "Our product line covers facial masks, eye patches and toners.",
+    "We ship to the U.S. and Europe, e.g. Germany and France.",
+    "The site is built with Bootstrap, Node.js and ASP.NET.",
+    "請到 https://www.example.com/en/product_list/a_b.html 看看。",
+    "預覽網址：www.ready-market.com.tw/en/product/a010108.html",
+    "有問題可寫信到 sales_team@example.com。",
+    "發布編號 pgc-bd8d0074 已完成。",
+    "下面是範例：\n```\nupdate product set desc_html = '...'\n```\n以上僅供參考。",
+    "請放在 Templates/pic/my_photo.webp。",
+    "版本 v0.7.31 已上線。",
+    "OEM_ODM 服務與 COVID_19 防疫說明都在頁面上。"
+  ]
+}

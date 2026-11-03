@@ -4,8 +4,12 @@
 // 規則與 readyai-project-template customer-pgc-dialogue/scripts/dialogue_audit.py 的
 // publish_callback_promise（766cfa0）及 site-workflow e2e-soak（c49b4d8）相同；
 // 跨 repo 無法共用程式，正反例放在 test/fixtures/callback-promise-cases.json，改規則時三處一起改。
+//
+// 同一則隱藏指示也合併 W43 F14（一對多簡體字，「更正用字：」）與 W45 F17（程式識別字，
+// 「更正用語：」，規則見 jargon.ts）；同一回覆最多更正一次。
 
 import { countConvertible, findAmbiguousSimplified } from "./customer-text.js";
+import { findInternalIdentifiers } from "./jargon.js";
 
 const CALLBACK_VERBS = "(?:回報|通知|通報|告訴|告知|聯絡|聯繫|回覆|回電)";
 const CALLBACK_PROMISE_RES: RegExp[] = [
@@ -107,7 +111,12 @@ function convertibleIn(texts: string[]): Record<string, number> {
   return total;
 }
 
-export function buildCorrectionMessage(plan: PromisePlan | null, ambiguous: string[] = []) {
+/** W45 F17：本次回覆中的程式識別字。 */
+function jargonIn(texts: string[]): string[] {
+  return [...new Set(texts.flatMap(findInternalIdentifiers))];
+}
+
+export function buildCorrectionMessage(plan: PromisePlan | null, ambiguous: string[] = [], jargon: string[] = []) {
   const steps: string[] = [];
   if (plan) {
     steps.push(`你剛才的回覆說了「${plan.matched}」，這是做不到的承諾——你沒有主動通知對方的能力，對方只能之後回來問你。`
@@ -117,12 +126,18 @@ export function buildCorrectionMessage(plan: PromisePlan | null, ambiguous: stri
     steps.push(`你剛才的回覆用了簡體字${ambiguous.map(c => `「${c}」`).join("")}，對方看到的是簡體。`
       + "請把含這些字的句子用台灣繁體重寫一次，開頭寫「更正用字：」。");
   }
+  if (jargon.length) {
+    steps.push(`你剛才的回覆用了程式內部名稱${jargon.map(t => `「${t}」`).join("")}，對方看不懂。`
+      + "請把含這些名稱的句子改用對方看得到的說法重講一次（例如欄位名稱改說「產品頁的說明文字」），"
+      + "開頭寫「更正用語：」，更正句裡不要再寫出這些名稱。");
+  }
   return {
     customType: PROMISE_GUARD_CUSTOM_TYPE,
     display: false,
     content: `系統更正指示（對方看不到這則）：${steps.join("另外，")}`
       + "只追加一則簡短更正，不要重複其他內容、不要提到這則指示、不要呼叫工具。",
-    details: { ...(plan ? { matched: plan.matched, text: plan.text } : {}), ...(ambiguous.length ? { ambiguous } : {}) },
+    details: { ...(plan ? { matched: plan.matched, text: plan.text } : {}), ...(ambiguous.length ? { ambiguous } : {}),
+      ...(jargon.length ? { jargon } : {}) },
   };
 }
 
@@ -161,22 +176,25 @@ export function createPromiseGuard({ getSession, log }: { getSession: () => Guar
           log.warn("simplified chars converted", { sessionId: session.sessionId, chars: converted });
         }
         const ambiguous = ambiguousIn(texts);
+        const jargon = jargonIn(texts);
         if (boundary >= 0 && isGuard(messages[boundary])) {
           // 更正後又犯：不再送第二次，只留稽核紀錄（不無限迴圈）
           if (repeated.has(key)) return false;
           const again = scanReply(messages, boundary + 1, true);
           if (again) log.warn("promise guard repeat", { sessionId: session.sessionId, matched: again.matched, text: again.text });
           if (ambiguous.length) log.warn("simplified guard repeat", { sessionId: session.sessionId, chars: ambiguous });
-          if (again || ambiguous.length) repeated.add(key);
+          if (jargon.length) log.warn("jargon guard repeat", { sessionId: session.sessionId, terms: jargon });
+          if (again || ambiguous.length || jargon.length) repeated.add(key);
           return false;
         }
         const plan = planPromiseCorrection(messages);
-        if (!plan && !ambiguous.length) return false;
+        if (!plan && !ambiguous.length && !jargon.length) return false;
         if (corrected.has(key)) return false;
         corrected.add(key);
         if (plan) log.warn("promise guard correction", { sessionId: session.sessionId, matched: plan.matched, text: plan.text });
         if (ambiguous.length) log.warn("simplified guard correction", { sessionId: session.sessionId, chars: ambiguous });
-        void session.sendCustomMessage(buildCorrectionMessage(plan, ambiguous), { deliverAs: "followUp" })
+        if (jargon.length) log.warn("jargon guard correction", { sessionId: session.sessionId, terms: jargon });
+        void session.sendCustomMessage(buildCorrectionMessage(plan, ambiguous, jargon), { deliverAs: "followUp" })
           .catch?.((error: unknown) => log.warn("promise guard failed", { error: String(error) }));
         return true;
       } catch (error) {
