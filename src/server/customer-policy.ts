@@ -72,11 +72,17 @@ export function customerOpenSkillGuardWarning(
 /** customer 模式強制 custom 訊息出口 fail-closed(#102)。
  *  存量 preview 機的 customer.toml 由舊版 gen-profile 產出、不含
  *  restrict_custom_messages——安全過濾不依賴可再生的 toml,由 server 強制。 */
-export function enforceCustomerUiProfile<T extends { restrictCustomMessages: boolean }>(
+export function enforceCustomerUiProfile<T extends { restrictCustomMessages: boolean; customerText?: boolean; showToolResultsFor?: string[] }>(
   profile: T,
   isCustomer: boolean,
 ): T {
-  if (isCustomer) profile.restrictCustomMessages = true;
+  if (isCustomer) {
+    profile.restrictCustomMessages = true;
+    // W43 F14／F13：assistant 文字簡體專用字轉繁、附件區塊只留檔名
+    profile.customerText = true;
+    // W43 F13：工具原始結果（含 Templates/ 路徑、candidate_digest）不送客戶，改顯示進度標籤
+    profile.showToolResultsFor = [];
+  }
   return profile;
 }
 

@@ -16,6 +16,7 @@ import { existsSync, statSync } from "node:fs";
 import type { ProfileFile, ToolLabelEntry } from "./profile-loader.js";
 import { resolveLabel } from "./tool-label.js";
 import { redactBlocks } from "./secret-guard.js";
+import { convertSimplified, convertSimplifiedDelta, scrubAttachmentNotice } from "./customer-text.js";
 
 export interface UiProfile {
   hideThinking: boolean;
@@ -35,6 +36,9 @@ export interface UiProfile {
   // custom(extension pi.sendMessage 注入)訊息出口 fail-closed(#102):
   // 僅 readyai_customer_ 前綴放行並轉 assistant 泡泡,其餘整則 drop。
   restrictCustomMessages: boolean;
+  // W43：customer 出口的自然語言文字處理（assistant 文字簡體專用字轉繁、客戶附件區塊去路徑）。
+  // 由 enforceCustomerUiProfile 對 customer／customer-open 強制開啟；session 原文不改。
+  customerText: boolean;
   // 對話版型:bubble(Claude 式左右氣泡)/ log(工程師視圖,預設)。
   chatLayout: "bubble" | "log";
   brand: {
@@ -110,6 +114,7 @@ export function parseUiProfile(
     safeErrors: false,
     exposeToolArgs: false,
     restrictCustomMessages: false,
+    customerText: false,
     // 內建預設放行 publish_confirmed:hideToolCalls=false 的 profile 本來就全顯示,
     // 這個預設實際只對 customer(hideToolCalls=true)生效。
     // publication_status(readyai#162)同理:客戶可自行對照 state／content_verified。
@@ -406,6 +411,12 @@ function redactEventMessages(event: any, profile: UiProfile): any {
 }
 
 export function filterEvent(event: any, profile: UiProfile): FilterResult {
+  const result = filterEventInner(event, profile);
+  if (!profile.customerText || !result || result.kind !== "event" || !result.event || typeof result.event !== "object") return result;
+  return { kind: "event", event: customerTextEvent(result.event, event) };
+}
+
+function filterEventInner(event: any, profile: UiProfile): FilterResult {
   if (!event || typeof event !== "object") return { kind: "event", event };
 
   // custom 訊息出口政策(#102):挾帶單則 custom message 的 event(message_start/
@@ -494,6 +505,11 @@ export function filterEvent(event: any, profile: UiProfile): FilterResult {
 
   // message_update / tool_execution_* 以外、仍帶 message / messages 的 event
   // (message_start/message_end/turn_end/agent_end…)也要剝挾帶的 thinking / tool block。
+  // turn_end.toolResults 帶工具原始結果（W43 F13）：hideToolCalls 下只留白名單
+  if (profile.hideToolCalls && Array.isArray(event.toolResults)) {
+    const kept = event.toolResults.filter((r: any) => isToolResultAllowed(profile, String(r?.toolName ?? "")));
+    if (kept.length !== event.toolResults.length) event = { ...event, toolResults: kept };
+  }
   if (profile.hideThinking || profile.hideToolCalls || profile.restrictCustomMessages) {
     const red = redactEventMessages(event, profile);
     if (red !== event) return { kind: "event", event: red };
@@ -512,6 +528,11 @@ export function filterEvent(event: any, profile: UiProfile): FilterResult {
 //     thinking / tool_* block(SDK 用 camelCase,舊路徑也可能是 snake_case)
 // hide flag 都沒開時直接回原陣列(無謂複製)。
 export function filterMessageHistory(messages: any[], profile: UiProfile): any[] {
+  const out = filterMessageHistoryInner(messages, profile);
+  return profile.customerText && Array.isArray(out) ? out.map(customerTextMessage) : out;
+}
+
+function filterMessageHistoryInner(messages: any[], profile: UiProfile): any[] {
   if (!profile.hideThinking && !profile.hideToolCalls && !profile.restrictCustomMessages) return messages;
   if (!Array.isArray(messages)) return messages;
   const out: any[] = [];
@@ -548,6 +569,68 @@ export function filterMessageHistory(messages: any[], profile: UiProfile): any[]
     } else {
       out.push({ ...msg, content: filtered });
     }
+  }
+  return out;
+}
+
+// ── W43：customer 出口的文字處理（只產生新物件，不改 session 原文）──
+
+function mapTextBlocks(content: any, fn: (t: string) => string): any {
+  if (typeof content === "string") {
+    const t = fn(content);
+    return t === content ? content : t;
+  }
+  if (!Array.isArray(content)) return content;
+  let changed = false;
+  const next = content.map((b: any) => {
+    if (!b || b.type !== "text" || typeof b.text !== "string") return b;
+    const t = fn(b.text);
+    if (t === b.text) return b;
+    changed = true;
+    return { ...b, text: t };
+  });
+  return changed ? next : content;
+}
+
+// assistant：只轉 text block（thinking／toolCall 參數不碰）；user：附件區塊去路徑。
+function customerTextMessage(msg: any): any {
+  if (!msg || typeof msg !== "object") return msg;
+  const fn = msg.role === "assistant" ? convertSimplified : msg.role === "user" ? scrubAttachmentNotice : null;
+  if (!fn) return msg;
+  const content = mapTextBlocks(msg.content, fn);
+  return content === msg.content ? msg : { ...msg, content };
+}
+
+function customerTextEvent(event: any, original: any): any {
+  let out = event;
+  if (out.message && typeof out.message === "object") {
+    const m = customerTextMessage(out.message);
+    if (m !== out.message) out = { ...out, message: m };
+  }
+  if (Array.isArray(out.messages)) {
+    const ms = out.messages.map(customerTextMessage);
+    if (ms.some((m: any, i: number) => m !== out.messages[i])) out = { ...out, messages: ms };
+  }
+  const ame = out.assistantMessageEvent;
+  if (ame && typeof ame === "object") {
+    let a = ame;
+    if (a.type === "text_delta" && typeof a.delta === "string") {
+      // 累積全文取自「未剝 block 前」的原始 partial，contentIndex 才對得上
+      const full = original?.assistantMessageEvent?.partial?.content?.[a.contentIndex]?.text;
+      const d = convertSimplifiedDelta(full, a.delta);
+      if (d !== a.delta) a = { ...a, delta: d };
+    }
+    if (a.type === "text_end" && typeof a.content === "string") {
+      const c = convertSimplified(a.content);
+      if (c !== a.content) a = { ...a, content: c };
+    }
+    for (const key of ["partial", "message", "error"] as const) {
+      if (a[key] && typeof a[key] === "object") {
+        const m = customerTextMessage(a[key]);
+        if (m !== a[key]) a = { ...a, [key]: m };
+      }
+    }
+    if (a !== ame) out = { ...out, assistantMessageEvent: a };
   }
   return out;
 }

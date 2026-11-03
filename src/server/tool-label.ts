@@ -18,6 +18,13 @@ const BUILTIN_DEFAULTS: ToolLabelEntry = {
   end: "",
 };
 
+// 內建的工具專屬標籤（W43 F13）：customer 不顯示工具原始結果，改顯示這些簡短狀態。
+// profile 的 tool_labels 指定該工具時以 profile 為準；優先於 _default。
+const BUILTIN_TOOL_LABELS: Record<string, ToolLabelEntry> = {
+  publish_confirmed: { start: "正在處理發布…", progress: "", end: "" },
+  publication_status: { start: "正在查詢發布狀態…", progress: "", end: "" },
+};
+
 export function resolveLabel(
   profile: ResolverProfile,
   toolName: string,
@@ -29,6 +36,8 @@ export function resolveLabel(
   let template: string | undefined;
   if (labels[toolName] && labels[toolName][phase] !== undefined) {
     template = labels[toolName][phase];
+  } else if (BUILTIN_TOOL_LABELS[toolName]) {
+    template = BUILTIN_TOOL_LABELS[toolName][phase];
   } else if (labels._default && labels._default[phase] !== undefined) {
     template = labels._default[phase];
   } else {

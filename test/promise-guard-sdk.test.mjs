@@ -99,3 +99,11 @@ test("SDK：沒有承諾 → 不追加任何回合", async () => {
   assert.equal(texts.length, 1);
   assert.deepEqual(logs, []);
 });
+
+test("SDK：一對多簡體字 → 同一輪內以繁體重寫一次（W43 F14）", async () => {
+  const { texts, logs, bodies } = await run([{ text: "已经发布了。" }, { text: "更正用字：已經發布了。" }]);
+  assert.deepEqual(texts, ["已经发布了。", "更正用字：已經發布了。"]);
+  assert.equal(bodies.length, 2);
+  assert.match(bodies[1], /台灣繁體/);
+  assert.ok(logs.some(l => l[0] === "simplified guard correction"));
+});

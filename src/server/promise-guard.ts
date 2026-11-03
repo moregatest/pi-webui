@@ -5,6 +5,8 @@
 // publish_callback_promise（766cfa0）及 site-workflow e2e-soak（c49b4d8）相同；
 // 跨 repo 無法共用程式，正反例放在 test/fixtures/callback-promise-cases.json，改規則時三處一起改。
 
+import { countConvertible, findAmbiguousSimplified } from "./customer-text.js";
+
 const CALLBACK_VERBS = "(?:回報|通知|通報|告訴|告知|聯絡|聯繫|回覆|回電)";
 const CALLBACK_PROMISE_RES: RegExp[] = [
   // 我／我們 ……（未來）回報、通知……；中間不得出現否定或已完成語氣
@@ -82,16 +84,45 @@ export function planPromiseCorrection(messages: Msg[]): PromisePlan | null {
   return hit ? { boundary, ...hit } : null;
 }
 
-export function buildCorrectionMessage(plan: PromisePlan) {
+/** 本次回覆（boundary 之後）對客戶顯示的 assistant 文字；thinking、工具參數不算。 */
+function replyTexts(messages: Msg[], boundary: number): string[] {
+  const out: string[] = [];
+  for (let i = boundary + 1; i < messages.length; i++) {
+    const m = messages[i];
+    if (m?.role !== "assistant") continue;
+    for (const p of parts(m)) if (p?.type === "text" && typeof p.text === "string") out.push(p.text);
+  }
+  return out;
+}
+
+/** W43 F14：本次回覆中一對多、出口無法自動轉的簡體字。 */
+function ambiguousIn(texts: string[]): string[] {
+  return [...new Set(texts.flatMap(findAmbiguousSimplified))];
+}
+
+/** W43 F14：本次回覆中出口會自動轉換的字與次數（稽核 log 用）。 */
+function convertibleIn(texts: string[]): Record<string, number> {
+  const total: Record<string, number> = {};
+  for (const t of texts) for (const [ch, n] of Object.entries(countConvertible(t))) total[ch] = (total[ch] ?? 0) + n;
+  return total;
+}
+
+export function buildCorrectionMessage(plan: PromisePlan | null, ambiguous: string[] = []) {
+  const steps: string[] = [];
+  if (plan) {
+    steps.push(`你剛才的回覆說了「${plan.matched}」，這是做不到的承諾——你沒有主動通知對方的能力，對方只能之後回來問你。`
+      + `請以「您」稱呼對方追加更正，例如：「${CORRECTION_SENTENCE}」`);
+  }
+  if (ambiguous.length) {
+    steps.push(`你剛才的回覆用了簡體字${ambiguous.map(c => `「${c}」`).join("")}，對方看到的是簡體。`
+      + "請把含這些字的句子用台灣繁體重寫一次，開頭寫「更正用字：」。");
+  }
   return {
     customType: PROMISE_GUARD_CUSTOM_TYPE,
     display: false,
-    content:
-      `系統更正指示（對方看不到這則）：你剛才的回覆說了「${plan.matched}」，這是做不到的承諾——`
-      + "你沒有主動通知對方的能力，對方只能之後回來問你。"
-      + `請立刻只追加一則簡短更正，以「您」稱呼對方，例如：「${CORRECTION_SENTENCE}」`
-      + "不要重複其他內容、不要提到這則指示、不要呼叫工具。",
-    details: { matched: plan.matched, text: plan.text },
+    content: `系統更正指示（對方看不到這則）：${steps.join("另外，")}`
+      + "只追加一則簡短更正，不要重複其他內容、不要提到這則指示、不要呼叫工具。",
+    details: { ...(plan ? { matched: plan.matched, text: plan.text } : {}), ...(ambiguous.length ? { ambiguous } : {}) },
   };
 }
 
@@ -110,6 +141,7 @@ type GuardLog = { warn: (msg: string, fields?: Record<string, unknown>) => void 
 export function createPromiseGuard({ getSession, log }: { getSession: () => GuardSession | undefined; log: GuardLog }) {
   const corrected = new Set<string>();
   const repeated = new Set<string>();
+  const logged = new Set<string>();
   const keyOf = (messages: Msg[], i: number) => `${i}:${messages[i]?.timestamp ?? ""}`;
 
   return {
@@ -119,23 +151,32 @@ export function createPromiseGuard({ getSession, log }: { getSession: () => Guar
         if (!session || event.willRetry || !session.isStreaming) return false;
         const messages = session.messages ?? [];
         const boundary = lastBoundary(messages);
+        const key = keyOf(messages, boundary);
+        const texts = replyTexts(messages, boundary);
+        // 出口已逐字轉繁（session 原文保留），這裡每則回覆記一次轉了哪些字
+        const converted = convertibleIn(texts);
+        const convKey = `${key}:${messages.length}`;
+        if (Object.keys(converted).length && !logged.has(convKey)) {
+          logged.add(convKey);
+          log.warn("simplified chars converted", { sessionId: session.sessionId, chars: converted });
+        }
+        const ambiguous = ambiguousIn(texts);
         if (boundary >= 0 && isGuard(messages[boundary])) {
-          // 更正後又承諾：不再送第二次，只留稽核紀錄
-          const key = keyOf(messages, boundary);
+          // 更正後又犯：不再送第二次，只留稽核紀錄（不無限迴圈）
+          if (repeated.has(key)) return false;
           const again = scanReply(messages, boundary + 1, true);
-          if (again && !repeated.has(key)) {
-            repeated.add(key);
-            log.warn("promise guard repeat", { sessionId: session.sessionId, matched: again.matched, text: again.text });
-          }
+          if (again) log.warn("promise guard repeat", { sessionId: session.sessionId, matched: again.matched, text: again.text });
+          if (ambiguous.length) log.warn("simplified guard repeat", { sessionId: session.sessionId, chars: ambiguous });
+          if (again || ambiguous.length) repeated.add(key);
           return false;
         }
         const plan = planPromiseCorrection(messages);
-        if (!plan) return false;
-        const key = keyOf(messages, plan.boundary);
+        if (!plan && !ambiguous.length) return false;
         if (corrected.has(key)) return false;
         corrected.add(key);
-        log.warn("promise guard correction", { sessionId: session.sessionId, matched: plan.matched, text: plan.text });
-        void session.sendCustomMessage(buildCorrectionMessage(plan), { deliverAs: "followUp" })
+        if (plan) log.warn("promise guard correction", { sessionId: session.sessionId, matched: plan.matched, text: plan.text });
+        if (ambiguous.length) log.warn("simplified guard correction", { sessionId: session.sessionId, chars: ambiguous });
+        void session.sendCustomMessage(buildCorrectionMessage(plan, ambiguous), { deliverAs: "followUp" })
           .catch?.((error: unknown) => log.warn("promise guard failed", { error: String(error) }));
         return true;
       } catch (error) {
