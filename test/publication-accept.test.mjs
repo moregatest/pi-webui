@@ -112,6 +112,26 @@ describe('publication accept（readyai#162 C3）', () => {
     }, fake.deps);
   });
 
+  it('W37：status 有被排除素材時，用語後附「以下檔案沒有發布」與原因；沒有時用語不變', async () => {
+    const fake = fakeAccept({ alive: true });
+    await fixture(async ({ call, setState }) => {
+      const excluded = [{ path: 'Templates/pic/bad.png', reason: 'executable_content', reason_text: '檔案內容含有程式碼標記，為了網站安全不會發布。' }];
+      setState({ base: { ...base, assets: { available: true, files: [], excluded, file_count: 0, excluded_count: 1, truncated: false } } });
+      await call('publish_confirmed');
+      setState({ base: { ...base, assets: { available: true, files: [], excluded, file_count: 0, excluded_count: 1, truncated: false } },
+        status: { stage: 'verified', content_verified: true } });
+      let s = await call('publication_status');
+      assert.equal(s.state, 'verified');
+      assert.ok(s.message.startsWith('已完成上線驗收'));
+      assert.match(s.message, /以下檔案沒有發布：「Templates\/pic\/bad\.png」（原因：檔案內容含有程式碼標記，為了網站安全不會發布）/);
+      assert.deepEqual(s.excluded_assets, excluded);
+      setState({ status: { stage: 'verified', content_verified: true } });
+      s = await call('publication_status');
+      assert.equal(s.message, '已完成上線驗收');
+      assert.equal(s.excluded_assets, undefined);
+    }, fake.deps);
+  });
+
   it('四種狀態用語：verified／running／expired_unverified／failed', async () => {
     const fake = fakeAccept({ alive: true });
     await fixture(async ({ dir, call, setState }) => {

@@ -39,6 +39,10 @@ export interface PublishResult {
   details?: Record<string, unknown>;
   /** triggered 後背景上線驗收（readyai#162）的啟動結果。 */
   acceptance?: AcceptLaunch;
+  /** 會發布／被排除的圖片與附件（W37）；只含路徑與原因，不含檔案內容。 */
+  assets?: AssetSummary;
+  /** check_only：false＝讀不到素材清單（舊版 readyAI 或讀取失敗）。 */
+  assets_available?: boolean;
 }
 export interface StatusResult {
   ok: boolean;
@@ -50,8 +54,13 @@ export interface StatusResult {
   /** 只轉述 CLI 的值，本工具不自行判斷。 */
   content_verified: boolean;
   acceptance?: AcceptLaunch;
+  /** 這次發布被排除、沒有上線的圖片／附件（W37）。 */
+  excluded_assets?: ExcludedAsset[];
   error?: string;
 }
+export interface AssetFile { path: string; classification: "image" | "attachment" }
+export interface ExcludedAsset { path: string; reason: string; reason_text: string }
+export interface AssetSummary { files: AssetFile[]; excluded: ExcludedAsset[]; file_count: number; excluded_count: number; truncated: boolean }
 export interface TableChange { table: string; inserted: number; updated: number; deleted: number; schema_changed?: true }
 export interface ChangeTotals { inserted: number; updated: number; deleted: number }
 export interface LanguageChanges { lng: string; tables: TableChange[]; totals: ChangeTotals }
@@ -161,7 +170,8 @@ function fromEnvelope(envelope: Record<string, any>, config: LocalPublishConfig,
       scope: "pgc", app: data.app, origin: originIdentity(data.origin), languages: data.languages,
       // 本工具尚未接收 public/raw/normal/browser 證據；不能只升格 CLI 的布林值。
       content_verified: false, changed_records: "unknown",
-      message: `發布命令已接受（語系：${data.languages.join("、")}）；尚無完整公開頁面與瀏覽器驗證，不可宣稱已完成上線。`,
+      message: `發布命令已接受（語系：${data.languages.join("、")}）；尚無完整公開頁面與瀏覽器驗證，不可宣稱已完成上線。${publishedAssetsNote(envelope.data)}`,
+      ...assetField(envelope.data),
     };
   }
   const error = envelope.error;
@@ -396,6 +406,97 @@ export function parseChangeSummary(data: unknown, languages: string[]): Language
   });
 }
 
+const ASSET_LIMIT = 200;
+const ASSET_PATH = /^Templates\/(pic|att)\/[^\x00-\x1f\x7f]+$/;
+const REASON_CODE = /^[a-z_ ]{1,64}$/;
+const safeText = (v: unknown, max: number) => typeof v === "string" && v.trim().length > 0 && v.length <= max && !/[\x00-\x1f\x7f]/.test(v);
+const isAssetPath = (p: unknown): p is string => typeof p === "string" && p.length <= 512 && ASSET_PATH.test(p)
+  && p.split("/").every(seg => seg && seg !== "." && seg !== "..");
+
+/**
+ * 嚴格解析 readyAI 回傳的 `assets`（W37）：只挑出路徑、分類、原因代碼與說明。
+ * available=false 回 undefined；格式不符 throw。
+ */
+export function parseAssetSummary(value: unknown): AssetSummary | undefined {
+  if (!object(value)) throw new Error("invalid assets");
+  if (value.available === false) return undefined;
+  if (value.available !== true || !Array.isArray(value.files) || !Array.isArray(value.excluded)
+    || value.files.length > ASSET_LIMIT || value.excluded.length > ASSET_LIMIT || typeof value.truncated !== "boolean"
+    || !isCount(value.file_count) || !isCount(value.excluded_count)
+    || value.file_count < value.files.length || value.excluded_count < value.excluded.length
+    || (!value.truncated && (value.file_count !== value.files.length || value.excluded_count !== value.excluded.length))) throw new Error("invalid assets");
+  const seen = new Set<string>();
+  const unique = (p: string) => { if (seen.has(p)) throw new Error("duplicate asset"); seen.add(p); return p; };
+  const files = value.files.map((row: unknown): AssetFile => {
+    if (!object(row) || !isAssetPath(row.path)) throw new Error("invalid asset file");
+    const expected = row.path.startsWith("Templates/pic/") ? "image" : "attachment";
+    if (row.classification !== expected) throw new Error("invalid asset classification");
+    return { path: unique(row.path), classification: expected };
+  });
+  const excluded = value.excluded.map((row: unknown): ExcludedAsset => {
+    if (!object(row) || !isAssetPath(row.path) || typeof row.reason !== "string" || !REASON_CODE.test(row.reason)
+      || (row.reason_text !== undefined && !safeText(row.reason_text, 200))) throw new Error("invalid excluded asset");
+    return { path: unique(row.path), reason: row.reason,
+      reason_text: row.reason_text ?? `系統無法發布這個檔案（代碼 ${row.reason}）。` };
+  });
+  return { files, excluded, file_count: value.file_count, excluded_count: value.excluded_count, truncated: value.truncated };
+}
+
+/** 讀 CLI 結果的 assets；沒有欄位（舊版 readyAI）、available=false 或格式不符都回 undefined。 */
+function readAssets(data: unknown): AssetSummary | undefined {
+  if (!object(data) || !("assets" in data)) return undefined;
+  try { return parseAssetSummary(data.assets); } catch { return undefined; }
+}
+
+function assetField(data: unknown): { assets?: AssetSummary } {
+  const assets = readAssets(data);
+  return assets ? { assets } : {};
+}
+
+const quoteList = (paths: string[], total: number, max = 20) =>
+  paths.slice(0, max).map(p => `「${p}」`).join("、") + (total > Math.min(paths.length, max) ? `等，共 ${total} 個` : "");
+
+/** 縮圖（pic/m/、pic/s/ 底下與原圖同名者）併入原圖，避免清單重複。 */
+function foldThumbnails(files: AssetFile[]): string[] {
+  const all = new Set(files.map(f => f.path));
+  const withThumbs = new Set<string>();
+  const shown: string[] = [];
+  for (const { path } of files) {
+    const m = /^Templates\/pic\/[ms]\/(.+)$/.exec(path);
+    if (m && all.has(`Templates/pic/${m[1]}`)) { withThumbs.add(`Templates/pic/${m[1]}`); continue; }
+    shown.push(path);
+  }
+  return shown.map(p => withThumbs.has(p) ? `${p}（含縮圖）` : p);
+}
+
+function excludedList(excluded: ExcludedAsset[], total = excluded.length): string {
+  const shown = excluded.slice(0, 20).map(e => `「${e.path}」（原因：${e.reason_text.replace(/。$/, "")}）`).join("；");
+  return shown + (total > Math.min(excluded.length, 20) ? `；等，共 ${total} 個` : "");
+}
+
+/** check_only 用：會發布的圖片／附件、不會發布的檔案與原因；不擋發布。 */
+export function describeAssets(assets: AssetSummary | undefined): string {
+  if (!assets) return "目前無法列出會發布的圖片與附件，請如實告訴對方（以「您」稱呼）目前無法列出會發布的圖片。";
+  const shown = foldThumbnails(assets.files);
+  const published = assets.files.length
+    ? `會一併發布的圖片／附件：${quoteList(shown, assets.truncated ? Math.max(assets.file_count, shown.length) : shown.length)}。`
+    : "預覽站沒有新上傳的圖片或附件，這次不會發布任何圖片或附件。";
+  const excluded = assets.excluded.length
+    ? `不會發布的檔案：${excludedList(assets.excluded, assets.excluded_count)}。請逐一告訴對方這些檔案不會發布與原因，並詢問是不是傳錯了；這不會擋下發布，對方確認後仍可照常發布，若需要這些檔案上線，請對方換成符合規定的檔案重新上傳後再確認一次。`
+    : "沒有被排除的圖片或附件。";
+  return `${published}${excluded}`;
+}
+
+function excludedNote(excluded: ExcludedAsset[], total = excluded.length): string {
+  return `以下檔案沒有發布：${excludedList(excluded, total)}。請照實告訴對方這些檔案沒有上線，不可說全部圖片都已發布。`;
+}
+
+/** 發布送出／完成後的提醒：只有讀得到被排除清單時才加。 */
+function publishedAssetsNote(data: unknown): string {
+  const assets = readAssets(data);
+  return assets?.excluded.length ? excludedNote(assets.excluded, assets.excluded_count) : "";
+}
+
 /** 給 agent 照念的中文摘要：「en：product 修改 1 筆、news 新增 2 筆」。 */
 export function describeChanges(changes: LanguageChanges[]): string {
   const label = { inserted: "新增", updated: "修改", deleted: "刪除" } as const;
@@ -412,19 +513,26 @@ export function describeChanges(changes: LanguageChanges[]): string {
 async function checkOnly(config: LocalPublishConfig): Promise<PublishResult> {
   const languages = [...config.languages];
   let changes: LanguageChanges[] | undefined;
+  let assets: AssetSummary | undefined;
   try {
     const out = decode(await runCli(config, command(config, "summary")));
-    if (out.ok) changes = parseChangeSummary(out.data, languages);
-  } catch { changes = undefined; }
+    if (out.ok) {
+      // DB 摘要與素材清單各自解析：一邊格式不符不影響另一邊
+      try { changes = parseChangeSummary(out.data, languages); } catch { changes = undefined; }
+      assets = readAssets(out.data);
+    }
+  } catch { changes = undefined; assets = undefined; }
   const head = `將發布語系：${languages.join("、")}。`;
-  const tail = "圖片與附件依預覽站現況一併發布。請直接以「您」稱呼對方，逐項列出以上語系與變動並取得明確確認後，再帶 confirmation_id 呼叫發布。";
+  const assetText = describeAssets(assets);
+  const tail = "請直接以「您」稱呼對方，逐項列出以上語系、資料變動與圖片／附件清單並取得明確確認後，再帶 confirmation_id 呼叫發布。";
+  const assetFields = assets ? { assets, assets_available: true } : { assets_available: false };
   if (!changes) return {
-    ok: true, status: "pending_confirmation", languages, content_verified: false, changes_available: false,
-    message: `${head}目前無法取得逐表變動摘要，請如實告訴對方（以「您」稱呼）目前只能確認語系。${tail}`,
+    ok: true, status: "pending_confirmation", languages, content_verified: false, changes_available: false, ...assetFields,
+    message: `${head}目前無法取得逐表變動摘要，請如實告訴對方（以「您」稱呼）目前只能確認語系。${assetText}${tail}`,
   };
   return {
-    ok: true, status: "pending_confirmation", languages, content_verified: false, changes, changes_available: true,
-    message: `${head}資料庫變動（預覽站與原站目前內容比對）：${describeChanges(changes)}。${tail}`,
+    ok: true, status: "pending_confirmation", languages, content_verified: false, changes, changes_available: true, ...assetFields,
+    message: `${head}資料庫變動（預覽站與原站目前內容比對）：${describeChanges(changes)}。${assetText}${tail}`,
   };
 }
 
@@ -495,11 +603,13 @@ async function publicationStatus(config: LocalPublishConfig, input: { publicatio
   // status 依 publication 自己的語系核對身分，不用本次動態偵測的語系。
   const scoped: LocalPublishConfig = { ...config, languages: [...mapping.languages] };
   let status: CliStatus = { ok: false };
+  let excluded: ExcludedAsset[] | undefined;
   try {
     const out = decode(await runCli(scoped, command(scoped, "status", id)));
     if (out.ok) {
       const data = validateData(out.data, scoped, id, mapping.candidate_digest);
       status = { ok: true, stage: data.stage, content_verified: data.content_verified };
+      excluded = readAssets(out.data)?.excluded;
     }
   } catch { status = { ok: false }; }
   const acceptCfg = { cwd: config.cwd, appName: config.appName, originBaseUrl: originIdentity(config.originBaseUrl) };
@@ -514,10 +624,12 @@ async function publicationStatus(config: LocalPublishConfig, input: { publicatio
     if (acceptance === "started" || acceptance === "running") state = "running";
   }
   const verified = state === "verified";
-  return reply(state, {
+  const result = reply(state, {
     publication_id: id, ...(status.stage ? { stage: status.stage } : {}),
     content_verified: verified, ...(acceptance ? { acceptance } : {}),
   });
+  if (!excluded?.length) return result;
+  return { ...result, excluded_assets: excluded, message: `${result.message}${excludedNote(excluded)}` };
 }
 
 export function createLocalPublishDeps(baseConfig: LocalPublishConfig, io: PublicationFileIO = { open }, accept: AcceptDeps = {}): PublishLocalDeps {
@@ -583,7 +695,8 @@ async function publishOnce(baseConfig: LocalPublishConfig, io: PublicationFileIO
             args.splice(args.length - 1, 0, "--confirmation-id", confirmation, "--tool-call-id", context.toolCallId);
             const exported = decode(await runCli(config, args));
             if (!exported.ok) return fromEnvelope(exported, config, id, candidate);
-            return verifiedExport(exported.data, config, id, candidate, confirmation, context.toolCallId);
+            const verified = verifiedExport(exported.data, config, id, candidate, confirmation, context.toolCallId);
+            return { ...verified, message: `${verified.message}${publishedAssetsNote(status.data)}`, ...assetField(status.data) };
           }
           if (mappingToSync) await mappingFile(config, mappingToSync, io);
           const resumed = fromEnvelope(decode(await runCli(config, command(config, "resume", id, input.reason, candidate))), config, id, candidate);
@@ -625,12 +738,12 @@ export async function runPublishFlow(deps: PublishLocalDeps, reasonRaw: unknown,
 export function buildCustomerPublishTools(deps: PublishLocalDeps): ToolDefinition[] {
   return [defineTool({
     name: "publish_confirmed", label: "觸發發布",
-    description: "對方明確確認後，以單一 PGC publication session 發布圖片附件與有變動的主語系 DB。先以 check_only=true 取得將發布的語系與逐表變動筆數，列給對方確認（以「您」稱呼）。提供穩定 confirmation_id，重試不得更換；恢復可提供 publication_id。drift 與強制發布審計由 CLI 主持。",
-    promptGuidelines: ["請對方確認發布前，先呼叫 check_only=true，並在確認訊息中逐一列出回傳的 languages 與 changes（各語系變動的資料表與新增／修改／刪除筆數）；changes_available=false 時要告訴對方目前只能確認語系；對話中一律以「您」稱呼對方，不用「客戶」等第三人稱；status=no_changes 代表沒有需要發布的變更，不可說已發布。", "status=triggered 或 content_verified=false 時，禁止宣稱已上線、發布成功或驗證完成。相同確認的候選變更需重新取得確認；409 不一定是 drift，不可自行加入 force。"],
+    description: "對方明確確認後，以單一 PGC publication session 發布圖片附件與有變動的主語系 DB。先以 check_only=true 取得將發布的語系、逐表變動筆數與圖片／附件清單（含不會發布的檔案與原因），列給對方確認（以「您」稱呼）。提供穩定 confirmation_id，重試不得更換；恢復可提供 publication_id。drift 與強制發布審計由 CLI 主持。",
+    promptGuidelines: ["請對方確認發布前，先呼叫 check_only=true，並在確認訊息中逐一列出回傳的 languages 與 changes（各語系變動的資料表與新增／修改／刪除筆數）；changes_available=false 時要告訴對方目前只能確認語系；同時列出 message 中會一併發布的圖片／附件與不會發布的檔案及原因，詢問對方是否傳錯（被排除不擋發布）；assets_available=false 時照實說目前無法列出會發布的圖片；對話中一律以「您」稱呼對方，不用「客戶」等第三人稱；status=no_changes 代表沒有需要發布的變更，不可說已發布。", "status=triggered 或 content_verified=false 時，禁止宣稱已上線、發布成功或驗證完成。相同確認的候選變更需重新取得確認；409 不一定是 drift，不可自行加入 force。", "發布結果的 message 列出「以下檔案沒有發布」時，要照實告訴對方這些檔案沒有上線與原因，不可說圖片都已發布。"],
     parameters: Type.Object({
       confirmation_id: Type.Optional(Type.String({ description: "本次對方明確確認的唯一身分；重試沿用，候選變更需新的確認。PGC_CONFIRMATION_ID 缺省 cli 時必填。" })),
       publication_id: Type.Optional(Type.String({ description: "既有 publication ID；先查核 status 再恢復，不建立新 lease。" })),
-      check_only: Type.Optional(Type.Boolean({ description: "true＝只回報將發布的語系與各語系逐表記錄數變動（唯讀，不發布、不需 confirmation_id），用於請對方確認前列出。" })),
+      check_only: Type.Optional(Type.Boolean({ description: "true＝只回報將發布的語系、各語系逐表記錄數變動與圖片／附件清單（唯讀，不發布、不需 confirmation_id），用於請對方確認前列出。" })),
       force_reason: Type.Optional(Type.String({ description: "僅在 CLI 回報來源語系資料庫指紋 drift 時，由對方提供的強制發布原因；CLI 寫入審計。不可用來繞過 schema 或 lease 衝突。" })),
     }),
     async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
@@ -644,7 +757,7 @@ function buildStatusTool(status: NonNullable<PublishLocalDeps["status"]>): ToolD
   return defineTool({
     name: "publication_status", label: "查詢發布狀態",
     description: "對方問「發布好了沒」「上線了嗎」時使用。唯讀查詢最近一次（或指定 publication_id）發布的狀態與背景上線驗收結果，回傳 state 與可直接告訴對方的 message。",
-    promptGuidelines: ["回覆對方發布狀態時以「您」稱呼，照 message 的意思說，不可自行升格：只有 state=verified 才能說已完成上線驗收；state=running 說正在做上線驗收；不可說已通知任何人，也不可承諾完成後主動通知。"],
+    promptGuidelines: ["回覆對方發布狀態時以「您」稱呼，照 message 的意思說，不可自行升格：只有 state=verified 才能說已完成上線驗收；state=running 說正在做上線驗收；不可說已通知任何人，也不可承諾完成後主動通知；有 excluded_assets 時要照 message 告訴對方哪些檔案沒有發布與原因。"],
     parameters: Type.Object({
       publication_id: Type.Optional(Type.String({ description: "指定 publication ID；省略則查本站最近一次發布。" })),
     }),
