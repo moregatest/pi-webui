@@ -65,7 +65,7 @@ export function setHistory(state, messages) {
     const pendingText = pendingTextBlock ? pendingTextBlock.text : "";
     const pendingHasImage = state.pendingUser.blocks.some((b) => b.type === "image");
     const lastUser = lastUserMessage(state.canonical);
-    if (lastUser && (lastUserText(state.canonical) ?? "") === pendingText) {
+    if (lastUser && sameUserText(lastUserText(state.canonical) ?? "", pendingText)) {
       // an image-only pending user matches if canonical's last user has any
       // image block too — text alone may be empty in both, so the image
       // presence acts as the signal that the server received our turn.
@@ -75,6 +75,16 @@ export function setHistory(state, messages) {
     }
   }
   if (!state.isRunning) state.showTyping = false;
+}
+
+// W45 F16：送出含附件時，server 會在客戶文字尾附加附件區塊（index.ts appendAttachmentNotice：
+// "[Attached files]\n- 名稱 -> 路徑"；customer 出口再改成 "附件：\n- 名稱"，見 customer-text.ts）。
+// 只比完全相等會一直對不上，pendingUser 清不掉，整輪就重複顯示。兩種格式改一處要一起改。
+const ATTACHMENT_TAIL = /(?:^|\n\n)(?:\[Attached files\]|附件：)(?:\n- [^\n]*)+$/;
+
+function sameUserText(canonicalText, pendingText) {
+  if (canonicalText === pendingText) return true;
+  return canonicalText.replace(ATTACHMENT_TAIL, "") === pendingText;
 }
 
 function lastUserMessage(canonical) {

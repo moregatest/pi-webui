@@ -942,3 +942,41 @@ test("parallel tools with same name don't produce a duplicate tool_result entry"
   assert.deepEqual(toolItems[2].blocks[0].result, [{ type: "text", text: "RESULT_C" }]);
 });
 
+
+// W45 F16：含附件的一輪，server 會在客戶文字後附加附件區塊（staff：[Attached files]；
+// customer 出口：附件：），文字不再完全相等。pendingUser 沒清掉時 selectItems 會把整份
+// canonical 加上 pendingUser＋streamExtras 一起畫，整輪顯示兩次。
+for (const [label, notice] of [
+  ["staff [Attached files]", "[Attached files]\n- a.png -> /var/www/html/up/a.png\n- b c.pdf -> /x/b c.pdf"],
+  ["customer 附件：", "附件：\n- a.png\n- b c.pdf"],
+]) {
+  test(`F16：含附件（${label}）的一輪結束後不重複顯示`, () => {
+    const s = createChatState();
+    submitUser(s, "請放這張圖", [{ data: "AAA", mimeType: "image/png" }]);
+    onAgentStart(s);
+    applyDelta(s, { type: "text_delta", contentIndex: 0, delta: "好的" });
+    onAgentEnd(s);
+    setHistory(s, [
+      { role: "user", content: [{ type: "text", text: `請放這張圖\n\n${notice}` }, { type: "image", mimeType: "image/png", data: "AAA" }] },
+      { role: "assistant", content: [{ type: "text", text: "好的" }] },
+    ]);
+    assert.equal(s.pendingUser, null, "附件區塊不應擋住 pendingUser 清除");
+    const users = selectItems(s).filter((it) =>
+      (it.source === "canonical" && it.message.role === "user") || (it.source === "extra" && it.item.kind === "user"));
+    assert.equal(users.length, 1, "客戶訊息只出現一次");
+  });
+}
+
+test("F16：只有附件、沒有文字時也能對上", () => {
+  const s = createChatState();
+  submitUser(s, "", []);
+  setHistory(s, [{ role: "user", content: "附件：\n- a.png" }]);
+  assert.equal(s.pendingUser, null);
+});
+
+test("F16：文字不同時仍保留 pendingUser（附件區塊不當萬用比對）", () => {
+  const s = createChatState();
+  submitUser(s, "新訊息", []);
+  setHistory(s, [{ role: "user", content: "舊訊息\n\n附件：\n- a.png" }]);
+  assert.notEqual(s.pendingUser, null);
+});
