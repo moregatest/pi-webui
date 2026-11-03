@@ -853,6 +853,28 @@ export function checkOnlyInCurrentTurn(entries: readonly BranchEntry[] | undefin
   return false;
 }
 
+/**
+ * 更早的回合（最後一則客戶訊息之前）是否呼叫過 check_only。沒有＝對方還沒看過發布範圍，
+ * 不論對方怎麼說都不能直接發布（例如換新對話後直接說「確認發布」）。
+ */
+export function checkOnlyBeforeCurrentTurn(entries: readonly BranchEntry[] | undefined): boolean {
+  if (!Array.isArray(entries)) return false;
+  let seenUser = false;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const m = entries[i]?.type === "message" ? entries[i].message : undefined;
+    if (!m) continue;
+    if (m.role === "user") { seenUser = true; continue; }
+    if (!seenUser || m.role !== "assistant" || !Array.isArray(m.content)) continue;
+    for (const part of m.content as Array<{ type?: string; name?: string; arguments?: { check_only?: unknown } }>) {
+      if (part?.type === "toolCall" && part.name === "publish_confirmed" && part.arguments?.check_only === true) return true;
+    }
+  }
+  return false;
+}
+
+const CONFIRM_FIRST = "對方還沒看過這次的發布範圍，還不能發布：請先呼叫 check_only，把範圍逐項列給對方（以「您」稱呼），結束這一輪，"
+  + "等對方下一則訊息明確同意後再發布。不要說已經送出。";
+
 const CONFIRM_NEXT_TURN = "這一輪已經查過發布範圍，還不能發布：請先把範圍逐項列給對方（以「您」稱呼），結束這一輪，"
   + "等對方下一則訊息明確同意（例如「確認發布」）後再帶同一個 confirmation_id 呼叫發布。不要說已經送出。";
 
@@ -872,6 +894,10 @@ export function buildCustomerPublishTools(deps: PublishLocalDeps): ToolDefinitio
       const branch = (ctx as { sessionManager?: { getBranch?: () => BranchEntry[] } } | undefined)?.sessionManager?.getBranch?.();
       if (p.check_only !== true && !p.publication_id && checkOnlyInCurrentTurn(branch)) {
         const refused = failure("confirm_next_turn", CONFIRM_NEXT_TURN);
+        return { content: [{ type: "text", text: JSON.stringify(refused) }], details: refused };
+      }
+      if (p.check_only !== true && !p.publication_id && Array.isArray(branch) && !checkOnlyBeforeCurrentTurn(branch)) {
+        const refused = failure("confirm_first", CONFIRM_FIRST);
         return { content: [{ type: "text", text: JSON.stringify(refused) }], details: refused };
       }
       const result = await runPublishFlow(deps, params.force_reason, params, { toolCallId });

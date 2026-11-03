@@ -69,3 +69,24 @@ describe('publish_confirmed 同一輪 check_only 後拒絕發布', () => {
     assert.equal(r.details.status, 'triggered');
   });
 });
+
+describe('publish_confirmed 對方還沒看過範圍時拒絕發布', () => {
+  const deps = (calls) => ({ publish: async (input) => { calls.push(input); return { ok: true, status: 'triggered' }; } });
+  const ctx = (entries) => ({ sessionManager: { getBranch: () => entries } });
+
+  it('從沒查過範圍就發布（例如換新對話後直接說確認發布）＝拒絕', async () => {
+    const calls = [];
+    const [tool] = buildCustomerPublishTools(deps(calls));
+    const r = await tool.execute('t1', { confirmation_id: 'c-1' }, undefined, undefined, ctx([user('確認發布'), call({ confirmation_id: 'c-1' })]));
+    assert.equal(r.details.details.code, 'confirm_first');
+    assert.match(r.details.error, /check_only/);
+    assert.deepEqual(calls, []);
+  });
+  it('範圍是在對方最後一則訊息之前查的＝照常發布', async () => {
+    const calls = [];
+    const [tool] = buildCustomerPublishTools(deps(calls));
+    const entries = [user('先讓我看'), call({ check_only: true }), result('pending_confirmation'), text('範圍如下…'), user('確認發布'), call({ confirmation_id: 'c-1' })];
+    const r = await tool.execute('t1', { confirmation_id: 'c-1' }, undefined, undefined, ctx(entries));
+    assert.equal(r.details.status, 'triggered');
+  });
+});
