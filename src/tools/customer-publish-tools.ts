@@ -831,6 +831,31 @@ export async function runPublishFlow(deps: PublishLocalDeps, reasonRaw: unknown,
   return deps.publish({ reason, confirmation_id, publication_id }, context);
 }
 
+type BranchEntry = { type?: string; message?: { role?: string; content?: unknown } };
+
+/**
+ * W36R6：本輪（最後一則客戶訊息之後）是否已呼叫過 check_only。
+ * 技能規定 check_only 列出範圍後要結束本輪、等對方下一則訊息明確同意才發布；r024b 實測模型以
+ * 「上一輪列過、範圍相同」為由同一輪直接發布，忽略對方「發布前先讓我看」。隱藏的 guard 指示
+ * （custom_message）不是客戶訊息，不切輪。
+ */
+export function checkOnlyInCurrentTurn(entries: readonly BranchEntry[] | undefined): boolean {
+  if (!Array.isArray(entries)) return false;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const m = entries[i]?.type === "message" ? entries[i].message : undefined;
+    if (!m) continue;
+    if (m.role === "user") return false;
+    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+    for (const part of m.content as Array<{ type?: string; name?: string; arguments?: { check_only?: unknown } }>) {
+      if (part?.type === "toolCall" && part.name === "publish_confirmed" && part.arguments?.check_only === true) return true;
+    }
+  }
+  return false;
+}
+
+const CONFIRM_NEXT_TURN = "這一輪已經查過發布範圍，還不能發布：請先把範圍逐項列給對方（以「您」稱呼），結束這一輪，"
+  + "等對方下一則訊息明確同意（例如「確認發布」）後再帶同一個 confirmation_id 呼叫發布。不要說已經送出。";
+
 export function buildCustomerPublishTools(deps: PublishLocalDeps): ToolDefinition[] {
   return [defineTool({
     name: "publish_confirmed", label: "觸發發布",
@@ -842,7 +867,13 @@ export function buildCustomerPublishTools(deps: PublishLocalDeps): ToolDefinitio
       check_only: Type.Optional(Type.Boolean({ description: "true＝只回報將發布的語系、各語系逐表記錄數變動與圖片／附件清單（唯讀，不發布、不需 confirmation_id），用於請對方確認前列出。" })),
       force_reason: Type.Optional(Type.String({ description: "僅在 CLI 回報來源語系資料庫指紋 drift 時，由對方提供的強制發布原因；CLI 寫入審計。不可用來繞過 schema 或 lease 衝突。" })),
     }),
-    async execute(toolCallId, params, _signal, _onUpdate, _ctx) {
+    async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+      const p = params as { check_only?: boolean; publication_id?: string };
+      const branch = (ctx as { sessionManager?: { getBranch?: () => BranchEntry[] } } | undefined)?.sessionManager?.getBranch?.();
+      if (p.check_only !== true && !p.publication_id && checkOnlyInCurrentTurn(branch)) {
+        const refused = failure("confirm_next_turn", CONFIRM_NEXT_TURN);
+        return { content: [{ type: "text", text: JSON.stringify(refused) }], details: refused };
+      }
       const result = await runPublishFlow(deps, params.force_reason, params, { toolCallId });
       return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
     },
