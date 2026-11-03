@@ -89,6 +89,7 @@ import {
 import type { EffectiveUploadConfig } from "./upload-config.js";
 import { mkdirSync, createWriteStream, unlinkSync } from "node:fs";
 import { findFailedTurn, scrubTurnError } from "./turn-error.js";
+import { createPromiseGuard } from "./promise-guard.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -1918,6 +1919,10 @@ class NativePiSessionController {
     this.refreshing = false;
     this.lastReportedTurnError = null;
     this.eventLog = createEventLog();
+    // F12（W41）：customer 模式發布後的「我會主動通知您」承諾，自動要求 agent 追加更正
+    this.promiseGuard = isCustomerMode(profileName, profileFile)
+      ? createPromiseGuard({ getSession: () => this.runtime?.session, log: logger })
+      : undefined;
     this.extUi = createExtUiBridge({
       send: (msg) => sendJson(this.ws, msg),
       log: logger,
@@ -2013,6 +2018,9 @@ class NativePiSessionController {
   onSessionEvent(event) {
     // Mark self-activity so the file watcher can ignore writes we caused.
     this.lastSelfActivity = Date.now();
+
+    // 必須在 agent_end 監聽當下同步送出 followUp，SDK 才會在同一個 run 內接著跑更正
+    if (event.type === "agent_end") this.promiseGuard?.onAgentEnd(event);
 
     // eventLog 存原始 event(替 replay 用),向 client 出口時才過 ui-profile 過濾。
     const seq = this.eventLog.append(event);
