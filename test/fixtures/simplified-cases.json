@@ -1,5 +1,5 @@
 {
-  "_source": "與 site-workflow scripts/tests/test_e2e_soak.py（b3be64c）同一批正反例，再加 pi-webui 出口轉換專用案例；改字表時兩處一起改",
+  "_source": "最初取自 site-workflow b3be64c scripts/tests/test_e2e_soak.py 的正反例，再加 pi-webui 出口轉換專用案例；之後只在 pi-webui 維護，不需與 site-workflow 同步（W62：e2e-soak 只留偵測用字組）。字表重新產生的來源見 src/server/simplified-map.ts 檔頭",
   "convert": [
     [
       "如果這版看起來满意，再繼續。",

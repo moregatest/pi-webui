@@ -1,6 +1,8 @@
-// 由工具產生，勿手改（W43 F14）。
-// 來源：site-workflow scripts/e2e-soak.py SIMPLIFIED_CHARS（b3be64c，已排除繁簡同形與繁體也會用的字）
-//      × OpenCC data/dictionary STCharacters.txt ＋ TWVariants.txt（台灣字形）。
+// 由工具產生，勿手改（W43 F14）。這份是完整字表，以 pi-webui 為準；site-workflow e2e-soak 只留少量偵測用字（W62）。
+// 重新產生的來源（固定，不跟著 site-workflow 現行版本）：
+//   site-workflow b3be64c 的 scripts/e2e-soak.py SIMPLIFIED_CHARS（`git show b3be64c:scripts/e2e-soak.py`，
+//   已排除繁簡同形與繁體也會用的字）× OpenCC data/dictionary STCharacters.txt ＋ TWVariants.txt（台灣字形），
+//   產生後排除下方 TAIWAN_IN_USE。要擴充字表時直接改這裡，不必回頭改 site-workflow。
 // ONE_TO_ONE：OpenCC 只有一個繁體對應的字，可逐字轉換。
 // W60（F26）人工稽核後移出 TAIWAN_IN_USE：台灣正體也在用的異體字（網站原文、人名、詞彙都會出現），
 //   自動轉換會改掉 agent 引用的原字。重新產生字表時必須排除這些字。
