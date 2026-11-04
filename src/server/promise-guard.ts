@@ -9,7 +9,7 @@
 // 「更正用語：」，規則見 jargon.ts）；同一回覆最多更正一次。
 
 import { countConvertible, findAmbiguousSimplified } from "./customer-text.js";
-import { findInternalIdentifiers } from "./jargon.js";
+import { findJargon } from "./jargon.js";
 
 const CALLBACK_VERBS = "(?:回報|通知|通報|告訴|告知|聯絡|聯繫|回覆|回電)";
 const CALLBACK_PROMISE_RES: RegExp[] = [
@@ -111,9 +111,9 @@ function convertibleIn(texts: string[]): Record<string, number> {
   return total;
 }
 
-/** W45 F17：本次回覆中的程式識別字。 */
+/** W45 F17／W54 F21：本次回覆中的內部用語（程式識別字、HTML 標籤、資料夾路徑、中文句中的英文工程詞）。 */
 function jargonIn(texts: string[]): string[] {
-  return [...new Set(texts.flatMap(findInternalIdentifiers))];
+  return [...new Set(texts.flatMap(findJargon))];
 }
 
 export function buildCorrectionMessage(plan: PromisePlan | null, ambiguous: string[] = [], jargon: string[] = []) {
@@ -127,9 +127,10 @@ export function buildCorrectionMessage(plan: PromisePlan | null, ambiguous: stri
       + "請把含這些字的句子用台灣繁體重寫一次，開頭寫「更正用字：」。");
   }
   if (jargon.length) {
-    steps.push(`你剛才的回覆用了程式內部名稱${jargon.map(t => `「${t}」`).join("")}，對方看不懂。`
-      + "請把含這些名稱的句子改用對方看得到的說法重講一次（例如欄位名稱改說「產品頁的說明文字」），"
-      + "開頭寫「更正用語：」，更正句裡不要再寫出這些名稱。");
+    steps.push(`你剛才的回覆用了對方看不懂的內部用語或資料夾路徑${jargon.map(t => `「${t}」`).join("")}。`
+      + "請把含這些詞的句子改用對方看得到的結果重講一次（例如欄位名稱改說「產品頁的說明文字」、"
+      + "資料夾路徑改成只講檔名、內部檢查改說對方畫面上會看到什麼），"
+      + "開頭寫「更正用語：」，更正句裡不要再寫出這些詞。");
   }
   return {
     customType: PROMISE_GUARD_CUSTOM_TYPE,

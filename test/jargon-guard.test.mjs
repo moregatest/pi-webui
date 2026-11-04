@@ -102,3 +102,37 @@ test("沒有識別字 → 不多跑一輪", () => {
   assert.equal(session.sent.length, 0);
   assert.deepEqual(logs, []);
 });
+
+// W54 F21：HTML 標籤、資料夾路徑、中文句中的英文工程詞（正反例與 site-workflow 共用）
+import { findJargon, ENGINEERING_TERMS } from "../dist/server/jargon.js";
+
+test("工程詞表與共用 fixture 一致", () => {
+  assert.deepEqual([...ENGINEERING_TERMS], cases.engineering_terms);
+});
+for (const [text, expected] of cases.jargon.hit) {
+  test(`findJargon 命中：${text.slice(0, 24)}`, () => {
+    assert.deepEqual(findJargon(text), expected);
+  });
+}
+for (const text of cases.jargon.clean) {
+  test(`findJargon 不誤判：${text.slice(0, 24).replace(/\n/g, " ")}`, () => {
+    assert.deepEqual(findJargon(text), []);
+  });
+}
+
+test("W36R10 原句 → 合併指示「更正用語：」，列出 <div> 與 sanity check", () => {
+  const { session, logs, guard } = setup([user("刪除 SVG"),
+    say("我的處理流程中有一個 sanity check 寫得太嚴格了（預期整體 `<div>` 的數量應保持不變……）")]);
+  assert.equal(guard.onAgentEnd({ type: "agent_end" }), true);
+  const { message } = session.sent[0];
+  assert.match(message.content, /「<div>」「sanity check」/);
+  assert.match(message.content, /更正用語：/);
+  assert.deepEqual(message.details.jargon, ["<div>", "sanity check"]);
+  assert.deepEqual(logs.find(l => l[0] === "jargon guard correction")[1].terms, ["<div>", "sanity check"]);
+});
+
+test("回覆出現資料夾路徑 → 同一輪更正", () => {
+  const { session, guard } = setup([user("刪掉上傳的檔案"), say("已刪除 `uploads/customer/` 底下的 11 個檔案。")]);
+  assert.equal(guard.onAgentEnd({ type: "agent_end" }), true);
+  assert.deepEqual(session.sent[0].message.details.jargon, ["uploads/customer/"]);
+});

@@ -1,5 +1,5 @@
 {
-  "_comment": "W45 F17 內部識別字正反例。site-workflow 9dbbc7c（scripts/tests/test_e2e_soak.py）的 3 例與 W36R5 I3 原句在前；改規則時 pi-webui jargon.ts 與 site-workflow e2e-soak.py SNAKE_IDENT_RE 一起改。hit 的第二欄是應命中的識別字（依出現順序、不重複）。",
+  "_comment": "W45 F17／W54 F21 內部用語正反例，pi-webui 與 site-workflow（scripts/tests/fixtures/jargon-cases.json）共用同一份；改規則時 pi-webui src/server/jargon.ts 與 site-workflow scripts/e2e-soak.py 一起改。hit／clean：程式識別字（findInternalIdentifiers）。jargon：W54 合併規則（findJargon），回傳順序為 HTML 標籤、資料夾路徑、程式識別字、英文工程詞，各自依出現順序、不重複。engineering_terms：中文句中偵測的英文工程詞表，須與程式內詞表一致。",
   "hit": [
     [
       "產品說明內文在 desc_html 欄位。",
@@ -71,5 +71,140 @@
     "請放在 Templates/pic/my_photo.webp。",
     "版本 v0.7.31 已上線。",
     "OEM_ODM 服務與 COVID_19 防疫說明都在頁面上。"
-  ]
+  ],
+  "engineering_terms": [
+    "sanity check",
+    "regex",
+    "payload",
+    "commit",
+    "deploy",
+    "DOM",
+    "session",
+    "debug",
+    "cache",
+    "token",
+    "endpoint",
+    "API",
+    "CLI",
+    "JSON",
+    "SQL",
+    "script",
+    "parser",
+    "schema",
+    "query",
+    "render",
+    "timestamp",
+    "hash",
+    "diff",
+    "grep",
+    "merge",
+    "repo",
+    "overlay",
+    "fallback",
+    "timeout",
+    "stack trace",
+    "backend",
+    "frontend",
+    "selector"
+  ],
+  "jargon": {
+    "hit": [
+      [
+        "我的處理流程中有一個 sanity check 寫得太嚴格了（預期整體 `<div>` 的數量應保持不變……）",
+        [
+          "<div>",
+          "sanity check"
+        ]
+      ],
+      [
+        "我把 </p> 後面那段刪掉了，<img src=\"https://x.example.com/a.png\" alt=\"a\"> 也一起移除。",
+        [
+          "</p>",
+          "<img>"
+        ]
+      ],
+      [
+        "已刪除 `uploads/customer/` 底下的 11 個檔案。",
+        [
+          "uploads/customer/"
+        ]
+      ],
+      [
+        "圖片放在 Templates/pic/cleanroom.png。",
+        [
+          "Templates/pic/cleanroom.png"
+        ]
+      ],
+      [
+        "伺服器上的 /var/www/html/customer-project/x 已清空。",
+        [
+          "/var/www/html/customer-project/x"
+        ]
+      ],
+      [
+        "縮圖在 pic/m/eye-mask.png，原圖不變。",
+        [
+          "pic/m/eye-mask.png"
+        ]
+      ],
+      [
+        "檔案在 uploads/customer_files/ 底下。",
+        [
+          "uploads/customer_files/"
+        ]
+      ],
+      [
+        "我用 regex 比對了內文，payload 也確認過。",
+        [
+          "regex",
+          "payload"
+        ]
+      ],
+      [
+        "稍後我會 commit 並 deploy 到預覽站。",
+        [
+          "commit",
+          "deploy"
+        ]
+      ],
+      [
+        "我檢查了頁面的 DOM 結構，session 也還在。",
+        [
+          "DOM",
+          "session"
+        ]
+      ],
+      [
+        "產品說明內文在 desc_html 欄位，`<br>` 換行保留。",
+        [
+          "<br>",
+          "desc_html"
+        ]
+      ],
+      [
+        "改完後重新 render 一次頁面，API 回應正常。",
+        [
+          "render",
+          "API"
+        ]
+      ]
+    ],
+    "clean": [
+      "圖片「shape_of_masks.jpg」與 OEM_facial_cleanser.png 都會照原樣送出。",
+      "We cleaned up the session photos and the cache of old images is gone.",
+      "Please commit to the order by Friday so we can deploy the new design next week.",
+      "Our API-grade filters pass every sanity check in the lab.",
+      "Dear <Name>, thank you for your order.",
+      "The mask comes in Black/White/Red, sizes S/M/L, and/or custom colors.",
+      "請您點這裡預覽：/en/product/a010108.html",
+      "預覽網址 https://biocrown.dev.ready-sale.com/zh-TW/product/a010105.html 已更新。",
+      "日期 2026/11/04 已排定，24/7 客服與 TCP/IP 連線說明保留。",
+      "面膜布提供 S、M、L 三種尺寸，顏色有黑/白兩種。",
+      "下面是範例：\n```\n<div class=\"hero\">uploads/customer/x.png</div>\n```\n以上僅供參考。",
+      "已刪除 cleanroom.png 與 eye-mask-texture-detail.png 兩個檔案。",
+      "請到 /zh-TW/product/ 查看產品列表。",
+      "數量 a < b > c 的情況不會發生。",
+      "這款面膜採用 Bio-Cellulose 材質，適合 OEM／ODM 合作。"
+    ]
+  }
 }
