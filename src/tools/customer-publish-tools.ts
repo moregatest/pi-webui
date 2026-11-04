@@ -879,6 +879,9 @@ export function checkOnlyBeforeCurrentTurn(entries: readonly BranchEntry[] | und
  */
 const CONSENT_ZH = /(確認|確定|同意)\s*發布/;
 const NEGATED_ZH = /(不要|先不|還不|暫不|別|不)\s*(要\s*)?(確認|確定|同意)\s*發布/;
+// 「確認發布前先讓我看」「同意發布之前」是條件，不是同意
+const BEFORE_ZH = /(確認|確定|同意)\s*發布\s*(之?前|以前)/;
+const BEFORE_EN = /\bbefore\b[^.!?]*\bpublish|\bpublish\w*\b[^.!?]*\bbefore\b/i;
 const CONSENT_EN = /\bconfirm(ed)?\b[^.!?]*\bpublish|\bpublish\b[^.!?]*\bconfirm(ed)?\b/i;
 const NEGATED_EN = /\b(don't|do not|not yet|never)\b[^.!?]*\b(confirm|publish)/i;
 
@@ -896,7 +899,7 @@ export function explicitPublishConsent(entries: readonly BranchEntry[] | undefin
     const m = entries[i]?.type === "message" ? entries[i].message : undefined;
     if (m?.role !== "user") continue;
     const t = messageText(m.content);
-    if (NEGATED_ZH.test(t) || NEGATED_EN.test(t)) return false;
+    if (NEGATED_ZH.test(t) || NEGATED_EN.test(t) || BEFORE_ZH.test(t) || BEFORE_EN.test(t)) return false;
     return CONSENT_ZH.test(t) || CONSENT_EN.test(t);
   }
   return false;

@@ -99,7 +99,7 @@ describe('explicitPublishConsent', () => {
     it(`明確同意：${t}`, () => assert.equal(explicitPublishConsent([user(t)]), true));
   }
   for (const t of ['請幫我發布，發布前先讓我看會發布哪些東西。', '我看過預覽站了，那一句可以。請幫我發布，發布前先讓我看會發布哪些東西。',
-    '先不要確認發布', '還不要確認發布，我再看看', '別確認發布', '好的', '可以', '發布吧']) {
+    '先不要確認發布', '還不要確認發布，我再看看', '別確認發布', '確認發布前先讓我看會發布哪些東西', '同意發布之前請先列給我', 'Before publishing, confirm the list with me first.', '好的', '可以', '發布吧']) {
     it(`不算明確同意：${t}`, () => assert.equal(explicitPublishConsent([user(t)]), false));
   }
   it('只看最後一則客戶訊息', () => {
