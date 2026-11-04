@@ -722,6 +722,30 @@ describe('source-version v2 dynamic languages', () => {
     }, { resolveLanguages: async () => ['en', 'zh-TW'] });
   });
 
+  // W69 追加：原站 #71 同一段原文出現兩次，相同的改前→改後片段只列一次並標次數（與 readyAI 推送紀錄一致）
+  it('check_only merges identical hunks and says how many times the change appears', async () => {
+    const A = { before: '…ion, stiulates c…', after: '…ion, stimulates c…' };
+    const B = { before: '…to produre collag…', after: '…to produce collag…' };
+    const item = (hunks, extra = {}) => ({ table: 'product', table_label: '產品', id: 'a1', name: 'Serum', action: 'update',
+      fields: [{ label: '詳細說明', hunks, ...extra }] });
+    await fixture(async ({ tool, respond }) => {
+      respond(success(), 0, '', { summary: summaryOk({
+        // 新版 readyAI：已去重並帶 count
+        en: { ...counts([{ table: 'product', inserted: 0, updated: 1, deleted: 0 }]),
+          records: { items: [item([{ ...A, count: 2 }, { ...B, count: 2 }])], total: 1, listed: 1 } },
+        // 舊版 readyAI：重複片段原樣送來，pi-webui 自己合併；共 4 處仍有 1 處沒列出
+        'zh-TW': { ...counts([{ table: 'product', inserted: 0, updated: 1, deleted: 0 }]),
+          records: { items: [item([A, B, A], { hunks_total: 4 })], total: 1, listed: 1 } },
+      }) });
+      const result = await execute(tool(), { check_only: true });
+      assert.deepEqual(result.record_changes[0].items[0].fields[0].hunks, [{ ...A, count: 2 }, { ...B, count: 2 }]);
+      assert.deepEqual(result.record_changes[1].items[0].fields[0].hunks, [{ ...A, count: 2 }, B]);
+      assert.match(result.message, /en：產品 a1〈Serum〉：詳細說明「…ion, stiulates c…」→「…ion, stimulates c…」（此處改動出現 2 次）、「…to produre collag…」→「…to produce collag…」（此處改動出現 2 次）\n/);
+      assert.match(result.message, /zh-TW：產品 a1〈Serum〉：詳細說明「…ion, stiulates c…」→「…ion, stimulates c…」（此處改動出現 2 次）、「…to produre collag…」→「…to produce collag…」（共 4 處）/);
+      assert.equal((result.message.match(/stiulates/g) || []).length, 2); // 每個語系各一次
+    }, { resolveLanguages: async () => ['en', 'zh-TW'] });
+  });
+
   it('check_only drops malformed or unsafe records but keeps counts', async () => {
     await fixture(async ({ tool, respond }) => {
       respond(success(), 0, '', { summary: summaryOk({

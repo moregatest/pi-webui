@@ -601,7 +601,7 @@ export function describeChanges(changes: LanguageChanges[]): string {
 }
 
 // ── W66：逐筆差異（readyAI publication summary 的 changes[<lng>].records）──
-export interface RecordHunk { before: string; after: string }
+export interface RecordHunk { before: string; after: string; count?: number }
 export interface RecordField { label: string; note?: string; hunks?: RecordHunk[]; hunks_total?: number }
 export interface RecordItem {
   table_label: string; id: string; name: string; action: "insert" | "update" | "delete";
@@ -630,12 +630,19 @@ function readField(f: unknown): RecordField {
   }
   if (f.hunks !== undefined) {
     if (!Array.isArray(f.hunks) || f.hunks.length > 5) throw new Error("invalid hunks");
-    out.hunks = f.hunks.map((h: unknown) => {
+    // 同一欄位內完全相同的改前→改後片段只列一次並累計次數（W69 追加；舊版 readyAI 會原樣重複送來）
+    const merged: RecordHunk[] = [];
+    for (const h of f.hunks as unknown[]) {
       if (!object(h)) throw new Error("invalid hunk");
       const before = text(h.before, 40), after = text(h.after, 40);
       if (before === undefined || after === undefined) throw new Error("invalid hunk text");
-      return { before, after };
-    });
+      if (h.count !== undefined && (!count(h.count, 10_000) || (h.count as number) < 1)) throw new Error("invalid hunk count");
+      const n = (h.count as number | undefined) ?? 1;
+      const same = merged.find(x => x.before === before && x.after === after);
+      if (same) same.count = (same.count ?? 1) + n;
+      else merged.push(n > 1 ? { before, after, count: n } : { before, after });
+    }
+    out.hunks = merged;
   }
   if (!out.note && !out.hunks) throw new Error("empty field");
   if (f.hunks_total !== undefined) { if (!count(f.hunks_total, 10_000)) throw new Error("invalid hunks_total"); out.hunks_total = f.hunks_total; }
@@ -670,8 +677,11 @@ export function parseRecordChanges(data: unknown, languages: string[]): Array<La
 
 function fieldText(f: RecordField): string {
   if (f.note) return f.note.startsWith(f.label) ? f.note : `${f.label}：${f.note}`;
-  const hunks = (f.hunks ?? []).map(h => `「${h.before}」→「${h.after}」`).join("、");
-  return `${f.label}${hunks}${f.hunks_total ? `（共 ${f.hunks_total} 處）` : ""}`;
+  const hunks = (f.hunks ?? [])
+    .map(h => `「${h.before}」→「${h.after}」${h.count && h.count > 1 ? `（此處改動出現 ${h.count} 次）` : ""}`).join("、");
+  // 「共 N 處」只在已列片段（含重複次數）沒涵蓋全部改動處時才說
+  const shown = (f.hunks ?? []).reduce((n, h) => n + (h.count ?? 1), 0);
+  return `${f.label}${hunks}${f.hunks_total && f.hunks_total > shown ? `（共 ${f.hunks_total} 處）` : ""}`;
 }
 
 /** 給 agent 照念的逐筆清單：「zh-TW：產品 a020201〈名稱〉：使用方法「…」→「…」」。 */
