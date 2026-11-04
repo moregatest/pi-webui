@@ -643,6 +643,39 @@ describe('source-version v2 dynamic languages', () => {
     }, { resolveLanguages: async () => ['en', 'zh-TW'] });
   });
 
+  // W36R11：改 spec_ 欄位時 readyAI 摘要會多一張附屬規格表「<欄位>::<表>」；
+  // 不可因此整份摘要判為格式不符，也不可把附屬表名念給對方。
+  it('check_only keeps counts when a derived spec table changes and hides it from the reader', async () => {
+    await fixture(async ({ tool, respond }) => {
+      respond(success(), 0, '', { summary: summaryOk({
+        en: counts([{ table: 'product', inserted: 0, updated: 1, deleted: 0 }]),
+        'zh-TW': counts([{ table: 'product', inserted: 0, updated: 1, deleted: 0 },
+          { table: 'spec_usage::product', inserted: 1, updated: 0, deleted: 0 }]),
+      }) });
+      const result = await execute(tool(), { check_only: true });
+      assert.equal(result.changes_available, true);
+      assert.deepEqual(result.changes[1], { lng: 'zh-TW', tables: [{ table: 'product', inserted: 0, updated: 1, deleted: 0 }],
+        totals: { inserted: 0, updated: 1, deleted: 0 } });
+      assert.match(result.message, /en：product 修改 1 筆/);
+      assert.match(result.message, /zh-TW：product 修改 1 筆/);
+      assert.doesNotMatch(JSON.stringify(result), /::|spec_usage/);
+    }, { resolveLanguages: async () => ['en', 'zh-TW'] });
+  });
+
+  it('check_only says only derived data changed when a language has nothing else', async () => {
+    await fixture(async ({ tool, respond }) => {
+      respond(success(), 0, '', { summary: summaryOk({
+        en: counts([{ table: 'product', inserted: 0, updated: 1, deleted: 0 }]),
+        'zh-TW': counts([{ table: 'spec_QA::product', inserted: 0, updated: 2, deleted: 0 }]),
+      }) });
+      const result = await execute(tool(), { check_only: true });
+      assert.equal(result.changes_available, true);
+      assert.match(result.message, /zh-TW：只有頁面附屬資料同步更新/);
+      assert.doesNotMatch(result.message, /zh-TW：資料庫沒有記錄變動/);
+      assert.doesNotMatch(JSON.stringify(result), /::|spec_QA/);
+    }, { resolveLanguages: async () => ['en', 'zh-TW'] });
+  });
+
   it('check_only strips anything beyond table names and counts', async () => {
     await fixture(async ({ tool, respond }) => {
       respond(success(), 0, '', { summary: summaryOk({
@@ -662,6 +695,9 @@ describe('source-version v2 dynamic languages', () => {
     ['language mismatch', { ok: true, result: { languages: ['en'], changes: { en: { tables: [], totals: { inserted: 0, updated: 0, deleted: 0 } } } } }],
     ['bad table name', { ok: true, result: { languages: ['en', 'zh-TW'], changes: {
       en: { tables: [{ table: 'a b; drop', inserted: 1, updated: 0, deleted: 0 }], totals: { inserted: 1, updated: 0, deleted: 0 } },
+      'zh-TW': { tables: [], totals: { inserted: 0, updated: 0, deleted: 0 } } } } }],
+    ['bad derived table name', { ok: true, result: { languages: ['en', 'zh-TW'], changes: {
+      en: { tables: [{ table: 'spec::a b', inserted: 1, updated: 0, deleted: 0 }], totals: { inserted: 1, updated: 0, deleted: 0 } },
       'zh-TW': { tables: [], totals: { inserted: 0, updated: 0, deleted: 0 } } } } }],
     ['negative count', { ok: true, result: { languages: ['en', 'zh-TW'], changes: {
       en: { tables: [{ table: 'product', inserted: -1, updated: 0, deleted: 0 }], totals: { inserted: -1, updated: 0, deleted: 0 } },

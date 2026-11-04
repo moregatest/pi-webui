@@ -67,7 +67,7 @@ export interface OriginCompare { changed: string[]; changed_count: number; uncha
 export interface AssetSummary { files: AssetFile[]; excluded: ExcludedAsset[]; file_count: number; excluded_count: number; truncated: boolean; origin_compare?: OriginCompare }
 export interface TableChange { table: string; inserted: number; updated: number; deleted: number; schema_changed?: true }
 export interface ChangeTotals { inserted: number; updated: number; deleted: number }
-export interface LanguageChanges { lng: string; tables: TableChange[]; totals: ChangeTotals }
+export interface LanguageChanges { lng: string; tables: TableChange[]; totals: ChangeTotals; derived_only?: true }
 interface PublishInput { reason?: string; confirmation_id?: string; publication_id?: string; check_only?: boolean }
 export interface PublishExecutionContext { toolCallId: string }
 export interface PublishLocalDeps {
@@ -385,7 +385,9 @@ function verifiedExport(data: unknown, config: LocalPublishConfig, id: string, d
     publication_evidence:proof, changed_records:"unknown", message:"同一發布的完整實體證據已通過重新驗證。" };
 }
 
-const TABLE = /^[A-Za-z0-9_]{1,64}$/;
+// 一般表名，或 readyAI 由 spec_ 欄位衍生的附屬規格表「<欄位>::<表>」（例如 spec_usage::product）
+const TABLE = /^[A-Za-z0-9_]{1,64}(::[A-Za-z0-9_]{1,64})?$/;
+const isDerivedTable = (table: string) => table.includes("::");
 const COUNT_KEYS = ["inserted", "updated", "deleted"] as const;
 const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
 
@@ -569,14 +571,27 @@ function publishedAssetsNote(data: unknown): string {
 /** 給 agent 照念的中文摘要：「en：product 修改 1 筆、news 新增 2 筆」。 */
 export function describeChanges(changes: LanguageChanges[]): string {
   const label = { inserted: "新增", updated: "修改", deleted: "刪除" } as const;
-  return changes.map(({ lng, tables }) => {
-    if (!tables.length) return `${lng}：資料庫沒有記錄變動`;
+  return changes.map(({ lng, tables, derived_only }) => {
+    if (!tables.length) return derived_only ? `${lng}：只有頁面附屬資料同步更新，沒有主要內容的記錄變動` : `${lng}：資料庫沒有記錄變動`;
     const parts = tables.map(t => {
       const counts = COUNT_KEYS.filter(k => t[k] > 0).map(k => `${label[k]} ${t[k]} 筆`).join("、");
       return `${t.table} ${counts || "沒有記錄增減"}${t.schema_changed ? "（表結構不同）" : ""}`;
     });
     return `${lng}：${parts.join("；")}`;
   }).join("。");
+}
+
+/**
+ * 給對方看的變動摘要：附屬規格表（<欄位>::<表>）是主表欄位的衍生資料，主表那筆已經算進
+ * 「修改」，不另列也不念出內部表名；某語系只有附屬表變動時標 derived_only，避免說成沒有變動。
+ */
+export function customerChanges(changes: LanguageChanges[]): LanguageChanges[] {
+  return changes.map(({ lng, tables }) => {
+    const main = tables.filter(t => !isDerivedTable(t.table));
+    const totals = Object.fromEntries(COUNT_KEYS.map(k => [k, main.reduce((n, t) => n + t[k], 0)])) as unknown as ChangeTotals;
+    const derivedOnly = !main.length && tables.some(t => COUNT_KEYS.some(k => t[k] > 0));
+    return { lng, tables: main, totals, ...(derivedOnly ? { derived_only: true as const } : {}) };
+  });
 }
 
 async function checkOnly(config: LocalPublishConfig): Promise<PublishResult> {
@@ -587,7 +602,7 @@ async function checkOnly(config: LocalPublishConfig): Promise<PublishResult> {
     const out = decode(await runCli(config, command(config, "summary")));
     if (out.ok) {
       // DB 摘要與素材清單各自解析：一邊格式不符不影響另一邊
-      try { changes = parseChangeSummary(out.data, languages); } catch { changes = undefined; }
+      try { changes = customerChanges(parseChangeSummary(out.data, languages)); } catch { changes = undefined; }
       assets = readAssets(out.data);
     }
   } catch { changes = undefined; assets = undefined; }
