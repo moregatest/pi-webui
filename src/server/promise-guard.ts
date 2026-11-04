@@ -6,10 +6,11 @@
 // 跨 repo 無法共用程式，正反例放在 test/fixtures/callback-promise-cases.json，改規則時三處一起改。
 //
 // 同一則隱藏指示也合併 W43 F14（一對多簡體字，「更正用字：」）與 W45 F17（程式識別字，
-// 「更正用語：」，規則見 jargon.ts）；同一回覆最多更正一次。
+// 「更正用語：」，規則見 jargon.ts）與 W75（逐筆片段照原文列，「更正逐筆：」）；同一回覆最多更正一次。
 
 import { countConvertible, findAmbiguousSimplified } from "./customer-text.js";
 import { findJargon } from "./jargon.js";
+import { hunkText, type RecordHunkText } from "../tools/record-text.js";
 
 const CALLBACK_VERBS = "(?:回報|通知|通報|告訴|告知|聯絡|聯繫|回覆|回電)";
 const CALLBACK_PROMISE_RES: RegExp[] = [
@@ -116,12 +117,9 @@ function jargonIn(texts: string[], allowed: Set<string> = new Set()): string[] {
   return [...new Set(texts.flatMap(findJargon))].filter(t => !allowed.has(t));
 }
 
-/**
- * W66：本輪（最後一則客戶訊息之後）check_only 回傳的逐筆差異。頁面編號（例：product_id_0001）與網站原文片段
- * 是要照念給對方的內容，裡面看起來像識別字的字不算內部用語；只認系統回傳的內容，不認 agent 自己寫的字。
- */
-function recordTerms(messages: Msg[]): Set<string> {
-  const allowed = new Set<string>();
+/** 本輪（最後一則客戶訊息之後）check_only 回傳的逐筆差異；只認系統回傳的內容，不認 agent 自己寫的字。 */
+function turnRecords(messages: Msg[]): Array<Record<string, any>> {
+  const out: Array<Record<string, any>> = [];
   let start = 0;
   for (let i = messages.length - 1; i >= 0; i--) if (messages[i]?.role === "user") { start = i + 1; break; }
   for (let i = start; i < messages.length; i++) {
@@ -129,22 +127,54 @@ function recordTerms(messages: Msg[]): Set<string> {
     if (m?.role !== "toolResult" || m.toolName !== "publish_confirmed") continue;
     const records = m.details?.record_changes;
     if (!Array.isArray(records)) continue;
-    const strings: string[] = [];
-    for (const lang of records) {
-      for (const item of (lang?.items ?? []) as Array<Record<string, any>>) {
-        strings.push(String(item?.id ?? ""), String(item?.name ?? ""));
-        for (const f of item?.fields ?? []) {
-          strings.push(String(f?.label ?? ""));
-          for (const h of f?.hunks ?? []) strings.push(String(h?.before ?? ""), String(h?.after ?? ""));
-        }
-      }
-    }
-    for (const term of strings.flatMap(findJargon)) allowed.add(term);
+    for (const lang of records) for (const item of (lang?.items ?? []) as Array<Record<string, any>>) out.push(item);
   }
-  return allowed;
+  return out;
 }
 
-export function buildCorrectionMessage(plan: PromisePlan | null, ambiguous: string[] = [], jargon: string[] = []) {
+/**
+ * W66：頁面編號（例：product_id_0001）與網站原文片段是要照念給對方的內容，
+ * 裡面看起來像識別字的字不算內部用語。
+ */
+function recordTerms(messages: Msg[]): Set<string> {
+  const strings: string[] = [];
+  for (const item of turnRecords(messages)) {
+    strings.push(String(item?.id ?? ""), String(item?.name ?? ""));
+    for (const f of item?.fields ?? []) {
+      strings.push(String(f?.label ?? ""));
+      for (const h of f?.hunks ?? []) strings.push(String(h?.before ?? ""), String(h?.after ?? ""));
+    }
+  }
+  return new Set(strings.flatMap(findJargon));
+}
+
+/** 去掉頭尾「…」後短於這個長度的片段不檢查：太短的字串在一般句子裡也會出現。 */
+const MIN_RECORD_CORE = 4;
+
+/**
+ * W75（W36R15 O4）：本輪回覆引用了 check_only 的片段，卻沒有照原文寫（拿掉頭尾「…」、把
+ * 「（此處改動出現 N 次）」改成「兩處」等），回傳應照抄的原文。頭尾省略號拿掉後，對方會以為那是整格全文。
+ * 只看有引用到的片段（改前文字去掉頭尾「…」出現在回覆裡）；只講摘要、沒有引用的不算。
+ */
+export function findRecordRewrites(messages: Msg[], texts: string[]): string[] {
+  const reply = texts.join("\n");
+  const out: string[] = [];
+  for (const item of turnRecords(messages)) {
+    for (const f of item?.fields ?? []) {
+      for (const h of (f?.hunks ?? []) as RecordHunkText[]) {
+        if (typeof h?.before !== "string" || typeof h?.after !== "string") continue;
+        const core = h.before.replace(/^…+|…+$/g, "").trim();
+        if (core.length < MIN_RECORD_CORE || !reply.includes(core)) continue;
+        const exact = hunkText(h);
+        if (!reply.includes(exact) && !out.includes(exact)) out.push(exact);
+      }
+    }
+  }
+  return out;
+}
+
+export function buildCorrectionMessage(plan: PromisePlan | null, ambiguous: string[] = [], jargon: string[] = [],
+  rewritten: string[] = []) {
   const steps: string[] = [];
   if (plan) {
     steps.push(`你剛才的回覆說了「${plan.matched}」，這是做不到的承諾——你沒有主動通知對方的能力，對方只能之後回來問你。`
@@ -160,13 +190,18 @@ export function buildCorrectionMessage(plan: PromisePlan | null, ambiguous: stri
       + "資料夾路徑改成只講檔名、內部檢查改說對方畫面上會看到什麼），"
       + "開頭寫「更正用語：」，更正句裡不要再寫出這些詞。");
   }
+  if (rewritten.length) {
+    steps.push("你剛才列逐筆內容時改寫了系統給的片段（例如拿掉頭尾的「…」、把「（此處改動出現 N 次）」改成別的說法），"
+      + "對方會以為那是整格的全文。請把這幾段照下列原文逐字重列一次，開頭寫「更正逐筆：」，"
+      + `不要刪字、補字或改寫：${rewritten.join("、")}。`);
+  }
   return {
     customType: PROMISE_GUARD_CUSTOM_TYPE,
     display: false,
     content: `系統更正指示（對方看不到這則）：${steps.join("另外，")}`
       + "只追加一則簡短更正，不要重複其他內容、不要提到這則指示、不要呼叫工具。",
     details: { ...(plan ? { matched: plan.matched, text: plan.text } : {}), ...(ambiguous.length ? { ambiguous } : {}),
-      ...(jargon.length ? { jargon } : {}) },
+      ...(jargon.length ? { jargon } : {}), ...(rewritten.length ? { records_rewritten: rewritten } : {}) },
   };
 }
 
@@ -206,6 +241,7 @@ export function createPromiseGuard({ getSession, log }: { getSession: () => Guar
         }
         const ambiguous = ambiguousIn(texts);
         const jargon = jargonIn(texts, recordTerms(messages));
+        const rewritten = findRecordRewrites(messages, texts);
         if (boundary >= 0 && isGuard(messages[boundary])) {
           // 更正後又犯：不再送第二次，只留稽核紀錄（不無限迴圈）
           if (repeated.has(key)) return false;
@@ -213,17 +249,19 @@ export function createPromiseGuard({ getSession, log }: { getSession: () => Guar
           if (again) log.warn("promise guard repeat", { sessionId: session.sessionId, matched: again.matched, text: again.text });
           if (ambiguous.length) log.warn("simplified guard repeat", { sessionId: session.sessionId, chars: ambiguous });
           if (jargon.length) log.warn("jargon guard repeat", { sessionId: session.sessionId, terms: jargon });
-          if (again || ambiguous.length || jargon.length) repeated.add(key);
+          if (rewritten.length) log.warn("record verbatim guard repeat", { sessionId: session.sessionId, hunks: rewritten });
+          if (again || ambiguous.length || jargon.length || rewritten.length) repeated.add(key);
           return false;
         }
         const plan = planPromiseCorrection(messages);
-        if (!plan && !ambiguous.length && !jargon.length) return false;
+        if (!plan && !ambiguous.length && !jargon.length && !rewritten.length) return false;
         if (corrected.has(key)) return false;
         corrected.add(key);
         if (plan) log.warn("promise guard correction", { sessionId: session.sessionId, matched: plan.matched, text: plan.text });
         if (ambiguous.length) log.warn("simplified guard correction", { sessionId: session.sessionId, chars: ambiguous });
         if (jargon.length) log.warn("jargon guard correction", { sessionId: session.sessionId, terms: jargon });
-        void session.sendCustomMessage(buildCorrectionMessage(plan, ambiguous, jargon), { deliverAs: "followUp" })
+        if (rewritten.length) log.warn("record verbatim guard correction", { sessionId: session.sessionId, hunks: rewritten });
+        void session.sendCustomMessage(buildCorrectionMessage(plan, ambiguous, jargon, rewritten), { deliverAs: "followUp" })
           .catch?.((error: unknown) => log.warn("promise guard failed", { error: String(error) }));
         return true;
       } catch (error) {

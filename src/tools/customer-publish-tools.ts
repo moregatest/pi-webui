@@ -7,6 +7,7 @@ import { lstat, mkdir, open, link, unlink, realpath, readdir } from "node:fs/pro
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { hunkText } from "./record-text.js";
 import {
   ACCEPT_ELIGIBLE_STAGE, ACCEPT_WORDING, TRIGGERED_WORDING, classifyPublication, ensureAcceptStarted, readAcceptSnapshot,
   type AcceptDeps, type AcceptLaunch, type CliStatus, type PublicationState,
@@ -678,7 +679,7 @@ export function parseRecordChanges(data: unknown, languages: string[]): Array<La
 function fieldText(f: RecordField): string {
   if (f.note) return f.note.startsWith(f.label) ? f.note : `${f.label}：${f.note}`;
   const hunks = (f.hunks ?? [])
-    .map(h => `「${h.before}」→「${h.after}」${h.count && h.count > 1 ? `（此處改動出現 ${h.count} 次）` : ""}`).join("、");
+    .map(hunkText).join("、");
   // 「共 N 處」只在已列片段（含重複次數）沒涵蓋全部改動處時才說
   const shown = (f.hunks ?? []).reduce((n, h) => n + (h.count ?? 1), 0);
   return `${f.label}${hunks}${f.hunks_total && f.hunks_total > shown ? `（共 ${f.hunks_total} 處）` : ""}`;
@@ -745,7 +746,10 @@ async function checkOnly(config: LocalPublishConfig): Promise<PublishResult> {
   const listed = usable ? records.filter((r): r is LanguageRecords => !!r && r.items.length + r.total > 0) : [];
   const recordFields = usable ? { record_changes: listed, records_available: true } : { records_available: false };
   const recordText = usable && listed.length
-    ? `逐筆變動（請照列給對方：只講頁面類別、編號與名稱、欄位名稱和改前→改後的文字，不要提資料表或欄位代碼）：\n${describeRecords(listed)}\n`
+    ? "逐筆變動（請照列給對方：只講頁面類別、編號與名稱、欄位名稱和改前→改後的文字，不要提資料表或欄位代碼。"
+      + "每段「改前」→「改後」要逐字照抄下列原文：頭尾的「…」表示前後還有別的文字，不可拿掉；"
+      + "「（此處改動出現 N 次）」照原句寫，不可改成「兩處」或省略；不要刪字、補字或合併片段）："
+      + `\n${describeRecords(listed)}\n`
     : recordsOffered && changedLangs.length ? "目前無法列出逐筆內容，請照實告訴對方只能確認各類資料的筆數。" : "";
   return {
     ok: true, status: "pending_confirmation", languages, content_verified: false, changes, changes_available: true,

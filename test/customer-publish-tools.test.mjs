@@ -746,6 +746,27 @@ describe('source-version v2 dynamic languages', () => {
     }, { resolveLanguages: async () => ['en', 'zh-TW'] });
   });
 
+  // W75（W36R15 O4）：確認畫面曾拿掉頭尾「…」、把「（此處改動出現 2 次）」改成「（兩處）」，看起來像整格全文
+  it('check_only tells the agent to copy each hunk verbatim with ellipses and repeat counts', async () => {
+    await fixture(async ({ tool, respond }) => {
+      respond(success(), 0, '', { summary: summaryOk({
+        en: { ...counts([{ table: 'product', inserted: 0, updated: 1, deleted: 0 }]),
+          records: { items: [{ table: 'product', table_label: '產品', id: 'a010205', name: 'Blackhead Peel Off Mask Manufacturing',
+            action: 'update', fields: [{ label: '詳細說明', hunks: [
+              { before: '…1st step ／ 2nd step…', after: '…1st Step ／ 2nd Step…' },
+              { before: '…Cold Facial Musk or Gel for…', after: '…Cold Facial Mask or Gel for…', count: 2 }] }] }],
+          total: 1, listed: 1 } },
+        'zh-TW': counts([]),
+      }) });
+      const result = await execute(tool(), { check_only: true });
+      assert.match(result.message, /「…1st step ／ 2nd step…」→「…1st Step ／ 2nd Step…」、「…Cold Facial Musk or Gel for…」→「…Cold Facial Mask or Gel for…」（此處改動出現 2 次）/);
+      // 規定照原文逐字抄：保留頭尾「…」、次數說明照原句，不得改寫成「兩處」
+      assert.match(result.message, /逐字照抄/);
+      assert.match(result.message, /頭尾的「…」/);
+      assert.match(result.message, /「（此處改動出現 N 次）」/);
+    }, { resolveLanguages: async () => ['en', 'zh-TW'] });
+  });
+
   it('check_only drops malformed or unsafe records but keeps counts', async () => {
     await fixture(async ({ tool, respond }) => {
       respond(success(), 0, '', { summary: summaryOk({
