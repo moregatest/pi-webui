@@ -626,7 +626,7 @@ describe('source-version v2 dynamic languages', () => {
         { lng: 'en', tables: [{ table: 'product', inserted: 0, updated: 1, deleted: 0 }], totals: { inserted: 0, updated: 1, deleted: 0 } },
         { lng: 'zh-TW', tables: [], totals: { inserted: 0, updated: 0, deleted: 0 } },
       ]);
-      assert.match(result.message, /en：product 修改 1 筆/);
+      assert.match(result.message, /en：產品 修改 1 筆/);
       assert.match(result.message, /zh-TW：資料庫沒有記錄變動/);
       // 指示 agent 以「您」稱呼對方，不得出現「客戶」第三人稱（readyai#163）
       assert.match(result.message, /以「您」稱呼對方/);
@@ -656,8 +656,8 @@ describe('source-version v2 dynamic languages', () => {
       assert.equal(result.changes_available, true);
       assert.deepEqual(result.changes[1], { lng: 'zh-TW', tables: [{ table: 'product', inserted: 0, updated: 1, deleted: 0 }],
         totals: { inserted: 0, updated: 1, deleted: 0 } });
-      assert.match(result.message, /en：product 修改 1 筆/);
-      assert.match(result.message, /zh-TW：product 修改 1 筆/);
+      assert.match(result.message, /en：產品 修改 1 筆/);
+      assert.match(result.message, /zh-TW：產品 修改 1 筆/);
       assert.doesNotMatch(JSON.stringify(result), /::|spec_usage/);
     }, { resolveLanguages: async () => ['en', 'zh-TW'] });
   });
@@ -673,6 +673,79 @@ describe('source-version v2 dynamic languages', () => {
       assert.match(result.message, /zh-TW：只有頁面附屬資料同步更新/);
       assert.doesNotMatch(result.message, /zh-TW：資料庫沒有記錄變動/);
       assert.doesNotMatch(JSON.stringify(result), /::|spec_QA/);
+    }, { resolveLanguages: async () => ['en', 'zh-TW'] });
+  });
+
+  // W66：客戶確認畫面與推送紀錄看到同一份逐筆差異（readyAI publication summary 的 records）
+  const W36R12_ZH = { items: [{ table: 'product', table_label: '產品', id: 'a020201', name: '身體去角質噴霧', action: 'update',
+    fields: [{ label: '使用方法', hunks: [{ before: '…於全身。3. 用温水洗淨，每週 2…', after: '…於全身。3. 用溫水洗淨，每週 2…' }] }] }],
+    total: 1, listed: 1, truncated: false, other_records: 0 };
+  const W36R12_EN = { items: [{ table: 'product', table_label: '產品', id: 'a020201', name: 'Body Scrub Spray', action: 'update',
+    fields: [{ label: 'Our Advantage', hunks: [{ before: 'OEM,OBM,ODM', after: 'OEM, OBM, ODM' }] }] }],
+    total: 1, listed: 1, truncated: false, other_records: 0 };
+
+  it('check_only lists per-record changes (W36R12) without internal table or field names', async () => {
+    await fixture(async ({ tool, respond }) => {
+      respond(success(), 0, '', { summary: summaryOk({
+        en: { ...counts([{ table: 'product', inserted: 0, updated: 1, deleted: 0 }]), records: W36R12_EN },
+        'zh-TW': { ...counts([{ table: 'product', inserted: 0, updated: 1, deleted: 0 }]), records: W36R12_ZH },
+      }) });
+      const result = await execute(tool(), { check_only: true });
+      assert.equal(result.changes_available, true);
+      assert.equal(result.records_available, true);
+      assert.deepEqual(result.record_changes[1], { lng: 'zh-TW', total: 1, listed: 1, truncated: false,
+        items: [{ table_label: '產品', id: 'a020201', name: '身體去角質噴霧', action: 'update',
+          fields: [{ label: '使用方法', hunks: [{ before: '…於全身。3. 用温水洗淨，每週 2…', after: '…於全身。3. 用溫水洗淨，每週 2…' }] }] }] });
+      assert.match(result.message, /zh-TW：產品 a020201〈身體去角質噴霧〉：使用方法「…於全身。3\. 用温水洗淨，每週 2…」→「…於全身。3\. 用溫水洗淨，每週 2…」/);
+      assert.match(result.message, /en：產品 a020201〈Body Scrub Spray〉：Our Advantage「OEM,OBM,ODM」→「OEM, OBM, ODM」/);
+      assert.match(result.message, /不要提資料表或欄位代碼/);
+      // 筆數也用客戶說法，不念英文表名
+      assert.match(result.message, /en：產品 修改 1 筆/);
+      assert.doesNotMatch(JSON.stringify(result.record_changes), /"table"|product/);
+      assert.doesNotMatch(result.message, /product/);
+    }, { resolveLanguages: async () => ['en', 'zh-TW'] });
+  });
+
+  it('check_only says how many records were left out when the list is truncated', async () => {
+    const items = Array.from({ length: 50 }, (_, i) => ({ table: 'product', table_label: '產品', id: `a${i}`, name: `品${i}`,
+      action: 'update', fields: [{ label: '名稱', hunks: [{ before: `品${i}`, after: `新品${i}` }] }], fields_total: 12 }));
+    await fixture(async ({ tool, respond }) => {
+      respond(success(), 0, '', { summary: summaryOk({
+        en: { ...counts([{ table: 'product', inserted: 0, updated: 60, deleted: 0 }]),
+          records: { items, total: 60, listed: 50, truncated: true, other_records: 0 } },
+        'zh-TW': counts([]),
+      }) });
+      const result = await execute(tool(), { check_only: true });
+      assert.match(result.message, /en：另有 10 筆變動未列出（共 60 筆）/);
+      assert.match(result.message, /共 12 個欄位有變動/);
+      assert.equal(result.record_changes[0].items.length, 50);
+    }, { resolveLanguages: async () => ['en', 'zh-TW'] });
+  });
+
+  it('check_only drops malformed or unsafe records but keeps counts', async () => {
+    await fixture(async ({ tool, respond }) => {
+      respond(success(), 0, '', { summary: summaryOk({
+        en: { ...counts([{ table: 'product', inserted: 0, updated: 1, deleted: 0 }]),
+          records: { items: [{ table_label: '產品', id: 'a1', action: 'explode', fields: [] }], total: 1, listed: 1 } },
+        'zh-TW': { ...counts([{ table: 'product', inserted: 0, updated: 1, deleted: 0 }]),
+          records: { available: false, reason: 'error' } },
+      }) });
+      const result = await execute(tool(), { check_only: true });
+      assert.equal(result.changes_available, true);
+      assert.equal(result.records_available, false);
+      assert.equal(result.record_changes, undefined);
+      assert.match(result.message, /無法列出逐筆內容/);
+      assert.doesNotMatch(result.message, /explode/);
+    }, { resolveLanguages: async () => ['en', 'zh-TW'] });
+  });
+
+  it('check_only with an older readyAI (no records) behaves as before', async () => {
+    await fixture(async ({ tool, respond }) => {
+      respond(success(), 0, '', { summary: summaryOk({
+        en: counts([{ table: 'product', inserted: 0, updated: 1, deleted: 0 }]), 'zh-TW': counts([]) }) });
+      const result = await execute(tool(), { check_only: true });
+      assert.equal(result.records_available, false);
+      assert.doesNotMatch(result.message, /無法列出逐筆內容|逐筆/);
     }, { resolveLanguages: async () => ['en', 'zh-TW'] });
   });
 
@@ -798,7 +871,7 @@ describe('source-version v2 dynamic languages', () => {
         assert.equal(result.changes_available, true);
         assert.equal(result.assets_available, false);
         assert.equal(result.assets, undefined);
-        assert.match(result.message, /en：product 修改 1 筆/);
+        assert.match(result.message, /en：產品 修改 1 筆/);
         assert.match(result.message, /目前無法列出會發布的圖片/);
         assert.doesNotMatch(result.message, /依預覽站現況一併發布/);
         assert.doesNotMatch(result.message, /ignore previous|rm -rf|setting\.inc/);

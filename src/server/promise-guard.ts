@@ -112,8 +112,36 @@ function convertibleIn(texts: string[]): Record<string, number> {
 }
 
 /** W45 F17／W54 F21：本次回覆中的內部用語（程式識別字、HTML 標籤、資料夾路徑、中文句中的英文工程詞）。 */
-function jargonIn(texts: string[]): string[] {
-  return [...new Set(texts.flatMap(findJargon))];
+function jargonIn(texts: string[], allowed: Set<string> = new Set()): string[] {
+  return [...new Set(texts.flatMap(findJargon))].filter(t => !allowed.has(t));
+}
+
+/**
+ * W66：本輪（最後一則客戶訊息之後）check_only 回傳的逐筆差異。頁面編號（例：product_id_0001）與網站原文片段
+ * 是要照念給對方的內容，裡面看起來像識別字的字不算內部用語；只認系統回傳的內容，不認 agent 自己寫的字。
+ */
+function recordTerms(messages: Msg[]): Set<string> {
+  const allowed = new Set<string>();
+  let start = 0;
+  for (let i = messages.length - 1; i >= 0; i--) if (messages[i]?.role === "user") { start = i + 1; break; }
+  for (let i = start; i < messages.length; i++) {
+    const m = messages[i] as Msg & { toolName?: string; details?: { record_changes?: unknown } };
+    if (m?.role !== "toolResult" || m.toolName !== "publish_confirmed") continue;
+    const records = m.details?.record_changes;
+    if (!Array.isArray(records)) continue;
+    const strings: string[] = [];
+    for (const lang of records) {
+      for (const item of (lang?.items ?? []) as Array<Record<string, any>>) {
+        strings.push(String(item?.id ?? ""), String(item?.name ?? ""));
+        for (const f of item?.fields ?? []) {
+          strings.push(String(f?.label ?? ""));
+          for (const h of f?.hunks ?? []) strings.push(String(h?.before ?? ""), String(h?.after ?? ""));
+        }
+      }
+    }
+    for (const term of strings.flatMap(findJargon)) allowed.add(term);
+  }
+  return allowed;
 }
 
 export function buildCorrectionMessage(plan: PromisePlan | null, ambiguous: string[] = [], jargon: string[] = []) {
@@ -177,7 +205,7 @@ export function createPromiseGuard({ getSession, log }: { getSession: () => Guar
           log.warn("simplified chars converted", { sessionId: session.sessionId, chars: converted });
         }
         const ambiguous = ambiguousIn(texts);
-        const jargon = jargonIn(texts);
+        const jargon = jargonIn(texts, recordTerms(messages));
         if (boundary >= 0 && isGuard(messages[boundary])) {
           // 更正後又犯：不再送第二次，只留稽核紀錄（不無限迴圈）
           if (repeated.has(key)) return false;

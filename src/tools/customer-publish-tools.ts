@@ -32,10 +32,14 @@ export interface PublishResult {
   message?: string;
   error?: string;
   changed_records?: "unknown";
-  /** check_only：各語系逐表記錄數（只含表名與計數，不含記錄內容）。 */
+  /** check_only：各語系逐表記錄數（表名與計數；逐筆內容另見 record_changes）。 */
   changes?: LanguageChanges[];
   /** check_only：false＝讀不到逐表摘要（仍可依語系確認）。 */
   changes_available?: boolean;
+  /** W66 check_only：逐筆差異（頁面類別、編號、名稱、欄位中文名、改前→改後片段；不含內部表名與欄位代碼）。 */
+  record_changes?: LanguageRecords[];
+  /** W66 check_only：false＝舊版 readyAI 或逐筆差異讀不到（只列筆數）。 */
+  records_available?: boolean;
   details?: Record<string, unknown>;
   /** triggered 後背景上線驗收（readyai#162）的啟動結果。 */
   acceptance?: AcceptLaunch;
@@ -568,17 +572,120 @@ function publishedAssetsNote(data: unknown): string {
   return assets?.excluded.length ? excludedNote(assets.excluded, assets.excluded_count) : "";
 }
 
-/** 給 agent 照念的中文摘要：「en：product 修改 1 筆、news 新增 2 筆」。 */
+// 客戶看得懂的表名（與 readyAI publication_summary.TABLE_TEXT 相同；W58／W66）
+const TABLE_TEXT: Record<string, string> = {
+  product: "產品", news: "最新消息", page: "頁面內容", faq: "常見問題", category: "分類",
+  promotion: "促銷活動", attachment: "附件資料", setting: "網站設定",
+};
+const tableLabel = (table: string) => TABLE_TEXT[table] ?? "其他網站資料";
+
+/** 給 agent 照念的中文摘要：「en：產品 修改 1 筆、最新消息 新增 2 筆」；不認得的表合併成「其他網站資料」。 */
 export function describeChanges(changes: LanguageChanges[]): string {
   const label = { inserted: "新增", updated: "修改", deleted: "刪除" } as const;
   return changes.map(({ lng, tables, derived_only }) => {
     if (!tables.length) return derived_only ? `${lng}：只有頁面附屬資料同步更新，沒有主要內容的記錄變動` : `${lng}：資料庫沒有記錄變動`;
-    const parts = tables.map(t => {
+    const grouped = new Map<string, TableChange>();
+    for (const t of tables) {
+      const name = tableLabel(t.table);
+      const g = grouped.get(name) ?? { table: name, inserted: 0, updated: 0, deleted: 0 };
+      for (const k of COUNT_KEYS) g[k] += t[k];
+      if (t.schema_changed) g.schema_changed = true;
+      grouped.set(name, g);
+    }
+    const parts = [...grouped.values()].map(t => {
       const counts = COUNT_KEYS.filter(k => t[k] > 0).map(k => `${label[k]} ${t[k]} 筆`).join("、");
-      return `${t.table} ${counts || "沒有記錄增減"}${t.schema_changed ? "（表結構不同）" : ""}`;
+      return `${t.table} ${counts || "沒有記錄增減"}${t.schema_changed ? "（資料欄位格式不同）" : ""}`;
     });
     return `${lng}：${parts.join("；")}`;
   }).join("。");
+}
+
+// ── W66：逐筆差異（readyAI publication summary 的 changes[<lng>].records）──
+export interface RecordHunk { before: string; after: string }
+export interface RecordField { label: string; note?: string; hunks?: RecordHunk[]; hunks_total?: number }
+export interface RecordItem {
+  table_label: string; id: string; name: string; action: "insert" | "update" | "delete";
+  fields: RecordField[]; fields_total?: number;
+}
+export interface LanguageRecords { lng: string; items: RecordItem[]; total: number; listed: number; truncated: boolean }
+
+const RECORD_ACTIONS = new Set(["insert", "update", "delete"]);
+const count = (v: unknown, max = 1_000_000) => Number.isSafeInteger(v) && (v as number) >= 0 && (v as number) <= max;
+/** 片段只收可列印文字，長度有上限；不合格回 undefined（整份逐筆捨棄，只留筆數）。 */
+function text(v: unknown, max: number, allowEmpty = true): string | undefined {
+  if (typeof v !== "string" || v.length > max || (!allowEmpty && !v)) return undefined;
+  // eslint-disable-next-line no-control-regex
+  return /[\u0000-\u001f\u007f]/.test(v) ? undefined : v;
+}
+
+function readField(f: unknown): RecordField {
+  if (!object(f)) throw new Error("invalid field");
+  const label = text(f.label, 60, false);
+  if (label === undefined) throw new Error("invalid field label");
+  const out: RecordField = { label };
+  if (f.note !== undefined) {
+    const note = text(f.note, 80, false);
+    if (note === undefined) throw new Error("invalid note");
+    out.note = note;
+  }
+  if (f.hunks !== undefined) {
+    if (!Array.isArray(f.hunks) || f.hunks.length > 5) throw new Error("invalid hunks");
+    out.hunks = f.hunks.map((h: unknown) => {
+      if (!object(h)) throw new Error("invalid hunk");
+      const before = text(h.before, 40), after = text(h.after, 40);
+      if (before === undefined || after === undefined) throw new Error("invalid hunk text");
+      return { before, after };
+    });
+  }
+  if (!out.note && !out.hunks) throw new Error("empty field");
+  if (f.hunks_total !== undefined) { if (!count(f.hunks_total, 10_000)) throw new Error("invalid hunks_total"); out.hunks_total = f.hunks_total; }
+  return out;
+}
+
+function readRecordItem(i: unknown): RecordItem {
+  if (!object(i) || !RECORD_ACTIONS.has(i.action)) throw new Error("invalid record");
+  const table_label = text(i.table_label, 20, false), id = text(i.id, 64), name = text(i.name, 80);
+  if (table_label === undefined || id === undefined || name === undefined || !Array.isArray(i.fields) || i.fields.length > 20) {
+    throw new Error("invalid record");
+  }
+  // 只留給對方看的欄位：內部表名（table）、欄位代碼一律不往下傳
+  const out: RecordItem = { table_label, id, name, action: i.action, fields: i.fields.map(readField) };
+  if (i.fields_total !== undefined) { if (!count(i.fields_total, 10_000)) throw new Error("invalid fields_total"); out.fields_total = i.fields_total; }
+  return out;
+}
+
+/** 各語系逐筆差異；舊版 readyAI 沒有、或格式不符的語系回 undefined（筆數照常）。 */
+export function parseRecordChanges(data: unknown, languages: string[]): Array<LanguageRecords | undefined> {
+  const changes = object(data) && object(data.changes) ? data.changes : {};
+  return languages.map(lng => {
+    const rec = object(changes[lng]) ? changes[lng].records : undefined;
+    if (!object(rec) || !Array.isArray(rec.items) || rec.items.length > 200 || !count(rec.total)) return undefined;
+    try {
+      const items = rec.items.map(readRecordItem);
+      if (rec.total < items.length) return undefined;
+      return { lng, items, total: rec.total, listed: items.length, truncated: rec.total > items.length };
+    } catch { return undefined; }
+  });
+}
+
+function fieldText(f: RecordField): string {
+  if (f.note) return f.note.startsWith(f.label) ? f.note : `${f.label}：${f.note}`;
+  const hunks = (f.hunks ?? []).map(h => `「${h.before}」→「${h.after}」`).join("、");
+  return `${f.label}${hunks}${f.hunks_total ? `（共 ${f.hunks_total} 處）` : ""}`;
+}
+
+/** 給 agent 照念的逐筆清單：「zh-TW：產品 a020201〈名稱〉：使用方法「…」→「…」」。 */
+export function describeRecords(records: LanguageRecords[]): string {
+  return records.map(({ lng, items, total }) => {
+    const lines = items.map(i => {
+      const head = `${lng}：${i.table_label}${i.id ? ` ${i.id}` : ""}${i.name ? `〈${i.name}〉` : ""}`;
+      if (i.action === "insert") return `${head}：新增`;
+      if (i.action === "delete") return `${head}：已刪除`;
+      return `${head}：${i.fields.map(fieldText).join("；")}${i.fields_total ? `；共 ${i.fields_total} 個欄位有變動` : ""}`;
+    });
+    if (total > items.length) lines.push(`${lng}：另有 ${total - items.length} 筆變動未列出（共 ${total} 筆）`);
+    return lines.join("\n");
+  }).filter(Boolean).join("\n");
 }
 
 /**
@@ -598,14 +705,19 @@ async function checkOnly(config: LocalPublishConfig): Promise<PublishResult> {
   const languages = [...config.languages];
   let changes: LanguageChanges[] | undefined;
   let assets: AssetSummary | undefined;
+  let records: Array<LanguageRecords | undefined> = [];
+  let recordsOffered = false;
   try {
     const out = decode(await runCli(config, command(config, "summary")));
     if (out.ok) {
-      // DB 摘要與素材清單各自解析：一邊格式不符不影響另一邊
+      // DB 摘要、逐筆差異與素材清單各自解析：一邊格式不符不影響另一邊
       try { changes = customerChanges(parseChangeSummary(out.data, languages)); } catch { changes = undefined; }
+      records = parseRecordChanges(out.data, languages);
+      const raw = object(out.data) && object(out.data.changes) ? out.data.changes : {};
+      recordsOffered = languages.some(lng => object(raw[lng]) && raw[lng].records !== undefined);
       assets = readAssets(out.data);
     }
-  } catch { changes = undefined; assets = undefined; }
+  } catch { changes = undefined; assets = undefined; records = []; }
   const head = config.assetOnly
     ? `這次資料庫沒有變動，只發布圖片／附件；為了一起核對，會把主語系資料庫（${languages.join("、")}）照原樣一併送出，文字內容不會改變。請告訴對方「這次只發布圖片／附件，網站文字不會變動」，不要提資料庫或語系代碼。`
     : `將發布語系：${languages.join("、")}。`;
@@ -617,9 +729,18 @@ async function checkOnly(config: LocalPublishConfig): Promise<PublishResult> {
     ok: true, status: "pending_confirmation", languages, content_verified: false, changes_available: false, ...assetFields, ...only,
     message: `${head}目前無法取得逐表變動摘要，請如實告訴對方（以「您」稱呼）目前只能確認語系。${assetText}${tail}`,
   };
+  // 逐筆差異：每個有變動的語系都要讀得到才列，否則照實說只能列筆數（不拼湊部分語系）
+  const changedLangs = changes.filter(c => c.tables.length).map(c => c.lng);
+  const usable = changedLangs.length > 0 && changedLangs.every(lng => records[languages.indexOf(lng)]);
+  const listed = usable ? records.filter((r): r is LanguageRecords => !!r && r.items.length + r.total > 0) : [];
+  const recordFields = usable ? { record_changes: listed, records_available: true } : { records_available: false };
+  const recordText = usable && listed.length
+    ? `逐筆變動（請照列給對方：只講頁面類別、編號與名稱、欄位名稱和改前→改後的文字，不要提資料表或欄位代碼）：\n${describeRecords(listed)}\n`
+    : recordsOffered && changedLangs.length ? "目前無法列出逐筆內容，請照實告訴對方只能確認各類資料的筆數。" : "";
   return {
-    ok: true, status: "pending_confirmation", languages, content_verified: false, changes, changes_available: true, ...assetFields, ...only,
-    message: `${head}資料庫變動（預覽站與原站目前內容比對）：${describeChanges(changes)}。${assetText}${tail}`,
+    ok: true, status: "pending_confirmation", languages, content_verified: false, changes, changes_available: true,
+    ...recordFields, ...assetFields, ...only,
+    message: `${head}資料庫變動（預覽站與原站目前內容比對）：${describeChanges(changes)}。${recordText}${assetText}${tail}`,
   };
 }
 

@@ -136,3 +136,32 @@ test("回覆出現資料夾路徑 → 同一輪更正", () => {
   assert.equal(guard.onAgentEnd({ type: "agent_end" }), true);
   assert.deepEqual(session.sent[0].message.details.jargon, ["uploads/customer/"]);
 });
+
+// W66：check_only 逐筆差異裡的頁面編號與網站原文片段，agent 照念給對方時不算內部用語
+const recordResult = (records) => ({ role: "toolResult", toolCallId: "c2", toolName: "publish_confirmed",
+  content: [{ type: "text", text: JSON.stringify({ ok: true, record_changes: records }) }],
+  details: { ok: true, status: "pending_confirmation", record_changes: records }, timestamp: 6 });
+const checkOnlyCall = () => ({ role: "assistant", content: [{ type: "toolCall", id: "c2", name: "publish_confirmed", arguments: { check_only: true } }], timestamp: 5 });
+const RECORDS = [{ lng: "zh-TW", total: 1, listed: 1, truncated: false, items: [{ table_label: "產品", id: "product_id_0001",
+  name: "eye_mask 眼罩", action: "update", fields: [{ label: "使用方法", hunks: [{ before: "…用 model_a 款…", after: "…用 model_b 款…" }] }] }] }];
+
+test("W66 照念 check_only 逐筆差異裡的編號與片段 → 不算內部用語", () => {
+  const { session, guard } = setup([user("發布前先讓我看"), checkOnlyCall(), recordResult(RECORDS),
+    say("這次會發布：產品 product_id_0001〈eye_mask 眼罩〉的使用方法「…用 model_a 款…」→「…用 model_b 款…」。請回覆「確認發布」。")]);
+  assert.equal(guard.onAgentEnd({ type: "agent_end" }), false);
+  assert.equal(session.sent.length, 0);
+});
+
+test("W66 逐筆差異以外的識別字仍會更正", () => {
+  const { session, guard } = setup([user("發布前先讓我看"), checkOnlyCall(), recordResult(RECORDS),
+    say("產品 product_id_0001 的 spec_usage 欄位會更新。")]);
+  assert.equal(guard.onAgentEnd({ type: "agent_end" }), true);
+  assert.deepEqual(session.sent[0].message.details.jargon, ["spec_usage"]);
+});
+
+test("W66 只有本輪的 check_only 結果才算例外", () => {
+  const { session, guard } = setup([user("先讓我看", 0), checkOnlyCall(), recordResult(RECORDS), say("列好了"),
+    user("編號是什麼", 20), say("編號 product_id_0001。", 30)]);
+  assert.equal(guard.onAgentEnd({ type: "agent_end" }), true);
+  assert.deepEqual(session.sent[0].message.details.jargon, ["product_id_0001"]);
+});
