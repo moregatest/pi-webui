@@ -872,6 +872,39 @@ export function checkOnlyBeforeCurrentTurn(entries: readonly BranchEntry[] | und
   return false;
 }
 
+/**
+ * W36R8：對方最後一則訊息是否明確同意發布（例如「確認發布」）。r028b 上一輪已列範圍，這一輪對方說
+ * 「請幫我發布，發布前先讓我看會發布哪些東西」，agent 不再 check_only、重列一次就發布，繞過
+ * confirm_next_turn。「請幫我發布」「好的」「可以」都不算；含否定（先不要／還不要／別）也不算。
+ */
+const CONSENT_ZH = /(確認|確定|同意)\s*發布/;
+const NEGATED_ZH = /(不要|先不|還不|暫不|別|不)\s*(要\s*)?(確認|確定|同意)\s*發布/;
+const CONSENT_EN = /\bconfirm(ed)?\b[^.!?]*\bpublish|\bpublish\b[^.!?]*\bconfirm(ed)?\b/i;
+const NEGATED_EN = /\b(don't|do not|not yet|never)\b[^.!?]*\b(confirm|publish)/i;
+
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return (content as Array<{ type?: string; text?: unknown }>)
+    .map((part) => (part?.type === "text" && typeof part.text === "string" ? part.text : ""))
+    .join("\n");
+}
+
+export function explicitPublishConsent(entries: readonly BranchEntry[] | undefined): boolean {
+  if (!Array.isArray(entries)) return false;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const m = entries[i]?.type === "message" ? entries[i].message : undefined;
+    if (m?.role !== "user") continue;
+    const t = messageText(m.content);
+    if (NEGATED_ZH.test(t) || NEGATED_EN.test(t)) return false;
+    return CONSENT_ZH.test(t) || CONSENT_EN.test(t);
+  }
+  return false;
+}
+
+const CONFIRM_EXPLICIT = "對方這一則訊息沒有明確同意發布，還不能發布：請把這次的範圍逐項列給對方（以「您」稱呼），結束這一輪，"
+  + "請對方確認無誤後回覆「確認發布」，收到後再帶同一個 confirmation_id 呼叫發布。不要說已經送出。";
+
 const CONFIRM_FIRST = "對方還沒看過這次的發布範圍，還不能發布：請先呼叫 check_only，把範圍逐項列給對方（以「您」稱呼），結束這一輪，"
   + "等對方下一則訊息明確同意後再發布。不要說已經送出。";
 
@@ -898,6 +931,10 @@ export function buildCustomerPublishTools(deps: PublishLocalDeps): ToolDefinitio
       }
       if (p.check_only !== true && !p.publication_id && Array.isArray(branch) && !checkOnlyBeforeCurrentTurn(branch)) {
         const refused = failure("confirm_first", CONFIRM_FIRST);
+        return { content: [{ type: "text", text: JSON.stringify(refused) }], details: refused };
+      }
+      if (p.check_only !== true && !p.publication_id && Array.isArray(branch) && !explicitPublishConsent(branch)) {
+        const refused = failure("confirm_explicit", CONFIRM_EXPLICIT);
         return { content: [{ type: "text", text: JSON.stringify(refused) }], details: refused };
       }
       const result = await runPublishFlow(deps, params.force_reason, params, { toolCallId });

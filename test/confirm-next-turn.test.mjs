@@ -2,7 +2,7 @@
 // 技能已規定 check_only 後要停下、等對方下一則訊息明確同意；改由工具硬性拒絕同一輪的發布。
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCustomerPublishTools, checkOnlyInCurrentTurn } from '../dist/tools/customer-publish-tools.js';
+import { buildCustomerPublishTools, checkOnlyInCurrentTurn, explicitPublishConsent } from '../dist/tools/customer-publish-tools.js';
 
 const user = (text) => ({ type: 'message', message: { role: 'user', content: [{ type: 'text', text }] } });
 const call = (args) => ({ type: 'message', message: { role: 'assistant', content: [
@@ -87,6 +87,55 @@ describe('publish_confirmed 對方還沒看過範圍時拒絕發布', () => {
     const [tool] = buildCustomerPublishTools(deps(calls));
     const entries = [user('先讓我看'), call({ check_only: true }), result('pending_confirmation'), text('範圍如下…'), user('確認發布'), call({ confirmation_id: 'c-1' })];
     const r = await tool.execute('t1', { confirmation_id: 'c-1' }, undefined, undefined, ctx(entries));
+    assert.equal(r.details.status, 'triggered');
+  });
+});
+
+// W36R8 r028b：上一輪已列範圍，這一輪對方說「請幫我發布，發布前先讓我看會發布哪些東西」，
+// agent 不再 check_only、直接重列一次就發布，繞過 confirm_next_turn。發布時對方最後一則訊息必須明確同意。
+describe('explicitPublishConsent', () => {
+  for (const t of ['確認發布。', '確認發布', '照現在的內容直接發布就好，結構圖不上線我知道。確認發布。', '好，確定發布', '同意發布',
+    'Confirm publish.', 'I confirm, please publish.']) {
+    it(`明確同意：${t}`, () => assert.equal(explicitPublishConsent([user(t)]), true));
+  }
+  for (const t of ['請幫我發布，發布前先讓我看會發布哪些東西。', '我看過預覽站了，那一句可以。請幫我發布，發布前先讓我看會發布哪些東西。',
+    '先不要確認發布', '還不要確認發布，我再看看', '別確認發布', '好的', '可以', '發布吧']) {
+    it(`不算明確同意：${t}`, () => assert.equal(explicitPublishConsent([user(t)]), false));
+  }
+  it('只看最後一則客戶訊息', () => {
+    assert.equal(explicitPublishConsent([user('確認發布'), text('範圍如下…'), user('等等，先讓我看')]), false);
+  });
+  it('沒有 branch＝false', () => assert.equal(explicitPublishConsent(undefined), false));
+});
+
+describe('publish_confirmed 對方這一則沒有明確同意時拒絕發布（r028b）', () => {
+  const deps = (calls) => ({ publish: async (input) => { calls.push(input); return { ok: true, status: 'triggered' }; } });
+  const ctx = (entries) => ({ sessionManager: { getBranch: () => entries } });
+  it('上一輪列過範圍、這一輪對方要求「發布前先讓我看」＝拒絕 confirm_explicit', async () => {
+    const calls = [];
+    const [tool] = buildCustomerPublishTools(deps(calls));
+    const entries = [user('你好，請問網站最近有沒有改好？'), call({ check_only: true }), result('pending_confirmation'), text('範圍如下…'),
+      user('我看過預覽站了，那一句可以。請幫我發布，發布前先讓我看會發布哪些東西。'), call({ confirmation_id: 'c-1' })];
+    const r = await tool.execute('t1', { confirmation_id: 'c-1' }, undefined, undefined, ctx(entries));
+    assert.equal(r.details.details.code, 'confirm_explicit');
+    assert.match(r.details.error, /確認發布/);
+    assert.match(r.details.error, /不要說已經送出/);
+    assert.deepEqual(calls, []);
+  });
+  it('上一輪列過範圍、這一輪對方說「確認發布」＝照常發布', async () => {
+    const calls = [];
+    const [tool] = buildCustomerPublishTools(deps(calls));
+    const entries = [user('發布前先讓我看'), call({ check_only: true }), result('pending_confirmation'), text('範圍如下…'),
+      user('確認發布。'), call({ confirmation_id: 'c-1' })];
+    const r = await tool.execute('t1', { confirmation_id: 'c-1' }, undefined, undefined, ctx(entries));
+    assert.equal(r.details.status, 'triggered');
+  });
+  it('check_only 與恢復既有 publication 不受影響', async () => {
+    const calls = [];
+    const [tool] = buildCustomerPublishTools(deps(calls));
+    const entries = [user('發布前先讓我看')];
+    assert.notEqual((await tool.execute('t1', { check_only: true }, undefined, undefined, ctx(entries))).details?.details?.code, 'confirm_explicit');
+    const r = await tool.execute('t1', { publication_id: 'pgc-' + 'a'.repeat(64) }, undefined, undefined, ctx(entries));
     assert.equal(r.details.status, 'triggered');
   });
 });
