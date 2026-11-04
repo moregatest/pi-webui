@@ -3,11 +3,23 @@
 //   - F13：客戶訊息的附件區塊只留檔名，不露伺服器路徑
 // 只在送往客戶端的出口套用；session 原文保留不改。
 
-import { ONE_TO_ONE_PAIRS, AMBIGUOUS } from "./simplified-map.js";
+import { ONE_TO_ONE_PAIRS, AMBIGUOUS, TAIWAN_IN_USE } from "./simplified-map.js";
 
 const ONE_TO_ONE = new Map<string, string>();
 for (let i = 0; i + 1 < ONE_TO_ONE_PAIRS.length; i += 2) {
-  ONE_TO_ONE.set(ONE_TO_ONE_PAIRS[i], ONE_TO_ONE_PAIRS[i + 1]);
+  // 防呆：重新產生字表時若又帶進台灣也在用的字，這裡仍不轉（W60）
+  if (!TAIWAN_IN_USE.includes(ONE_TO_ONE_PAIRS[i])) ONE_TO_ONE.set(ONE_TO_ONE_PAIRS[i], ONE_TO_ONE_PAIRS[i + 1]);
+}
+
+// W60：么 在台灣也用（老么），只在前一字是這些字時當成簡體的「麼」轉換。
+const ME_PREFIX = "什怎那这這多要";
+
+/** 位置 i 要顯示的字；程式碼內與不轉的字回 undefined。 */
+function convertAt(text: string, i: number, mask: Uint8Array): string | undefined {
+  if (mask[i]) return undefined;
+  const ch = text[i];
+  if (ch === "么") return i > 0 && !mask[i - 1] && ME_PREFIX.includes(text[i - 1]) ? "麼" : undefined;
+  return ONE_TO_ONE.get(ch);
 }
 
 /**
@@ -47,8 +59,7 @@ function codeMask(text: string): Uint8Array {
 function convertRange(text: string, start: number, mask: Uint8Array): string {
   let out = "";
   for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    out += mask[i] ? ch : ONE_TO_ONE.get(ch) ?? ch;
+    out += convertAt(text, i, mask) ?? text[i];
   }
   return out;
 }
@@ -88,7 +99,7 @@ export function countConvertible(text: string): Record<string, number> {
   const mask = codeMask(text);
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
-    if (!mask[i] && ONE_TO_ONE.has(ch)) counts[ch] = (counts[ch] ?? 0) + 1;
+    if (convertAt(text, i, mask) !== undefined) counts[ch] = (counts[ch] ?? 0) + 1;
   }
   return counts;
 }

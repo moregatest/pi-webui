@@ -132,3 +132,46 @@ test("staff：不轉換、不去路徑、工具結果白名單照舊", () => {
   const hist = [{ role: "user", content: "[Attached files]\n- a.png -> /x/a.png" }];
   assert.equal(filterMessageHistory(hist, p)[0].content, "[Attached files]\n- a.png -> /x/a.png");
 });
+
+// ---- W60 F26：台灣也在用的異體字不轉 ----
+const tw = cases.taiwan_variants;
+for (const input of tw.unchanged) {
+  test(`W60 台灣異體字原樣顯示：${input.slice(0, 16)}`, () => {
+    assert.equal(convertSimplified(input), input);
+    assert.deepEqual(findAmbiguousSimplified(input), []);
+  });
+}
+
+test("W60 每個移出的字都不轉、也不計入轉換次數", () => {
+  for (const ch of tw.chars) {
+    assert.equal(convertSimplified(`字${ch}字`), `字${ch}字`, ch);
+    assert.deepEqual(countConvertible(ch), {}, ch);
+  }
+});
+
+test("W60 W36R12 原句：引號內的網站原字「温」原樣保留，其他簡體照轉", () => {
+  assert.equal(convertSimplified("全頁已無舊寫法『温』"), "全頁已無舊寫法『温』");
+  assert.equal(convertSimplified("网页已无旧写法『温』"), "網頁已無舊寫法『温』");
+});
+
+test("W60 F14 的满、发仍會處理：满自動轉，发交給重寫", () => {
+  assert.equal(convertSimplified("满意"), "滿意");
+  assert.deepEqual(findAmbiguousSimplified("已经发布"), ["发"]);
+  assert.equal(convertSimplified("上传到机器"), "上傳到機器");
+});
+
+for (const [input, expected] of cases.phrases) {
+  test(`W60 么只在「什么」這類詞裡轉：${input}`, () => {
+    assert.equal(convertSimplified(input), expected);
+  });
+}
+
+test("W60 么的詞彙轉換：串流切在詞中間也一致，程式碼內不轉", () => {
+  const chunks = ["你想改什", "么？"];
+  let acc = "";
+  let streamed = "";
+  for (const c of chunks) { acc += c; streamed += convertSimplifiedDelta(acc, c); }
+  assert.equal(streamed, "你想改什麼？");
+  assert.equal(convertSimplified("`什么`"), "`什么`");
+  assert.deepEqual(countConvertible("什么、老么"), { 么: 1 });
+});
