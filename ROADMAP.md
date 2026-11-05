@@ -13,6 +13,8 @@
 ## done
 
 ```
+[x] 啟用 `--sandbox` 時 WS `bash` 訊息改在 Gondolin VM 內執行（沙盒初始化失敗則拒絕，不退回宿主 shell）
+[x] `--ws-deny` / `PI_WEBUI_WS_DENY` / `--webui-ws-deny`：非 customer 模式也能停用指定的 WS 訊息型別（未知型別中止啟動）
 [x] customer publish_confirmed uses one PGC publication session with durable confirmation/candidate mapping, status-before-resume, classified JSON errors and honest triggered/content_verified=false evidence; CLI owns drift/audit/baseline (Issue 144 companion required)
 [x] publish_confirmed 依 source-version v2 只發布有變動的主語系（預覽站 `db_<lng>` sha256 對 baseline `sources.<lng>`；舊 meta 退回 `[source_lng]`；都沒變回 `no_changes`；`check_only` 先列出將發布語系供客戶確認）
 [x] publish_confirmed `check_only` 回傳各語系逐表記錄數（新增／修改／刪除）摘要 `changes`，來源為 readyAI 唯讀 `preview publication summary`；只含表名與計數，讀不到時 `changes_available=false` 照舊列語系（readyai#160）

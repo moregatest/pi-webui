@@ -52,6 +52,7 @@ import {
   resolveCommandAllowFile,
 } from "./command-allow.js";
 import { listenWithFallback } from "./listen.js";
+import { parseWsDeny, isDeniedWsMessage, resolveWsBashOperations } from "./ws-guard.js";
 import { normalizeBasePath, stripBasePrefix } from "./base-path.js";
 import {
   COOKIE_NAME,
@@ -196,6 +197,8 @@ function printHelp() {
     "                              file missing => behaves as if not set (all commands allowed).",
     "                              when neither flag nor env var is set, <cwd>/.pi/commands-allow.txt",
     "                              is auto-detected if present.",
+    "  --ws-deny <types>           comma-separated WebSocket client message types to refuse",
+    "                              (e.g. 'bash,list_dir,cycle_model'). unknown types abort startup.",
     "  --session-dir <path>        session storage directory. overrides the default",
     "                              <cwd>/.pi/sessions. full override, may be shared across cwds.",
     "                              alias: PI_SESSION_DIR env var (CLI wins).",
@@ -282,6 +285,7 @@ function printHelp() {
     "  PI_WEBUI_SKILL_ALLOW_FILE  skill whitelist file path",
     "  PI_WEBUI_COMMAND_ALLOW     slash command whitelist names (comma-separated)",
     "  PI_WEBUI_COMMAND_ALLOW_FILE slash command whitelist file path",
+    "  PI_WEBUI_WS_DENY           WebSocket message types to refuse (same as --ws-deny)",
     "  PI_WEBUI_PASSWORD          enable login with this password (same as --password)",
     "  PI_WEBUI_TRUST_PROXY       '1' to honor X-Forwarded-Proto for cookie Secure flag",
     "  PI_WEBUI_HIDE_MODEL        '1' to hide the model name in the status bar",
@@ -339,6 +343,8 @@ function parseArgs(argv) {
     else if (a.startsWith("--skill-allow=")) out.skillAllow = a.slice("--skill-allow=".length);
     else if (a === "--skill-allow-file") out.skillAllowFile = argv[++i];
     else if (a.startsWith("--skill-allow-file=")) out.skillAllowFile = a.slice("--skill-allow-file=".length);
+    else if (a === "--ws-deny") out.wsDeny = argv[++i];
+    else if (a.startsWith("--ws-deny=")) out.wsDeny = a.slice("--ws-deny=".length);
     else if (a === "--command-allow") out.commandAllow = argv[++i];
     else if (a.startsWith("--command-allow=")) out.commandAllow = a.slice("--command-allow=".length);
     else if (a === "--command-allow-file") out.commandAllowFile = argv[++i];
@@ -573,6 +579,16 @@ if (profileFile?.commands?.allow) {
   cliCommandAllow = [...profileFile.commands.allow];
 }
 let cliCommandAllowSet = cliCommandAllow ? new Set(cliCommandAllow) : null;
+
+// WS 訊息型別黑名單（非 customer 模式也適用）；打錯型別直接中止啟動，避免以為有擋
+let wsDenySet;
+try {
+  wsDenySet = parseWsDeny(args.wsDeny ?? process.env.PI_WEBUI_WS_DENY ?? "");
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(2);
+}
+if (wsDenySet.size) logger.info("ws deny", { types: [...wsDenySet] });
 
 // 客戶導向 UI profile:整合 hide-* / show-* / brand-* / --ui-profile preset。
 // 失敗(brand-logo 不存在 / brand-color 不合法 / unknown preset)直接 fail-fast。
@@ -2437,6 +2453,12 @@ class NativePiSessionController {
       return;
     }
 
+    if (isDeniedWsMessage(payload, wsDenySet)) {
+      logger.warn("ws denied", { type: payload?.type });
+      sendJson(this.ws, { type: "error", message: "operation not permitted" });
+      return;
+    }
+
     const inboundType = payload?.type === "slash_command"
       ? `slash_command:${payload?.name || "?"}`
       : (payload?.type || "unknown");
@@ -2560,7 +2582,9 @@ class NativePiSessionController {
           const command = String(payload.command || "").trim();
           if (!command) throw new Error("Empty bash command");
           logger.info("bash exec", { command });
-          const result = await this.session.executeBash(command);
+          // 啟用 --sandbox 時在 VM 內執行；沙盒不可用則拒絕，不退回宿主 shell
+          const operations = resolveWsBashOperations({ sandboxEnabled, sandbox, sandboxInitError });
+          const result = await this.session.executeBash(command, undefined, operations ? { operations } : undefined);
           const exitCode = result?.exitCode ?? 0;
           (exitCode === 0 ? logger.info : logger.warn)("bash done", { exitCode });
           await this.sendState();

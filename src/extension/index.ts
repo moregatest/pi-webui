@@ -92,6 +92,7 @@ interface StartOptions {
 	skillAllowFile?: string;
 	commandAllow?: string;
 	commandAllowFile?: string;
+	wsDeny?: string;
 	sessionDir?: string;
 	hideModel?: boolean;
 	password?: string;
@@ -150,6 +151,7 @@ function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 		if (opts.skillAllowFile) serverArgs.push("--skill-allow-file", opts.skillAllowFile);
 		if (opts.commandAllow) serverArgs.push("--command-allow", opts.commandAllow);
 		if (opts.commandAllowFile) serverArgs.push("--command-allow-file", opts.commandAllowFile);
+		if (opts.wsDeny) serverArgs.push("--ws-deny", opts.wsDeny);
 		if (opts.sessionDir) serverArgs.push("--session-dir", opts.sessionDir);
 		if (opts.hideModel) serverArgs.push("--hide-model");
 		if (opts.password) serverArgs.push("--password", opts.password);
@@ -292,6 +294,8 @@ function parseStartFlags(tokens: string[]): StartOptions {
 		else if (t.startsWith("--skill-allow-file=")) opts.skillAllowFile = t.slice("--skill-allow-file=".length);
 		else if (t === "--command-allow") opts.commandAllow = valueOf(++i, t);
 		else if (t.startsWith("--command-allow=")) opts.commandAllow = t.slice("--command-allow=".length);
+		else if (t === "--ws-deny") opts.wsDeny = valueOf(++i, t);
+		else if (t.startsWith("--ws-deny=")) opts.wsDeny = t.slice("--ws-deny=".length);
 		else if (t === "--command-allow-file") opts.commandAllowFile = valueOf(++i, t);
 		else if (t.startsWith("--command-allow-file=")) opts.commandAllowFile = t.slice("--command-allow-file=".length);
 		else if (t === "--session-dir") opts.sessionDir = valueOf(++i, t);
@@ -424,6 +428,12 @@ export default function webuiExtension(pi: ExtensionAPI) {
 
 	pi.registerFlag?.("webui-command-allow-file", {
 		description: "slash command whitelist file path for readyai-webui. Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
+	pi.registerFlag?.("webui-ws-deny", {
+		description: "WebSocket message types readyai-webui refuses (comma-separated, e.g. bash,list_dir). Implies --webui.",
 		type: "string",
 		default: "",
 	});
@@ -667,6 +677,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 		let skillAllowFile: string;
 		let commandAllow: string;
 		let commandAllowFile: string;
+		let wsDeny: string;
 		let sessionDir: string;
 		let hideModel: boolean;
 		let password: string;
@@ -707,6 +718,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			skillAllowFile = String(pi.getFlag?.("webui-skill-allow-file") || "").trim();
 			commandAllow = String(pi.getFlag?.("webui-command-allow") || "").trim();
 			commandAllowFile = String(pi.getFlag?.("webui-command-allow-file") || "").trim();
+			wsDeny = String(pi.getFlag?.("webui-ws-deny") || "").trim();
 			sessionDir = String(pi.getFlag?.("webui-session-dir") || "").trim();
 			hideModel = !!pi.getFlag?.("webui-hide-model");
 			password = String(pi.getFlag?.("webui-password") || "").trim();
@@ -747,6 +759,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 				skillAllowFile.length > 0 ||
 				commandAllow.length > 0 ||
 				commandAllowFile.length > 0 ||
+				wsDeny.length > 0 ||
 				sessionDir.length > 0 ||
 				hideModel ||
 				password.length > 0 ||
@@ -800,6 +813,7 @@ export default function webuiExtension(pi: ExtensionAPI) {
 			skillAllowFile: skillAllowFile || undefined,
 			commandAllow: commandAllow || undefined,
 			commandAllowFile: commandAllowFile || undefined,
+			wsDeny: wsDeny || undefined,
 			sessionDir: sessionDir || undefined,
 			hideModel: hideModel || undefined,
 			password: password || undefined,

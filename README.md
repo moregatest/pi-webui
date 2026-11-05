@@ -70,6 +70,7 @@ command-line flags:
 | `--skill-allow-file <path>` | whitelist file (one name per line, `#` for comments). missing file behaves as if unset. when neither this flag nor `PI_WEBUI_SKILL_ALLOW_FILE` is set, `<cwd>/.pi/skills-allow.txt` is auto-detected if present. |
 | `--command-allow <names>` | comma-separated slash command whitelist (names like `new`, `cwd`, `skill:foo`). only these commands appear in the slash menu and may be executed. |
 | `--command-allow-file <path>` | slash command whitelist file (one name per line, `#` for comments). missing file behaves as if unset. when neither this flag nor `PI_WEBUI_COMMAND_ALLOW_FILE` is set, `<cwd>/.pi/commands-allow.txt` is auto-detected if present. |
+| `--ws-deny <types>` | comma-separated WebSocket client message types to refuse (e.g. `bash,list_dir,cycle_model`). applies outside customer mode too; unknown types or `ready` abort startup. alias: `PI_WEBUI_WS_DENY` env var. |
 | `--session-dir <path>` | session storage directory. overrides the default `<cwd>/.pi/sessions/`. this is a *full* override and may be shared across cwds (sessions from different cwds land in one dir). alias: `PI_SESSION_DIR` env var (CLI wins). |
 | `--password <pw>` | enable login; require this password to access the webui. alias: `PI_WEBUI_PASSWORD` env var. |
 | `--trust-proxy` | honor `X-Forwarded-Proto` when deciding cookie `Secure` flag; useful behind cloudflare tunnel / reverse proxy. alias: `PI_WEBUI_TRUST_PROXY=1`. |
@@ -110,6 +111,7 @@ environment variables:
 | `PI_WEBUI_SKILLS_OPEN` | `0` | `1`（限 `customer` profile）放寬技能鎖，放行 skills + read/bash。**未配 `PI_WEBUI_SKILL_ALLOW` 時 cwd 全部技能會載入、客戶可見，啟動會印警告**。 |
 | `PI_WEBUI_COMMAND_ALLOW` | (unset) | slash command name whitelist (comma-separated) |
 | `PI_WEBUI_COMMAND_ALLOW_FILE` | (unset) | slash command whitelist file path |
+| `PI_WEBUI_WS_DENY` | (unset) | WebSocket message types to refuse (comma-separated) |
 | `PI_WEBUI_PASSWORD` | (unset) | enable login with this password (same as `--password`) |
 | `PI_WEBUI_TRUST_PROXY` | `0` | `1` to honor `X-Forwarded-Proto` for cookie `Secure` flag |
 | `PI_WEBUI_SANDBOX` | `0` | `1` to run tools inside a Gondolin micro-VM (same as `--sandbox`) |
@@ -158,7 +160,7 @@ when launched via the pi extension, equivalent pi flags are available:
 `--webui-model`, `--webui-approve`, `--webui-no-approve`,
 `--webui-skill`, `--webui-skill-allow`,
 `--webui-skill-allow-file`, `--webui-command-allow`,
-`--webui-command-allow-file`, `--webui-session-dir`, `--webui-hide-model`,
+`--webui-command-allow-file`, `--webui-ws-deny`, `--webui-session-dir`, `--webui-hide-model`,
 `--webui-password`, `--webui-trust-proxy`,
 `--webui-sandbox`, `--webui-sandbox-workspace`,
 `--webui-hide-thinking`, `--webui-hide-tool-calls`,
