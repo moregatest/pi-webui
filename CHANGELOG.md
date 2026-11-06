@@ -2,6 +2,19 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-11-06 (客戶發布子行程帶操作者，W125／W138)
+
+### 修正
+
+- readyAI 0.7.52 起推送標頭要帶操作者（W112-C、W124）。客戶發布已全走 `preview publication`，readyAI 會自動歸屬
+  `pub:<publication_id>`，pi-webui 不另帶 service_ref；但操作者取自 `READYAI_OPERATOR_REF`，沒有時記 `unknown`
+  （端的嚴格模式會拒絕）。`runCli` 起 `readyai-project` 子行程時改帶 `READYAI_OPERATOR_REF` 與 `READYAI_NONINTERACTIVE=1`
+- 操作者：外層已設合格值（不含 `unknown`）就沿用；否則記「該站客戶」`customer:site:<site_id>`（owner 決定），
+  site_id 取自預覽機名稱 `<site_id>-preview`；取不到時記 `customer:unknown`，不猜站台。格式照 readyAI
+  `delivery_history._OPERATOR_REF_RE`（W124）
+- 原 W125 版（efd0c4a）針對舊的 push-back／push-db 呼叫，master 已無這兩條路，故縮成只帶操作者
+- 測試：start／resume 子行程環境、外層值沿用與替換、格式對照 4 項
+
 ## 2026-11-03 (只有圖片／附件變動時也能發布，W39 F8)
 
 ### 新增

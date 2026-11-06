@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { buildCustomerPublishTools, createLocalPublishDeps } from '../dist/tools/customer-publish-tools.js';
+import { buildCustomerPublishTools, buildPublicationOperatorEnv, createLocalPublishDeps } from '../dist/tools/customer-publish-tools.js';
 
 const origin = 'https://demo.example.com';
 const publicationId = 'pgc-confirmed-1';
@@ -26,6 +26,7 @@ async function fixture(run, { confirmationId = 'customer-confirmation-42', initi
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 fs.appendFileSync('argv.jsonl', JSON.stringify(args) + '\\n');
+fs.appendFileSync('env.jsonl', JSON.stringify({ operator: process.env.READYAI_OPERATOR_REF ?? null, nonInteractive: process.env.READYAI_NONINTERACTIVE ?? null, serviceRef: process.env.READYAI_SERVICE_REF ?? null }) + '\\n');
 const response = JSON.parse(fs.readFileSync('response.json', 'utf8'));
 const id = args[args.indexOf('--publication-id') + 1];
 const action = args[2];
@@ -84,8 +85,10 @@ process.exitCode = selected.exitCode;
   };
   const calls = () => fs.existsSync(path.join(cwd, 'argv.jsonl'))
     ? fs.readFileSync(path.join(cwd, 'argv.jsonl'), 'utf8').trim().split('\n').map(JSON.parse) : [];
+  const envCalls = () => fs.existsSync(path.join(cwd, 'env.jsonl'))
+    ? fs.readFileSync(path.join(cwd, 'env.jsonl'), 'utf8').trim().split('\n').map(JSON.parse) : [];
   try {
-    await run({ tool, respond, calls, config });
+    await run({ tool, respond, calls, config, envCalls });
     if (initialData) assert.equal(fs.readFileSync(path.join(cwd, 'data/preview-meta.json'), 'utf8'), meta, 'Tool must preserve drift baseline');
     else assert.equal(fs.existsSync(path.join(cwd, 'data/preview-meta.json')), false);
   } finally {
@@ -1062,5 +1065,75 @@ describe('source-version v2 dynamic languages', () => {
       assert.equal(result.details.code, 'invalid_input');
       assert.equal(calls().length, 0);
     });
+  });
+});
+
+// W125／W138：readyAI 0.7.52 起推送標頭要有操作者；publication 自動帶 pub:<publication_id>，
+// pi-webui 只需讓子行程帶 READYAI_OPERATOR_REF（客戶自行發布＝customer:site:<site_id>）。
+describe('W138 publication 子行程帶操作者', () => {
+  const withOuterOperator = async (value, fn) => {
+    const old = process.env.READYAI_OPERATOR_REF;
+    if (value === undefined) delete process.env.READYAI_OPERATOR_REF; else process.env.READYAI_OPERATOR_REF = value;
+    try { await fn(); } finally {
+      if (old === undefined) delete process.env.READYAI_OPERATOR_REF; else process.env.READYAI_OPERATOR_REF = old;
+    }
+  };
+  const startThenResume = async ({ tool, respond, calls, envCalls, config }) => {
+    const app = config.appName;
+    respond(success({ app }), 0, 'human progress\n', { candidateData: { ...evidence, app } });
+    await execute(tool());
+    await execute(tool());
+    const actions = calls().map(args => args[2]);
+    assert.deepEqual(actions, ['candidate', 'start', 'candidate', 'status', 'resume']);
+    return envCalls().map((env, i) => ({ action: actions[i], ...env }));
+  };
+
+  it('start／resume 子行程帶 customer:site:<site_id> 與 READYAI_NONINTERACTIVE=1，不自帶 service_ref', async () => {
+    await withOuterOperator(undefined, () => fixture(async (ctx) => {
+      const envs = await startThenResume(ctx);
+      assert.equal(envs.length, 5);
+      for (const action of ['start', 'resume']) assert.ok(envs.some(env => env.action === action), action);
+      for (const env of envs) {
+        assert.equal(env.operator, 'customer:site:demo-site', env.action);
+        assert.equal(env.nonInteractive, '1', env.action);
+        assert.equal(env.serviceRef, null, env.action);
+      }
+    }, { appName: 'demo-site-preview' }));
+  });
+
+  it('外層已設合格的操作者時沿用，不覆蓋', async () => {
+    await withOuterOperator('email:ops@example.com', () => fixture(async (ctx) => {
+      const envs = await startThenResume(ctx);
+      for (const env of envs) assert.equal(env.operator, 'email:ops@example.com', env.action);
+    }, { appName: 'demo-site-preview' }));
+  });
+
+  it('外層值不合格或為 unknown 時改記該站客戶；取不到 site_id 記 customer:unknown', async () => {
+    for (const outer of ['unknown', 'bad value', 'customer:site:X']) {
+      await withOuterOperator(outer, () => fixture(async (ctx) => {
+        const envs = await startThenResume(ctx);
+        for (const env of envs) assert.equal(env.operator, 'customer:site:demo-site', `${outer} ${env.action}`);
+      }, { appName: 'demo-site-preview' }));
+    }
+    await withOuterOperator(undefined, () => fixture(async (ctx) => {
+      const envs = await startThenResume(ctx);
+      for (const env of envs) assert.equal(env.operator, 'customer:unknown', env.action);
+    }));
+  });
+
+  it('buildPublicationOperatorEnv 格式與 readyAI delivery_history 一致', () => {
+    const op = (appName, outer) => buildPublicationOperatorEnv({ appName, env: { READYAI_OPERATOR_REF: outer } }).READYAI_OPERATOR_REF;
+    assert.equal(op('acme-tw-preview'), 'customer:site:acme-tw');
+    assert.equal(op('acme-tw'), 'customer:unknown');
+    assert.equal(op('-bad-preview'), 'customer:unknown');
+    assert.equal(op('ab-preview'), 'customer:unknown');
+    assert.equal(op('acme-preview', 'agent:pi-webui'), 'agent:pi-webui');
+    assert.equal(op('acme-preview', 'system:collie@1.2'), 'system:collie@1.2');
+    assert.equal(op('acme-preview', 'customer:alice'), 'customer:alice');
+    assert.equal(op('acme-preview', 'customer:site:other-site'), 'customer:site:other-site');
+    assert.equal(op('acme-preview', 'customer:site:Bad'), 'customer:site:acme');
+    assert.equal(op('acme-preview', 'unknown'), 'customer:site:acme');
+    assert.equal(op('acme-preview', '  '), 'customer:site:acme');
+    assert.equal(buildPublicationOperatorEnv({ appName: 'acme-preview', env: {} }).READYAI_NONINTERACTIVE, '1');
   });
 });

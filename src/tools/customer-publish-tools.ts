@@ -203,10 +203,46 @@ function fromEnvelope(envelope: Record<string, any>, config: LocalPublishConfig,
   };
 }
 
+// ── W125／W138：推送操作者（readyAI 0.7.52）──
+// preview publication 的推送一律歸屬 pub:<publication_id>，不用另帶 service_ref；
+// 操作者則取 READYAI_OPERATOR_REF，沒有時記 unknown（端的嚴格模式會拒絕）。
+// 格式與 readyAI delivery_history._OPERATOR_REF_RE（W124，與端、契約 v1.7 §1 相同）一致。
+const OPERATOR_RE = new RegExp(
+  "^(?:email:[a-z0-9._%+-]+@[a-z0-9.-]+|agent:[A-Za-z0-9._@+-]{1,128}"
+  + "|system:[A-Za-z0-9._+-]{1,128}@[A-Za-z0-9._+-]{1,64}"
+  + "|customer:site:[a-z0-9][a-z0-9-]{1,47}[a-z0-9]|customer:(?!site:)[A-Za-z0-9._@+-]{1,128})$",
+);
+// 預覽機名稱 <site_id>-preview（readyAI delivery_history.site_id_from_preview）
+const SITE_ID_RE = /^[a-z0-9][a-z0-9-]{1,47}[a-z0-9]$/;
+
+/**
+ * 客戶發布子行程的操作者環境變數。
+ * - 外層已設合格值（不含 unknown）就沿用；否則記「該站客戶」customer:site:<site_id>（owner 決定，W115-L2）。
+ * - 預覽機名稱取不到 site_id 時記 customer:unknown，不猜站台。
+ * - READYAI_NONINTERACTIVE=1：子行程沒有終端，明示非互動。
+ */
+export function buildPublicationOperatorEnv(opts: {
+  appName: string;
+  env: Record<string, string | undefined>;
+}): { READYAI_OPERATOR_REF: string; READYAI_NONINTERACTIVE: string } {
+  const outer = (opts.env.READYAI_OPERATOR_REF ?? "").trim();
+  const app = (opts.appName ?? "").trim();
+  const siteId = app.endsWith("-preview") ? app.slice(0, -"-preview".length) : "";
+  const operator = outer.length <= 256 && OPERATOR_RE.test(outer)
+    ? outer
+    : SITE_ID_RE.test(siteId) ? `customer:site:${siteId}` : "customer:unknown";
+  return { READYAI_OPERATOR_REF: operator, READYAI_NONINTERACTIVE: "1" };
+}
+
 function runCli(config: LocalPublishConfig, args: string[]): Promise<CliRunResult> {
   return new Promise(resolve => {
     const child = spawn("readyai-project", args, {
-      cwd: config.cwd, env: { ...process.env, READYAI_SKIP_GLOBAL_SKILL_SYNC: "1" }, stdio: ["ignore", "pipe", "pipe"],
+      cwd: config.cwd,
+      env: {
+        ...process.env, READYAI_SKIP_GLOBAL_SKILL_SYNC: "1",
+        ...buildPublicationOperatorEnv({ appName: config.appName, env: process.env }),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
     let outputBytes = 0, oversized = false;
