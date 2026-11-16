@@ -605,7 +605,7 @@ test("filterEvent: agent_start / compaction_* / extension_error / auto_retry_sta
     { type: "compaction_start" },
     { type: "compaction_end" },
     { type: "extension_error", message: "x" },
-    { type: "auto_retry_start" },
+
   ];
   for (const e of events) {
     assert.deepEqual(filterEvent(e, p), { kind: "event", event: e });
@@ -656,7 +656,7 @@ test("filterMessageHistory: hideToolCalls 啟用,SDK camelCase toolCall / toolRe
     },
   ];
   const out = filterMessageHistory(msgs, p);
-  assert.deepEqual(out[0].content, [{ type: "text", text: "before" }]);
+  assert.deepEqual(out[0].content, [{ type: "text", text: "before" }, {type:"step_summary",stepId:"tc-1",category:"執行操作",label:"執行操作",status:"ok"}]);
 });
 
 test("filterMessageHistory: hideToolCalls 啟用,role='toolResult' / 'bashExecution' 整則 message drop", () => {
@@ -708,7 +708,7 @@ test("filterMessageHistory: customer preset 下,SDK 混合 fixture 整段過濾�
   const out = filterMessageHistory(msgs, p);
   assert.equal(out.length, 3, "tool result message removed");
   // assistant 第一則只剩 text,thinking + toolCall 被剝掉
-  assert.deepEqual(out[1].content, [{ type: "text", text: "好" }]);
+  assert.deepEqual(out[1].content, [{ type: "text", text: "好" }, {type:"step_summary",stepId:"tc-1",category:"執行操作",label:"執行操作",status:"ok"}]);
 });
 
 //

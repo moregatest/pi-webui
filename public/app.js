@@ -28,6 +28,7 @@ import {
   setError as csSetError,
   selectItems as csSelectItems,
 } from "./chat-state.mjs";
+import { createProgressView } from "./render-progress.mjs";
 import { dispatchSessionEvent } from "./session-dispatch.mjs";
 import { createModalController } from "./modal-controller.mjs";
 import { decideExtraItemRender } from "./render-decision.mjs";
@@ -280,7 +281,7 @@ function renderTextBlockHtml(text) {
 }
 
 function renderThinkingBlockHtml(text) {
-  return `<div class="thinking-block">${escapeHtml(text)}</div>`;
+  return `<details class="thinking-block"><summary>思考過程</summary><div class="thinking-content">${escapeHtml(text)}</div></details>`;
 }
 
 function renderToolCallBlockHtml(name, input) {
@@ -537,6 +538,9 @@ function buildTypingElement() {
 //   - text selection inside frozen messages is not blown away on each delta,
 //   - syntax highlighting is not redone on every keystroke.
 
+const progressViews = new WeakMap();
+let visibleProgressViews = [];
+setInterval(() => { for (const view of visibleProgressViews) view.tick(); }, 1000);
 const extraEls = new WeakMap(); // chat-state extra item -> { el, blocks }
 let canonicalEls = [];          // index-aligned [{ el, message }, ...]
 let typingEl = null;
@@ -556,7 +560,8 @@ function reconcileChildren(parent, desired) {
 }
 
 function renderLog() {
-  const items = csSelectItems(chatState);
+  const items = csSelectItems(chatState, uiProfile);
+  visibleProgressViews = [];
 
   // Items whose blocks may still mutate in place — we always re-render them
   // and skip syntax highlighting (partial code/JSON) until they freeze.
@@ -571,8 +576,21 @@ function renderLog() {
 
   for (const it of items) {
     let el;
-    if (it.source === "canonical") {
-      const r = formatMessage(it.message);
+    if (it.source === 'progress') {
+      let view = progressViews.get(it.progress);
+      if (!view) {
+        view = createProgressView({ document, renderBlock: b => buildBlockNode(b, { highlightText: true }), onContinue: message => {
+          if (chatState.isRunning || socket?.readyState !== WebSocket.OPEN) return;
+          appendOptimisticUserMessage(message, []);
+          send({ type: 'prompt', message });
+        } });
+        progressViews.set(it.progress, view);
+      }
+      view.update(it.progress, uiProfile, chatState.isRunning);
+      visibleProgressViews.push(view);
+      el = view.el;
+    } else if (it.source === "canonical") {
+      const r = formatMessage(it.message, uiProfile);
       // issue #2 B:渲染後無可見內容的 assistant 不掛裸 header
       // (thinking/tool 在 customer 模式摺疊後會留下空殼「Assistant」)。
       if (r.kind === "assistant" && !hasVisibleContent(r.blocks, uiProfile)) continue;
@@ -656,7 +674,7 @@ function handleSessionEvent(event) {
     case "tool_execution_end":
       logger.info("tool end", {
         tool: event.toolName || event.name,
-        ok: !event.error,
+        ok: !event.isError,
         error: event.error?.message,
       });
       // 白名單 tool 在 hideToolCalls 下由 server 放行成 session_event,不會再送
@@ -666,6 +684,7 @@ function handleSessionEvent(event) {
       dispatchSessionEvent(chatState, event);
       renderLog();
       return;
+    case "message_start":
     case "message_update":
       logger.debug("message update");
       dispatchSessionEvent(chatState, event);
@@ -694,7 +713,7 @@ function handleSessionEvent(event) {
     }
     case "auto_retry_start":
       logger.warn("auto retry", { attempt: event.attempt, error: event.error?.message });
-      csSetError(chatState, `retrying (attempt ${event.attempt ?? "?"}): ${event.error?.message || "model error"}`);
+      csSetError(chatState, uiProfile.safeErrors || uiProfile.hideToolCalls ? `連線不穩，正在重試（第 ${event.attempt ?? "?"} 次）` : `retrying (attempt ${event.attempt ?? "?"}): ${event.error?.message || "model error"}`);
       renderStatusBar();
       return;
     default:
@@ -948,7 +967,18 @@ function connect() {
         if (typeof packet.seq === "number") lastSeq = packet.seq;
         handleSessionEvent(packet.payload);
         return;
+      case "turn_step":
+      case "turn_phase":
+      case "turn_notice":
+        dispatchSessionEvent(chatState, { ...packet.payload, type: packet.type });
+        if (packet.type === 'turn_step') {
+          for (const el of toolProgressNodes.values()) el.remove();
+          toolProgressNodes.clear();
+        }
+        renderLog();
+        return;
       case "tool_progress":
+        if (chatState.progress?.steps.length) return;
         // server 在 hideToolCalls + showToolProgress 時轉 tool_execution_* 為 progress packet。
         // start:插入帶 spinner 的 progress block;progress:更新 label;end:移掉對應 block。
         handleToolProgress(packet.payload);

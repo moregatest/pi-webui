@@ -78,6 +78,8 @@ import { loadProfile } from "./profile-loader.js";
 import type { ProfileFile } from "./profile-loader.js";
 import { loadBrandCss } from "./brand-overlay.js";
 import { isCustomerMode, isCustomerOpenMode, isBlockedCustomerMessage, scrubForCustomer, missingCustomerSecrets, customerOpenSkillGuardWarning, enforceCustomerUiProfile } from "./customer-policy.js";
+import { createTurnProgress, trackTurnEvent, CONTINUE_PROMPT, CUSTOMER_PROGRESS_PROMPT } from "./turn-progress.js";
+import { randomUUID } from "node:crypto";
 import { resolveCustomerInjection, shouldInjectHostGuards, mergeInjectedTools } from "./customer-injection.js";
 import { buildSandboxGuardedTools, buildHostGuardedTools } from "./guarded-tools.js";
 import { modelNotFoundNotice } from "./model-notice.js";
@@ -1072,6 +1074,7 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
   }
   const customerOpen = isCustomerOpenMode(profileName, process.env);
   const isCustomer = isCustomerMode(profileName, profileFile);
+  if (isCustomer) sandboxAppend.push(CUSTOMER_PROGRESS_PROMPT);
   // noExtensions/noSkills 不受 sandboxTools 影響，此處 sandboxTools 省略（= undefined）
   const loaderInjection = resolveCustomerInjection({ isCustomer, customerOpen });
   const hasProjectResources = hasTrustRequiringProjectResources(cwd);
@@ -1934,6 +1937,8 @@ class NativePiSessionController {
     this.refreshTimer = undefined;
     this.refreshing = false;
     this.lastReportedTurnError = null;
+    this.turnProgress = createTurnProgress(randomUUID());
+    this.markAutoContinue = false;
     this.eventLog = createEventLog();
     // F12（W41）：customer 模式發布後的「我會主動通知您」承諾，自動要求 agent 追加更正
     this.promiseGuard = isCustomerMode(profileName, profileFile)
@@ -1963,7 +1968,7 @@ class NativePiSessionController {
     sendJson(this.ws, {
       type: "connected",
       payload: scrubForCustomer({
-        appCwd: this.cwd,
+        ...(isCustomerMode(profileName, profileFile) ? {} : { appCwd: this.cwd }),
         agentDir,
         // resolved session 目錄。讓 headless 測試免 grep log 即可斷言 resolved 設定(D9)。
         sessionDir: resolveSessionDir(this.cwd, { cliSessionDir, envSessionDir }),
@@ -2001,6 +2006,7 @@ class NativePiSessionController {
   }
 
   async switchCwd(newCwd) {
+    this.cancelPendingContinuation();
     logger.info("switching cwd", { from: this.cwd, to: newCwd });
     this.stopFileWatch();
     this.unsubscribe?.();
@@ -2017,6 +2023,7 @@ class NativePiSessionController {
   }
 
   async bindSession() {
+    this.cancelPendingContinuation();
     this.unsubscribe?.();
     const session = this.runtime.session;
     await session.bindExtensions({ uiContext: this.extUi.ui });
@@ -2035,8 +2042,29 @@ class NativePiSessionController {
     // Mark self-activity so the file watcher can ignore writes we caused.
     this.lastSelfActivity = Date.now();
 
-    // 必須在 agent_end 監聽當下同步送出 followUp，SDK 才會在同一個 run 內接著跑更正
-    if (event.type === "agent_end") this.promiseGuard?.onAgentEnd(event);
+    // 先讓既有佇列接續；更正指示必須在 SDK 收尾當下同步排入。
+    if (event.type === "agent_end") {
+      const queued = this.session.agent?.hasQueuedMessages?.() ?? false;
+      const correcting = !queued && this.promiseGuard?.onAgentEnd(event);
+      if (queued || correcting) {
+        event = { ...event, willRetry: true };
+        this.turnProgress.retryPending = false;
+      }
+    }
+
+    // SDK 在 message_end 通知之後持久化同一訊息；標記隨會話儲存，重連不靠文字猜測。
+    if (this.markAutoContinue && event.type === "message_start" && event.message?.role === "user") {
+      const text = event.message.content?.filter(b => b.type === "text").map(b => b.text).join("");
+      if (text === CONTINUE_PROMPT) event.message.readyaiAutoContinue = true;
+      this.markAutoContinue = false;
+    }
+    if (event.type === "message_start" && event.message?.role === "user" && !event.message.readyaiAutoContinue) {
+      this.turnProgress = createTurnProgress(randomUUID());
+    }
+    // agent_start 早於 user message_start；待使用者邊界確立後才送第一個階段，避免孤立 turnId。
+    const progressEvent = event.type === "message_start" && event.message?.role === "user" ? {type:"agent_start"} : event;
+    const progressPackets = event.type === "agent_start" ? [] : trackTurnEvent(this.turnProgress, progressEvent, effectiveUiProfile);
+    for (const packet of progressPackets) sendJson(this.ws, packet);
 
     // eventLog 存原始 event(替 replay 用),向 client 出口時才過 ui-profile 過濾。
     const seq = this.eventLog.append(event);
@@ -2109,9 +2137,9 @@ class NativePiSessionController {
         logger.info("tool start", { seq, tool: event.toolName || event.name });
         return;
       case "tool_execution_end": {
-        const ok = event.error ? false : true;
+        const ok = !event.isError;
         const fields = { seq, tool: event.toolName || event.name, ok };
-        if (!ok) fields.error = event.error?.message || String(event.error);
+        if (!ok) fields.error = "tool execution failed";
         (ok ? logger.info : logger.warn)("tool end", fields);
         return;
       }
@@ -2400,6 +2428,7 @@ class NativePiSessionController {
       }
       try {
         logger.info("client requested session", { sessionFile });
+        this.cancelPendingContinuation();
         const switched = await this.runtime.switchSession(sessionFile);
         if (!switched?.cancelled) {
           await this.bindSession();
@@ -2426,12 +2455,39 @@ class NativePiSessionController {
       logger.info("client resume replay", { from: lastSeq, count: result.events.length });
     }
     for (const { seq, event } of result.events) {
-      sendJson(this.ws, { type: "session_event", payload: event, seq });
+      const filtered = filterEvent(event, effectiveUiProfile);
+      if (filtered?.kind === "event") sendJson(this.ws, { type: "session_event", payload: filtered.event, seq });
+      else if (filtered?.kind === "tool_progress") sendJson(this.ws, { type: "tool_progress", payload: filtered.payload });
     }
     sendJson(this.ws, {
       type: "replay_done",
       payload: { currentSeq: this.eventLog.currentSeq() },
     });
+  }
+
+  cancelPendingContinuation() {
+    this.promptGeneration = (this.promptGeneration ?? 0) + 1;
+    this.turnProgress.retryPending = false;
+    this.markAutoContinue = false;
+  }
+
+  async promptWithProgress(message, options = {}) {
+    this.cancelPendingContinuation();
+    const generation = this.promptGeneration;
+    if (this.closed) return;
+    const session = this.session;
+    const wasStreaming = session.isStreaming;
+    await session.prompt(message, options);
+    // 佇列送入立即返回；只有真正等待完整回合的呼叫負責續跑。
+    if (!this.closed && generation === this.promptGeneration && !wasStreaming && session === this.session && this.turnProgress.retryPending) {
+      this.turnProgress.retryPending = false;
+      this.markAutoContinue = true;
+      try {
+        await session.prompt(CONTINUE_PROMPT, { expandPromptTemplates: false });
+      } finally {
+        this.markAutoContinue = false;
+      }
+    }
   }
 
   async runCommand(command, handler) {
@@ -2504,7 +2560,7 @@ class NativePiSessionController {
           streamingBehavior,
         });
         void this.runCommand("prompt", async () => {
-          await this.session.prompt(message, {
+          await this.promptWithProgress(message, {
             images: images.length ? images : undefined,
             streamingBehavior,
             preflightResult: (success) => {
@@ -2521,6 +2577,7 @@ class NativePiSessionController {
       }
 
       case "abort":
+        this.cancelPendingContinuation();
         logger.info("abort requested");
         await this.runCommand("abort", async () => {
           await this.session.abort();
@@ -2530,6 +2587,7 @@ class NativePiSessionController {
         return;
 
       case "new_session":
+        this.cancelPendingContinuation();
         logger.info("new session requested");
         await this.runCommand("new_session", async () => {
           const result = await this.runtime.newSession();
@@ -2542,6 +2600,7 @@ class NativePiSessionController {
         return;
 
       case "switch_session":
+        this.cancelPendingContinuation();
         await this.runCommand("switch_session", async () => {
           const sessionPath = String(payload.sessionPath || "").trim();
           if (!sessionPath) {
@@ -2637,7 +2696,7 @@ class NativePiSessionController {
         if (isExtension || isTemplate || isSkill) {
           const text = arg ? `/${name} ${arg}` : `/${name}`;
           await this.runCommand(`slash:${name}`, async () => {
-            await this.session.prompt(text);
+            await this.promptWithProgress(text);
             await this.sendState();
             await this.sendMessages();
             return { dispatched: true };
@@ -2680,6 +2739,8 @@ class NativePiSessionController {
   }
 
   async close() {
+    this.closed = true;
+    this.cancelPendingContinuation();
     try {
       this.stopFileWatch();
       this.unsubscribe?.();

@@ -220,3 +220,9 @@ test("hasVisibleContent: 白名單命中但 result 仍 pending(null)→ 不可�
   const blocks = [{ type: "tool_result", name: "publish_confirmed", result: null }];
   assert.equal(hasVisibleContent(blocks, ui), false);
 });
+
+test('客戶失敗回合不顯示原始錯誤，停止有提示', () => {
+  const r = formatMessage({ role: 'assistant', content: [], stopReason: 'error', errorMessage: 'provider/private-model /secret/path' }, { safeErrors: true });
+  assert.equal(r.blocks.at(-1).text, '處理時發生問題，沒有完成。請稍後再試一次。');
+  assert.equal(formatMessage({ role: 'assistant', content: [], stopReason: 'aborted' }).blocks.at(-1).text, '已停止。');
+});

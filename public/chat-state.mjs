@@ -1,3 +1,6 @@
+import { isToolResultVisible } from './format-message.mjs';
+import { progressFromHistory } from './render-progress.mjs';
+
 // pure state management for the chat log. no DOM.
 // app.js renders selectItems(state) to the DOM after each mutation.
 //
@@ -15,6 +18,8 @@
 
 export function createChatState() {
   return {
+    progress: null,
+    historyProgress: new Map(),
     canonical: [],         // server-snapshot messages (each is a raw SDK message)
     pendingUser: null,     // optimistic user entry; cleared once canonical contains it
     streamExtras: [],      // streaming-derived items (live assistant only, today)
@@ -47,6 +52,7 @@ export function submitUser(state, text, images) {
       if (img && img.data) blocks.push({ type: "image", mimeType: img.mimeType, data: img.data });
     }
   }
+  state.progress = null;
   state.pendingUser = { kind: "user", title: "You", blocks };
   state.showTyping = true;
   state.isRunning = true;
@@ -105,6 +111,8 @@ function lastUserHasImage(message) {
 export function resetHistory(state, messages) {
   state.canonical = Array.isArray(messages) ? messages.slice() : [];
   state.streamExtras = [];
+  state.progress = null;
+  state.historyProgress.clear();
   state.pendingUser = null;
   resetLiveAssistant(state);
   state.showTyping = false;
@@ -143,6 +151,7 @@ export function applyDelta(state, delta) {
     if (!block || block.type !== kind) {
       block = { type: kind, text: "" };
       live.blocks.push(block);
+      if (state.progress) state.progress.timeline.push(block);
       if (idx !== undefined) state.liveTextBlocks.set(idx, block);
     }
     block.text += delta.delta || "";
@@ -230,7 +239,7 @@ export function onToolEnd(state, name, result, id) {
     // Replace the blocks array (not just the inner block) so the renderer's
     // identity-based cache check (`cached.blocks !== item.blocks`) triggers
     // an update on this otherwise-frozen item.
-    pending.blocks = [{ type: "tool_result", name, result }];
+    pending.blocks = [{ type: "tool_result", id, name, result }];
     map.delete(key);
   } else {
     // Orphan result — append a fresh top-level entry.
@@ -248,12 +257,27 @@ export function onToolEnd(state, name, result, id) {
 }
 
 export function onAgentStart(state) {
+  if (state.progress && (state.isRunning || state.progress.notice?.retrying)) {
+    // 續跑提示跨 agent_start 保留，直到這次續跑真正結束。
+    state.progress.retryActive = Boolean(state.progress.notice?.retrying);
+    if (!state.progress.retryActive) state.progress.notice = null;
+    state.progress.finished = false;
+    delete state.progress.endedAt;
+  }
   state.isRunning = true;
   state.lastError = null;
 }
 
-export function onAgentEnd(state) {
-  state.isRunning = false;
+export function onAgentEnd(state, event = {}) {
+  if (state.progress) {
+    if (state.progress.retryActive && !event.willRetry) {
+      if (state.progress.notice?.retrying) state.progress.notice = null;
+      delete state.progress.retryActive;
+    }
+    state.progress.finished = !event.willRetry && !state.progress.notice?.retrying;
+    if (state.progress.finished) state.progress.endedAt = Date.now();
+  }
+  state.isRunning = Boolean(event.willRetry || state.progress?.notice?.retrying);
   state.showTyping = false;
   // Clear the streaming pointers but KEEP pendingToolResults — the LLM turn
   // ended, but pi runs tools AFTER the assistant message is done. A
@@ -271,7 +295,7 @@ export function onAgentEnd(state) {
 // message — canonical messages past that point are hidden so we don't render
 // the same content twice (once via canonical, once via extras). This is the
 // dedup half of the buffer+replay model.
-export function selectItems(state) {
+export function selectItems(state, uiProfile = {}) {
   const items = [];
   // When pendingUser is set, the new user message lives there (not yet in
   // canonical), so canonical's lastUser still points at the previous turn —
@@ -279,21 +303,42 @@ export function selectItems(state) {
   // next turn's streaming. Show all of canonical in that case.
   const lastUser = lastUserMessageIndex(state.canonical);
   const canonicalEnd =
-    state.streamExtras.length > 0 && lastUser >= 0 && !state.pendingUser
+    (state.streamExtras.length > 0 || state.progress) && lastUser >= 0 && !state.pendingUser
       ? lastUser + 1
       : state.canonical.length;
   for (let i = 0; i < canonicalEnd; i++) {
-    items.push({ source: "canonical", message: state.canonical[i] });
+    const message = state.canonical[i];
+    if (message?.role === 'assistant') {
+      const group = [];
+      let j = i;
+      while (j < canonicalEnd && (['assistant', 'toolResult'].includes(state.canonical[j]?.role) || state.canonical[j]?.readyaiAutoContinue)) group.push(state.canonical[j++]);
+      const key = JSON.stringify(group);
+      let progress = state.historyProgress.get(key);
+      if (!progress) { progress = progressFromHistory(group); state.historyProgress.set(key, progress); }
+      if (progress.steps.length || progress.notice) {
+        items.push({ source: 'progress', progress }); i = j - 1; continue;
+      }
+    }
+    items.push({ source: "canonical", message });
   }
   if (state.pendingUser) items.push({ source: "extra", item: state.pendingUser });
-  for (const e of state.streamExtras) items.push({ source: "extra", item: e });
-  if (state.showTyping) items.push({ source: "typing" });
+  if (state.progress) {
+    // 原文工具卡片只附在所屬步驟，避免兩份畫面。
+    for (const e of state.streamExtras) for (const b of e.blocks || []) {
+      const step = state.progress.steps.find(s => s.stepId === b.id);
+      if (step && b.type === 'tool_call') step.tool = b;
+      if (step && b.type === 'tool_result') step.result = b.result;
+    }
+    items.push({ source: 'progress', progress: state.progress });
+    for (const e of state.streamExtras) if (!['assistant', 'tool'].includes(e.kind) || (e.kind === 'tool' && uiProfile.hideToolCalls && e.blocks.some(b => isToolResultVisible(b, uiProfile)))) items.push({ source: 'extra', item: e });
+  } else for (const e of state.streamExtras) items.push({ source: "extra", item: e });
+  if (state.showTyping && !state.progress) items.push({ source: "typing" });
   return items;
 }
 
 function lastUserMessageIndex(canonical) {
   for (let i = canonical.length - 1; i >= 0; i--) {
-    if (canonical[i]?.role === "user") return i;
+    if (canonical[i]?.role === "user" && !canonical[i].readyaiAutoContinue) return i;
   }
   return -1;
 }
@@ -306,4 +351,30 @@ export function userMessageText(message) {
     return t ? t.text : null;
   }
   return null;
+}
+
+// 新封包持續保留同一回合物件，供畫面保存展開狀態。
+export function applyTurnProgress(state, type, payload) {
+  if (!payload?.turnId) return;
+  if (!state.progress || state.progress.turnId !== payload.turnId) {
+    state.progress = { turnId: payload.turnId, steps: [], timeline: state.streamExtras.flatMap(e => e.kind === 'assistant' ? e.blocks.filter(b => !['tool_call', 'tool_result'].includes(b.type)) : []), phase: null, phaseSince: null, startedAt: payload.since ?? Date.now(), finished: false, notice: null };
+  }
+  const p = state.progress;
+  state.showTyping = false;
+  if (type === 'turn_step') {
+    let step = p.steps.find(s => s.stepId === payload.stepId);
+    if (!step) {
+      step = { type: 'step_summary' }; p.steps.push(step); p.timeline.push(step);
+      state.liveTextBlocks = new Map();
+    }
+    // 重播 start 不得把已完成步驟降回進行中。
+    if (!(step.phase === 'end' && payload.phase === 'start')) Object.assign(step, payload, { type: 'step_summary' });
+  } else if (type === 'turn_phase') {
+    p.phase = payload.phase; p.phaseSince = payload.since;
+  } else if (type === 'turn_notice') {
+    p.notice = { ...payload };
+    if (payload.retryActive) p.retryActive = true;
+    p.finished = !payload.retrying;
+    if (p.finished) p.endedAt = Date.now();
+  }
 }

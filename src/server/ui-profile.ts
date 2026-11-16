@@ -15,6 +15,7 @@ import { existsSync, statSync } from "node:fs";
 
 import type { ProfileFile, ToolLabelEntry } from "./profile-loader.js";
 import { resolveLabel } from "./tool-label.js";
+import { stepSummary, safeLabelArgs, isAutoContinueMessage, TURN_MESSAGES } from "./turn-progress.js";
 import { redactBlocks } from "./secret-guard.js";
 import { convertSimplified, convertSimplifiedDelta, scrubAttachmentNotice } from "./customer-text.js";
 
@@ -369,10 +370,19 @@ function keepContentBlock(b: any, profile: UiProfile): boolean {
 // 剝一個 AssistantMessage(帶 content 陣列)內的敏感 block;無變動時回原物件
 // (供上游做 identity 比較,避免無謂複製)。
 function redactAssistantMessage(msg: any, profile: UiProfile): any {
-  if (!msg || typeof msg !== "object" || !Array.isArray(msg.content)) return msg;
-  const filtered = msg.content.filter((b: any) => keepContentBlock(b, profile));
-  if (filtered.length === msg.content.length) return msg;
-  return { ...msg, content: filtered };
+  if (!msg || typeof msg !== "object") return msg;
+  let out = msg;
+  if (profile.hideModel) {
+    for (const key of ["model", "provider", "api", "responseModel", "responseId", "diagnostics"]) {
+      if (key in out) { out = { ...out }; delete out[key]; }
+    }
+  }
+  if (profile.safeErrors && out.errorMessage) out = {...out, errorMessage: TURN_MESSAGES.error};
+  if (Array.isArray(out.content)) {
+    const filtered = out.content.filter((b: any) => keepContentBlock(b, profile));
+    if (filtered.length !== out.content.length) out = {...out, content:filtered};
+  }
+  return out;
 }
 
 // AssistantMessageEvent 的 partial / message / error 三個欄位都是「累積至今的完整
@@ -403,6 +413,11 @@ function redactEventMessages(event: any, profile: UiProfile): any {
     const red = redactAssistantMessage(out.message, profile);
     if (red !== out.message) out = { ...out, message: red };
   }
+  if (Array.isArray(out.toolResults)) {
+    out = {...out, toolResults:filterMessageHistory(profile.hideToolCalls
+      ? out.toolResults.filter((r: any) => isToolResultAllowed(profile, String(r?.toolName ?? "")))
+      : out.toolResults, profile)};
+  }
   if (Array.isArray(out.messages)) {
     const red = filterMessageHistory(out.messages, profile);
     if (red !== out.messages) out = { ...out, messages: red };
@@ -418,6 +433,20 @@ export function filterEvent(event: any, profile: UiProfile): FilterResult {
 
 function filterEventInner(event: any, profile: UiProfile): FilterResult {
   if (!event || typeof event !== "object") return { kind: "event", event };
+
+  // 單則結果必須與歷史採同一白名單，且連帶丟棄事件外殼。
+  if (profile.hideToolCalls && (event.message?.role === "bashExecution" ||
+      (event.message?.role === "toolResult" && !isToolResultAllowed(profile, String(event.message.toolName ?? ""))))) return null;
+  if (profile.safeErrors && event.type === "auto_retry_end" && event.finalError) {
+    event = {...event, finalError: TURN_MESSAGES.error};
+  }
+  if (isAutoContinueMessage(event.message)) {
+    if (profile.hideToolCalls) return null;
+    event = {...event, message:{...event.message, content:[{type:"text", text:"系統自動續跑"}]}};
+  }
+  if (profile.safeErrors && event.type === "auto_retry_start") {
+    event = {...event, errorMessage:`連線不穩，正在重試（第 ${Number(event.attempt) || 1} 次）`};
+  }
 
   // custom 訊息出口政策(#102):挾帶單則 custom message 的 event(message_start/
   // message_end…)——drop 整個 event 或把 message 轉 assistant;messages[] 快照
@@ -454,10 +483,10 @@ function filterEventInner(event: any, profile: UiProfile): FilterResult {
       payload: {
         id: String(event.toolCallId ?? ""),
         label: resolveLabel(
-          profile,
+          {...profile, exposeToolArgs: false},
           String(event.toolName ?? ""),
           event.type === "tool_execution_start" ? "start" : "end",
-          event.args ?? {},
+          safeLabelArgs(event.args ?? {}),
           silentLogger,
         ),
         phase: event.type === "tool_execution_start" ? "start" : "end",
@@ -469,7 +498,7 @@ function filterEventInner(event: any, profile: UiProfile): FilterResult {
   // 與 (b) message.content 快照。SDK block type 用 camelCase(toolCall/toolResult),
   // 早期 client normalize 後是 snake_case;兩種都接受,避免漏過濾。
   if (event.type === "message_update") {
-    if (!profile.hideThinking && !profile.hideToolCalls)
+    if (!profile.hideThinking && !profile.hideToolCalls && !profile.hideModel && !profile.safeErrors)
       return { kind: "event", event };
 
     const ame = event.assistantMessageEvent;
@@ -505,12 +534,7 @@ function filterEventInner(event: any, profile: UiProfile): FilterResult {
 
   // message_update / tool_execution_* 以外、仍帶 message / messages 的 event
   // (message_start/message_end/turn_end/agent_end…)也要剝挾帶的 thinking / tool block。
-  // turn_end.toolResults 帶工具原始結果（W43 F13）：hideToolCalls 下只留白名單
-  if (profile.hideToolCalls && Array.isArray(event.toolResults)) {
-    const kept = event.toolResults.filter((r: any) => isToolResultAllowed(profile, String(r?.toolName ?? "")));
-    if (kept.length !== event.toolResults.length) event = { ...event, toolResults: kept };
-  }
-  if (profile.hideThinking || profile.hideToolCalls || profile.restrictCustomMessages) {
+  if (profile.hideThinking || profile.hideToolCalls || profile.hideModel || profile.safeErrors || profile.restrictCustomMessages) {
     const red = redactEventMessages(event, profile);
     if (red !== event) return { kind: "event", event: red };
   }
@@ -533,10 +557,15 @@ export function filterMessageHistory(messages: any[], profile: UiProfile): any[]
 }
 
 function filterMessageHistoryInner(messages: any[], profile: UiProfile): any[] {
-  if (!profile.hideThinking && !profile.hideToolCalls && !profile.restrictCustomMessages) return messages;
   if (!Array.isArray(messages)) return messages;
+  if (!profile.hideThinking && !profile.hideToolCalls && !profile.hideModel && !profile.safeErrors && !profile.restrictCustomMessages && !messages.some(isAutoContinueMessage)) return messages;
+  const results = new Map(messages.filter(m => m?.role === "toolResult").map(m => [m.toolCallId, m.isError]));
   const out: any[] = [];
   for (const msg of messages) {
+    if (isAutoContinueMessage(msg)) {
+      if (!profile.hideToolCalls) out.push({...msg, content:[{type:"text", text:"系統自動續跑"}]});
+      continue;
+    }
     if (!msg) {
       out.push(msg);
       continue;
@@ -559,16 +588,17 @@ function filterMessageHistoryInner(messages: any[], profile: UiProfile): any[] {
     ) {
       continue;
     }
-    if (!Array.isArray(msg.content)) {
-      out.push(msg);
-      continue;
-    }
-    const filtered = msg.content.filter((b: any) => keepContentBlock(b, profile));
-    if (filtered.length === msg.content.length) {
-      out.push(msg);
-    } else {
-      out.push({ ...msg, content: filtered });
-    }
+    const red = redactAssistantMessage(msg, profile);
+    if (!Array.isArray(msg.content)) { out.push(red); continue; }
+    const content = msg.content.flatMap((b: any) => {
+      if (profile.hideToolCalls && (b.type === "toolCall" || b.type === "tool_call")) {
+        // 缺識別的舊／不完整工具區塊無法對應步驟，維持隱藏，避免捏造成功摘要。
+        if (!(b.id ?? b.toolCallId)) return [];
+        return [stepSummary(b, !!results.get(b.id ?? b.toolCallId), profile)];
+      }
+      return keepContentBlock(b, profile) ? [b] : [];
+    });
+    out.push(content.length === msg.content.length && content.every((b, i) => b === msg.content[i]) ? red : {...red, content});
   }
   return out;
 }

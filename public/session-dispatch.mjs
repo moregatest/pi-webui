@@ -3,6 +3,7 @@
 
 import {
   applyDelta,
+  applyTurnProgress,
   onAgentEnd,
   onAgentStart,
   onToolEnd,
@@ -11,11 +12,21 @@ import {
 
 export function dispatchSessionEvent(state, event) {
   switch (event?.type) {
+    case "turn_step":
+    case "turn_phase":
+    case "turn_notice":
+      applyTurnProgress(state, event.type, event);
+      return;
     case "agent_start":
       onAgentStart(state);
       return;
     case "agent_end":
-      onAgentEnd(state);
+      onAgentEnd(state, event);
+      return;
+    case "message_start":
+      if (event.message?.readyaiAutoContinue && state.progress) {
+        state.progress.timeline.push({ type: 'text', text: '系統自動續跑', system: true });
+      }
       return;
     case "message_update":
       applyDelta(state, event.assistantMessageEvent || {});

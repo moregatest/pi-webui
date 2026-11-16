@@ -162,3 +162,67 @@ test("message_update with text_delta still grows the live assistant text block",
   assert.equal(live.blocks[0].type, "text");
   assert.equal(live.blocks[0].text, "Hello");
 });
+
+test('進度封包依 stepId 更新，文字跨步驟分段且續跑不重置', () => {
+  const s = startedSession();
+  const emit = (type, payload) => dispatchSessionEvent(s, { type, ...payload });
+  emit('turn_phase', { turnId: 't', phase: 'thinking', since: 1000 });
+  emit('message_update', { assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '先查看' } });
+  emit('turn_step', { turnId: 't', stepId: 'a', n: 1, phase: 'start', category: '查看資料' });
+  emit('turn_step', { turnId: 't', stepId: 'b', n: 2, phase: 'start', category: '修改內容' });
+  emit('turn_step', { turnId: 't', stepId: 'a', n: 1, phase: 'end', status: 'ok' });
+  emit('message_update', { assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '已完成' } });
+  assert.equal(s.progress.steps.length, 2);
+  assert.equal(s.progress.steps[0].status, 'ok');
+  assert.deepEqual(s.progress.timeline.map(b => b.type), ['text', 'step_summary', 'step_summary', 'text']);
+  emit('turn_notice', { turnId: 't', kind: 'truncated', retrying: true, message: '內容太長被中斷，正在重新整理答案…' });
+  emit('agent_end', {});
+  assert.equal(s.progress.finished, false);
+  emit('agent_start', {});
+  emit('turn_step', { turnId: 't', stepId: 'c', n: 3, phase: 'start', category: '執行操作' });
+  assert.equal(s.progress.steps.length, 3);
+  assert.equal(selectItems(s).filter(i => i.source === 'progress').length, 1);
+});
+
+test('自動續跑成功後結束且歷史快照不重複顯示', () => {
+  const s = startedSession();
+  dispatchSessionEvent(s, { type: 'turn_phase', turnId: 't', phase: 'thinking', since: 10 });
+  dispatchSessionEvent(s, { type: 'turn_notice', turnId: 't', kind: 'truncated', retrying: true });
+  dispatchSessionEvent(s, { type: 'agent_end' });
+  dispatchSessionEvent(s, { type: 'agent_start' });
+  dispatchSessionEvent(s, { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '結論' } });
+  dispatchSessionEvent(s, { type: 'agent_end' });
+  assert.equal(s.progress.finished, true);
+  assert.equal(s.progress.notice, null);
+  assert.equal(s.isRunning, false);
+  setHistory(s, [{ role: 'user', content: 'hi' }, { role: 'assistant', content: [{ type: 'text', text: '結論' }] }]);
+  assert.deepEqual(selectItems(s).map(i => i.source), ['canonical', 'progress']);
+});
+
+test('系統續跑訊息在步驟內顯示，不建立使用者泡泡', () => {
+  const s = startedSession();
+  dispatchSessionEvent(s, { type: 'turn_phase', turnId: 't', phase: 'thinking', since: 10 });
+  dispatchSessionEvent(s, { type: 'message_start', message: { role: 'user', readyaiAutoContinue: true, content: [{ type: 'text', text: '系統自動續跑' }] } });
+  assert.equal(s.progress.timeline.at(-1)?.text, '系統自動續跑');
+  assert.equal(s.progress.timeline.at(-1)?.system, true);
+});
+
+for (const finalReason of ['stop','error']) test(`F5：錯誤重試期間保持進行，最後 ${finalReason} 才結束`, () => {
+  const s = startedSession();
+  dispatchSessionEvent(s,{type:'turn_phase',turnId:'retry',phase:'thinking',since:100});
+  dispatchSessionEvent(s,{type:'agent_end',willRetry:true});
+  assert.equal(s.progress.finished,false);
+  assert.equal(s.isRunning,true);
+  assert.equal(s.progress.endedAt,undefined);
+  // 舊狀態可能由歷史或前一個結束事件帶來，重試開始必須清掉時間。
+  s.progress.endedAt = 150;
+  dispatchSessionEvent(s,{type:'agent_start'});
+  assert.equal(s.progress.finished,false);
+  assert.equal(s.progress.endedAt,undefined);
+  if (finalReason === 'error') dispatchSessionEvent(s,{type:'turn_notice',turnId:'retry',kind:'error',message:'處理時發生問題'});
+  else dispatchSessionEvent(s,{type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'完成'}});
+  dispatchSessionEvent(s,{type:'agent_end',willRetry:false,messages:[{role:'assistant',stopReason:finalReason}]});
+  assert.equal(s.progress.finished,true);
+  assert.equal(s.isRunning,false);
+  assert.equal(typeof s.progress.endedAt,'number');
+});

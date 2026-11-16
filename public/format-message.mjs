@@ -15,7 +15,7 @@ export function sdkContentToBlocks(content) {
       case "image":
         return { type: "image", mimeType: b.mimeType, data: b.data };
       case "toolCall":
-        return { type: "tool_call", name: b.name, input: b.arguments };
+        return { type: "tool_call", id: b.id, name: b.name, input: b.arguments };
       case "toolResult":
         return {
           type: "tool_result",
@@ -74,7 +74,7 @@ export function hasVisibleContent(blocks, uiProfile) {
   return false;
 }
 
-export function formatMessage(message) {
+export function formatMessage(message, uiProfile = {}) {
   switch (message.role) {
     case "user":
       return { kind: "user", title: "You", blocks: sdkContentToBlocks(message.content) };
@@ -83,9 +83,10 @@ export function formatMessage(message) {
       if (isFailedAssistantTurn(message)) {
         // 失敗 turn 渲染成紅色 error 區塊(kind:"error" → .message.error h3 變紅),
         // 顯示 errorMessage;沒有 errorMessage 時給一句泛用提示,避免留白塊。
-        const note = message.errorMessage || "(此回合失敗,未收到回應)";
+        const note = uiProfile.safeErrors || uiProfile.hideToolCalls ? "處理時發生問題，沒有完成。請稍後再試一次。" : message.errorMessage || "(此回合失敗,未收到回應)";
         return { kind: "error", title: "Error", blocks: [...blocks, { type: "text", text: note }] };
       }
+      if (message.stopReason === "aborted") blocks.push({ type: "text", text: "已停止。" });
       return { kind: "assistant", title: "Assistant", blocks };
     }
     case "toolResult": {

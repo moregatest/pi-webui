@@ -424,16 +424,11 @@ test("live 401 failure surfaces end-to-end as a red error item (not a blank assi
     { role: "assistant", content: [], stopReason: "error", errorMessage: "401 User not found." },
   ]);
   const items = selectItems(s);
-  const failed = items.find(
-    (it) =>
-      it.source === "canonical" &&
-      it.message?.role === "assistant" &&
-      it.message?.stopReason === "error",
-  );
-  assert.ok(failed, "failed assistant must be present in render items (not clipped away)");
-  const formatted = formatMessage(failed.message);
-  assert.equal(formatted.kind, "error", "must render as a red error item");
-  assert.match(formatted.blocks.map((b) => b.text || "").join("\n"), /401 User not found\./);
+  const failed = items.find(it => it.source === 'progress');
+  assert.ok(failed, '失敗回合應有可見提示');
+  assert.equal(failed.progress.notice.kind, 'error');
+  assert.equal(failed.progress.notice.message, '處理時發生問題，沒有完成。請稍後再試一次。');
+  assert.equal(failed.progress.notice.detail, '401 User not found.');
 });
 
 test("streamed extras survive a canonical snapshot containing the same content", () => {
@@ -979,4 +974,15 @@ test("F16：文字不同時仍保留 pendingUser（附件區塊不當萬用比�
   submitUser(s, "新訊息", []);
   setHistory(s, [{ role: "user", content: "舊訊息\n\n附件：\n- a.png" }]);
   assert.notEqual(s.pendingUser, null);
+});
+
+test('有系統續跑標記的歷史仍合併同一回合，真正使用者同句不會合併', () => {
+  const s = createChatState();
+  const first = { role: 'assistant', content: [{ type: 'step_summary', stepId: 'a', category: '查看資料' }], stopReason: 'length' };
+  const second = { role: 'assistant', content: [{ type: 'step_summary', stepId: 'b', category: '修改內容' }, { type: 'text', text: '完成' }], stopReason: 'stop' };
+  resetHistory(s, [userMsg('hi'), first, { role: 'user', readyaiAutoContinue: true, content: [{ type: 'text', text: '系統自動續跑' }] }, second]);
+  assert.equal(selectItems(s).filter(i => i.source === 'progress').length, 1);
+  assert.equal(selectItems(s).find(i => i.source === 'progress').progress.steps.length, 2);
+  resetHistory(s, [userMsg('hi'), first, userMsg('請根據剛才查到的資料，直接給出結論'), second]);
+  assert.equal(selectItems(s).filter(i => i.source === 'progress').length, 2);
 });

@@ -1219,3 +1219,20 @@ body.drag-active .composer-wrapper {
 :root[data-chat-layout="bubble"] .message.assistant > .message-body pre {
   max-width: 100%;
 }
+
+/* 回合進度在兩種對話版型共用；工具原文與思考預設收合。 */
+.turn-progress { min-width: 0; }
+.progress-details > summary { cursor: pointer; color: var(--muted, #888); padding: .4rem 0; }
+.progress-list { display: flex; flex-direction: column; gap: .55rem; padding: .5rem 0; }
+.progress-step > summary { cursor: pointer; overflow-wrap: anywhere; }
+.progress-step-safe > summary { list-style: none; cursor: default; }
+.progress-step-safe > summary::-webkit-details-marker { display: none; }
+.progress-step-error { color: #b74b42; }
+.progress-step > div { color: var(--text, inherit); max-height: 24rem; overflow: auto; }
+.progress-heartbeat { color: var(--muted, #888); padding: .6rem 0; font-variant-numeric: tabular-nums; }
+.progress-notice { border-left: 3px solid #c4913b; padding: .65rem .8rem; margin-top: .75rem; }
+.progress-notice[hidden], .progress-notice button[hidden], .progress-heartbeat[hidden] { display: none; }
+.progress-notice button { margin-top: .6rem; padding: .4rem .8rem; cursor: pointer; }
+.progress-notice pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.thinking-block > summary { cursor: pointer; }
+.thinking-content { max-height: 12rem; overflow: auto; white-space: pre-wrap; }
