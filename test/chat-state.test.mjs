@@ -986,3 +986,26 @@ test('有系統續跑標記的歷史仍合併同一回合，真正使用者同�
   resetHistory(s, [userMsg('hi'), first, userMsg('請根據剛才查到的資料，直接給出結論'), second]);
   assert.equal(selectItems(s).filter(i => i.source === 'progress').length, 2);
 });
+
+for (const pending of [false, true]) test(`後續${pending ? '尚未確認' : '歷史'}提問讓舊回合失去續跑按鈕資格`, () => {
+  const s = createChatState();
+  const failed = { role: 'assistant', content: [], stopReason: 'length' };
+  resetHistory(s, [userMsg('第一題'), failed]);
+  const first = selectItems(s).find(i => i.source === 'progress').progress;
+  assert.equal(Boolean(first.superseded), false);
+  if (pending) submitUser(s, '請根據剛才查到的資料，直接給出結論');
+  else setHistory(s, [userMsg('第一題'), failed, userMsg('下一題'), { role: 'assistant', content: [], stopReason: 'stop' }]);
+  const turns = selectItems(s).filter(i => i.source === 'progress');
+  assert.equal(turns[0].progress, first);
+  assert.equal(turns[0].progress.superseded, true);
+  if (!pending) assert.equal(Boolean(turns[1].progress.superseded), false);
+});
+
+test('兩回合相同截斷內容仍各自保留續跑資格，不共用歷史快取', () => {
+  const s = createChatState();
+  const failed = { role: 'assistant', content: [], stopReason: 'length' };
+  resetHistory(s, [userMsg('第一題'), failed, userMsg('第二題'), { ...failed }]);
+  const turns = selectItems(s).filter(i => i.source === 'progress');
+  assert.equal(turns[0].progress.superseded, true);
+  assert.equal(turns[1].progress.superseded, false);
+});

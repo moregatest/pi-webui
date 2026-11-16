@@ -154,3 +154,38 @@ for (const failure of [false,true]) test(`B2：續跑期間提示可見，完成
   assert.equal(notice.hidden,!failure);
   if (failure) assert.equal(notice.childNodes[2].hidden,false);
 });
+
+for (const history of [false, true]) test(`零步驟${history ? '歷史' : '即時'}結束只保留回答與提示`, () => {
+  const p = history ? progress.progressFromHistory([{ role: 'assistant', content: [{ type: 'text', text: '部分答案' }], stopReason: 'length' }]) : { steps: [], timeline: [{ type: 'text', text: '部分答案' }], finished: true, notice: { kind: 'truncated', message: '回覆可能不完整' } };
+  const view = progress.createProgressView({ document: testDocument(), renderBlock: b => ({ textContent: b.text }), onContinue() {} });
+  view.update(p);
+  const [details, answer, notice] = view.el.childNodes[1].childNodes;
+  assert.equal(details.hidden, true);
+  assert.equal(answer.childNodes[0].childNodes[0].textContent, '部分答案');
+  assert.equal(notice.hidden, false);
+});
+
+test('零步驟進行中不顯示步驟列，仍持續顯示分析心跳', () => {
+  const view = progress.createProgressView({ document: testDocument(), renderBlock: () => ({}), onContinue() {} });
+  view.update({ steps: [], timeline: [], finished: false, phase: 'thinking', phaseSince: 1000 });
+  view.tick(7000);
+  const details = view.el.childNodes[1].childNodes[0];
+  assert.equal(details.hidden, false);
+  assert.equal(details.open, true);
+  assert.equal(details.childNodes[0].hidden, true);
+  assert.equal(details.childNodes[2].hidden, false);
+  assert.equal(details.childNodes[2].textContent, '正在分析（已 6 秒）');
+});
+
+test('舊回合隱藏續跑按鈕但保留提示文字', () => {
+  const view = progress.createProgressView({ document: testDocument(), renderBlock: () => ({}), onContinue() {} });
+  const p = { steps: [], timeline: [], finished: true, notice: { kind: 'no_answer', message: '請再問一次' } };
+  view.update(p);
+  const notice = view.el.childNodes[1].childNodes[2];
+  assert.equal(notice.childNodes[2].hidden, false);
+  p.superseded = true;
+  view.update(p);
+  assert.equal(notice.childNodes[2].hidden, true);
+  assert.equal(notice.hidden, false);
+  assert.equal(notice.childNodes[0].textContent, '請再問一次');
+});

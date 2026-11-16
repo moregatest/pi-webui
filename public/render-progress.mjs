@@ -98,6 +98,9 @@ export function createProgressView({ document, renderBlock, onContinue }) {
   }
   function update(p, profile = {}, running = false) {
     current = p;
+    // 沒有工具步驟時只留進行中的內容與心跳，結束後不留空收合列。
+    details.hidden = p.finished && p.steps.length === 0;
+    summary.hidden = p.steps.length === 0;
     if (wasFinished !== p.finished && !manual) { automaticOpen = !p.finished; details.open = automaticOpen; }
     wasFinished = p.finished;
     const lastStep = p.timeline.reduce((last, b, i) => b.type === 'step_summary' ? i : last, -1);
@@ -140,7 +143,7 @@ export function createProgressView({ document, renderBlock, onContinue }) {
     noticeText.textContent = p.notice?.message || '';
     diagnostic.textContent = profile.safeErrors || profile.hideToolCalls ? '' : p.notice?.detail || '';
     diagnostic.hidden = !diagnostic.textContent;
-    button.hidden = !canContinue(p.notice);
+    button.hidden = Boolean(p.superseded) || !canContinue(p.notice);
     button.disabled = running;
     tick();
   }

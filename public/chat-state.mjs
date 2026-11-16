@@ -312,9 +312,11 @@ export function selectItems(state, uiProfile = {}) {
       const group = [];
       let j = i;
       while (j < canonicalEnd && (['assistant', 'toolResult'].includes(state.canonical[j]?.role) || state.canonical[j]?.readyaiAutoContinue)) group.push(state.canonical[j++]);
-      const key = JSON.stringify(group);
+      const key = JSON.stringify([i, group]);
       let progress = state.historyProgress.get(key);
       if (!progress) { progress = progressFromHistory(group); state.historyProgress.set(key, progress); }
+      // 新提問一送出就撤下舊按鈕；系統自動續跑仍屬同一回合。
+      progress.superseded = Boolean(state.pendingUser) || j <= lastUser;
       if (progress.steps.length || progress.notice) {
         items.push({ source: 'progress', progress }); i = j - 1; continue;
       }
