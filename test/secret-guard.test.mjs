@@ -472,3 +472,18 @@ test("wrapToolWithRedaction: LITELLM_API_KEY（per-preview virtual key）經真�
   assert.ok(captured[0].content[0].text.includes(REDACTION_PLACEHOLDER));
   assert.ok(!captured[0].content[0].text.includes(FAKE_ENV.LITELLM_API_KEY));
 });
+
+// 預覽機反向代理的每站衍生資產存取值：只遮蔽、不放行到 bash。
+test("L0/L3: ORIGIN_ASSET_ACCESS 不進 bash env，值與 base64／hex 變體都被遮，一般文字不變", () => {
+  const env = { ...FAKE_ENV, ORIGIN_ASSET_ACCESS: "fake-origin-asset-access-0123456789" };
+  assert.ok(SECRET_ENV_KEYS.includes("ORIGIN_ASSET_ACCESS"));
+  assert.ok(!ENV_ALLOWLIST.has("ORIGIN_ASSET_ACCESS"));
+  assert.equal(filterBashEnv(env).ORIGIN_ASSET_ACCESS, undefined);
+  const v = env.ORIGIN_ASSET_ACCESS;
+  assert.equal(redactText(`h=${v}`, env), `h=${REDACTION_PLACEHOLDER}`);
+  assert.equal(redactText(`b=${Buffer.from(v).toString("base64")}`, env), `b=${REDACTION_PLACEHOLDER}`);
+  assert.equal(redactText(`x=${Buffer.from(v).toString("hex")}`, env), `x=${REDACTION_PLACEHOLDER}`);
+  const blocks = redactBlocks([{ type: "text", text: `值是 ${v}` }], env);
+  assert.equal(blocks[0].text, `值是 ${REDACTION_PLACEHOLDER}`);
+  assert.equal(redactText("一般文字不含機密", env), "一般文字不含機密");
+});

@@ -271,6 +271,7 @@ export const SECRET_ENV_KEYS: readonly string[] = [
   "R2_SECRET_ACCESS_KEY",
   "TICKET_HUB_SITE_TOKEN",       // PGC publish control-plane
   "PGC_SNAPSHOT_EXPORT_TOKEN",    // PGC snapshot export
+  "ORIGIN_ASSET_ACCESS",          // 預覽機反向代理：每站衍生的原站資產存取值（不進 bash env 白名單）
 ];
 
 export const REDACTION_PLACEHOLDER = "«REDACTED»";
