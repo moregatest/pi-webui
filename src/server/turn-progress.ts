@@ -1,3 +1,4 @@
+import { posix } from 'node:path';
 // 回合進度只輸出固定分類與經過濾的對象；原始工具參數留在既有工程師事件。
 import { isIP } from 'node:net';
 import type { UiProfile } from './ui-profile.js';
@@ -24,7 +25,7 @@ function safeFile(value: unknown): string | undefined {
   const parts = value.replace(/\\/g, '/').split('/');
   if (parts.some(p => p.startsWith('.') || /^(skills?|AGENTS\.md|CLAUDE\.md)$/i.test(p))) return;
   const name = parts.at(-1);
-  if (name && /^[\p{L}\p{N}_ -]+(?:\.[\p{L}\p{N}_-]+)*$/u.test(name)) return name;
+  if (name && !/^(null|undefined)$/i.test(name) && /^[\p{L}\p{N}_ -]+(?:\.[\p{L}\p{N}_-]+)*$/u.test(name)) return name;
 }
 function safeHost(value: unknown): string | undefined {
   if (typeof value !== 'string') return;
@@ -42,6 +43,23 @@ function safeHost(value: unknown): string | undefined {
 export function safeLabelArgs(args: any = {}) {
   return { file: safeFile(args.file_path ?? args.path ?? args.file), url: safeHost(args.url) ? args.url : undefined, progress_count: Number.isFinite(args.progress_count) ? args.progress_count : undefined };
 }
+// 僅用於摘要分類，不執行 shell；略過引號內的 >，避免把文字當成導向。
+function outputFiles(command: string) {
+  const files: string[] = [];
+  let count = 0;
+  const redirects = /"(?:\\.|[^"\\])*"|'[^']*'|\\.|(>>?|>\|)\s*(&[12]\b|"(?:\\.|[^"\\])*"|'[^']*'|[^\s|;&<>]+)/g;
+  for (const match of command.matchAll(redirects)) {
+    if (!match[1]) continue;
+    count++;
+    const target = match[2].replace(/^['"]|['"]$/g, '');
+    if (!/^(?:\/dev\/(?:null|stderr|stdout)|&[12])$/.test(target)) files.push(target);
+  }
+  return {files, count};
+}
+function isTemporaryFile(value: string): boolean {
+  // 正規化後再判斷，/tmp/../site 不屬於暫存區；動態展開不猜目標。
+  return !/[`$]/.test(value) && /^\/(?:private\/)?tmp\//.test(posix.normalize(value));
+}
 export function describeStep(toolName: string, args: any = {}, profile?: UiProfile) {
   let category = '執行操作';
   let detail: string | undefined;
@@ -56,15 +74,31 @@ export function describeStep(toolName: string, args: any = {}, profile?: UiProfi
     // 複合指令只分類、不猜測其實際目標，避免把 shell 片段當檔名。
     const simple = !/[|;&<>`$\n]/.test(command);
     const tokens = command.match(/"[^"]*"|'[^']*'|\S+/g)?.map(t => t.replace(/^['"]|['"]$/g, '')) ?? [];
-    if (['cat','grep','ls','head','jq'].includes(verb) || (verb === 'sed' && tokens.includes('-n'))) {
+    const {files: outputs, count: redirectCount} = outputFiles(command);
+    const writes = ['touch','mkdir','cp','mv','tee','rm'].includes(verb) || (verb === 'sed' && tokens.some(t => /^-i/.test(t)));
+    // 寫入優先於讀取分類，cat input > output 也確實會改檔案。
+    if (writes || outputs.length) {
+      const target = simple ? tokens.at(-1) : undefined;
+      // 沒有寫入動詞時只看導向目的地：全部落在暫存區就不算改內容（複合指令、2>&1 亦同）。
+      // 複合指令逐段看開頭動詞，後段出現寫入動詞就不降級。
+      const laterWrite = command.split(/[|;&\n]+/).slice(1).some(part => {
+        const words = part.trim().split(/\s+/);
+        return ['touch','mkdir','cp','mv','tee','rm'].includes(words[0]) || (words[0] === 'sed' && words.some(t => /^-i/.test(t)));
+      });
+      const temporary = !laterWrite && outputs.every(isTemporaryFile) && (!writes ? outputs.length > 0 : !/[|;&`$\n]/.test(command) &&
+        (simple && ((verb === 'cp' && tokens.length === 3 && !tokens[1].startsWith('-')) ||
+          (verb === 'tee' && tokens.length === 2)) && target && isTemporaryFile(target)));
+      category = temporary ? '處理資料' : '修改內容';
+      if (!temporary) {
+        if (simple) detail = safeFile(target);
+        else if (redirectCount === 1 && outputs.length === 1 && !/[|;&`$\n]/.test(command)) detail = safeFile(outputs[0]);
+      }
+    } else if (verb === 'mktemp') category = '處理資料';
+    else if (['cat','grep','ls','head','jq'].includes(verb) || (verb === 'sed' && tokens.includes('-n'))) {
       category = '查看資料'; if (simple) detail = safeFile(tokens.at(-1));
     } else if (['curl','wget'].includes(verb)) {
       category = '查詢網站'; if (simple) detail = safeHost(tokens.find(t => /^https?:\/\//.test(t)));
     } else if (['python','python3','node'].includes(verb) || (verb === 'uv' && tokens[1] === 'run')) category = '處理資料';
-    else if (['touch','mkdir','cp','mv','tee','rm'].includes(verb) || (verb === 'sed' && tokens.includes('-i')) || />/.test(command)) {
-      category = '修改內容';
-      if (simple || (!/[|;&`$\n]/.test(command) && />\s*[^>]+$/.test(command))) detail = safeFile(tokens.at(-1));
-    }
   }
   let label = category;
   if (profile?.toolLabels?.[toolName]?.start !== undefined || profile?.toolLabels?._default?.start !== undefined) {

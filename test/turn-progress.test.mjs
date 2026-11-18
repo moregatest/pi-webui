@@ -160,3 +160,88 @@ test('擴充續跑共用額度，且不排入 webui 的第二則續跑', () => {
   assert.equal(end[0].payload.retrying,undefined);
   assert.equal(state.retryPending,false);
 });
+
+const shellCases = [
+  ['curl -s http://127.0.0.1/x 2>/dev/null', '查詢網站'],
+  ['cat a.json 2>&1 | head', '查看資料'],
+  ['grep -r foo . >/dev/null', '查看資料'],
+  ['ls 2> /dev/null', '查看資料'],
+  ...['/dev/null', '/dev/stderr', '/dev/stdout', '&1', '&2'].map(target => [`printf x >${target}`, '執行操作']),
+  ['printf x 2>/dev/null', '執行操作'],
+  ['printf x 2>&1', '執行操作'],
+  ['printf x >> /dev/null', '執行操作'],
+  ['printf x > "/dev/null"', '執行操作'],
+  ["echo 'x > out.txt'", '執行操作'],
+  ['echo x > out.txt', '修改內容', 'out.txt'],
+  ['echo x >out.txt', '修改內容', 'out.txt'],
+  ['echo x >> out.txt', '修改內容', 'out.txt'],
+  ["sed -i 's/a/b/' index.html", '修改內容', 'index.html'],
+  ['cp a b', '修改內容', 'b'],
+  ['cat a.json > out.txt', '修改內容', 'out.txt'],
+  ['echo x > /tmp/xxx', '處理資料'],
+  ['cat a.json > /tmp/xxx', '處理資料'],
+  ['mktemp', '處理資料'],
+  ['mktemp /tmp/check.XXXXXX', '處理資料'],
+  ['cp a /tmp/xxx', '處理資料'],
+  ['echo x > /tmp/../out.txt', '修改內容'],
+  ['echo x > /tmp/xxx > out.txt', '修改內容'],
+  ['echo x > out.txt 2>/dev/null', '修改內容'],
+  ['echo x > /site/.pi/secret.json', '修改內容'],
+];
+for (const [command, category, detail] of shellCases) test(`F4：輸出導向與寫檔分類 ${command}`, async () => {
+  const args = {command};
+  const described = progress.describeStep('bash', args);
+  assert.equal(described.category, category);
+  assert.equal(described.detail, detail);
+  const state = progress.createTurnProgress('f4');
+  const live = progress.trackTurnEvent(state, {type:'tool_execution_start',toolCallId:'f4',toolName:'bash',args}, customer).find(p => p.type === 'turn_step').payload;
+  const history = filterMessageHistory([{role:'assistant',content:[{type:'toolCall',id:'f4',name:'bash',arguments:args}]}], customer);
+  const {progressFromHistory} = await import('../public/render-progress.mjs');
+  const rebuilt = progressFromHistory(history).steps[0];
+  for (const step of [live, history[0].content[0], rebuilt]) {
+    assert.equal(step.category, category);
+    assert.equal(step.detail, detail);
+    assert.equal(step.label, live.label);
+    assert.notEqual(step.detail, 'null');
+    assert.notEqual(step.detail, 'undefined');
+  }
+});
+test('F4：所有檔名入口排除 null 與 undefined 對象，舊封包不外洩', () => {
+  for (const path of ['null','undefined','/dev/null','/site/undefined']) {
+    for (const toolName of ['read','write','edit']) {
+      assert.equal(progress.describeStep(toolName,{path}).detail, undefined);
+      const profile = {...customer,toolLabels:{[toolName]:{start:'查看 {file_basename}',end:'查看 {file_basename}'}}};
+      for (const type of ['tool_execution_start','tool_execution_end']) {
+        assert.equal(filterEvent({type,toolName,args:{path},toolCallId:'f4'},profile).payload.label,'查看 ');
+      }
+    }
+  }
+  for (const [command] of shellCases) {
+    for (const type of ['tool_execution_start','tool_execution_end']) {
+      const packet = filterEvent({type,toolName:'bash',args:{command},toolCallId:'f4'}, customer);
+      assert.equal(packet.kind,'tool_progress');
+      assert.equal(/null|undefined|out\.txt|\/tmp|修改內容/.test(packet.payload.label), false);
+    }
+  }
+});
+
+test('F4：多目標與目錄選項不可因最後參數位於暫存區而掩蓋網站寫入', () => {
+  for (const command of ['tee out.txt /tmp/xxx', 'cp -t /site a /tmp/xxx', 'echo x > /tmp/xxx; cp a b']) {
+    assert.equal(progress.describeStep('bash', {command}).category, '修改內容', command);
+  }
+});
+
+test('暫存導向搭配 2>&1 或複合指令仍不算修改內容（預覽站實測回歸）', () => {
+  for (const command of [
+    'curl -s http://127.0.0.1/zh-TW/index.html > /tmp/home.html 2>&1',
+    'cd /var/www/html && curl -s http://127.0.0.1/a > /tmp/a.html; curl -s http://127.0.0.1/b > /tmp/b.html',
+    'psql -c "select 1" > /tmp/out.txt 2>/dev/null | head',
+  ]) {
+    const step = progress.describeStep('bash', {command});
+    assert.equal(step.category, '處理資料', command);
+    assert.equal(step.detail, undefined, command);
+  }
+  // 複合指令裡只要有一個導向落在暫存區外，仍算修改內容。
+  assert.equal(progress.describeStep('bash', {command:'echo a > /tmp/a.txt; echo b > site.txt'}).category, '修改內容');
+  assert.equal(progress.describeStep('bash', {command:'rm -rf /tmp/x > /tmp/log 2>&1'}).category, '修改內容');
+});
