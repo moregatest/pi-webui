@@ -569,7 +569,8 @@ body.drag-active .composer-wrapper {
 
 .welcome-body {
   margin: 0 0 1rem;
-  color: var(--muted);
+  /* 用正文色:--muted 在 --panel 上對比只有 4.33,低於 WCAG AA 4.5 */
+  color: var(--text);
   line-height: 1.6;
   white-space: pre-line;
   overflow-wrap: anywhere;
