@@ -301,6 +301,8 @@ function printHelp() {
     "  PI_WEBUI_BRAND_LOGO        path to a file served at /brand/logo",
     "  PI_WEBUI_BRAND_COLOR       brand accent color (#rgb or #rrggbb)",
     "  PI_WEBUI_PROFILE           profile name (same as --profile)",
+    "  PI_WEBUI_PROFILE_DEFAULTS_DIR read-only default profile dir (absolute); used when",
+    "                             <cwd>/.pi/profiles/<name>.toml is absent",
     "  PI_WEBUI_UI_PROFILE        preset name (currently: customer)",
     "  PI_WEBUI_SANDBOX           '1' to enable the Gondolin VM sandbox (same as --sandbox)",
     "  PI_WEBUI_SANDBOX_WORKSPACE host directory used as the VM workspace mount",

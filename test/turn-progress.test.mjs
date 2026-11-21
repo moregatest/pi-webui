@@ -163,7 +163,8 @@ test('擴充續跑共用額度，且不排入 webui 的第二則續跑', () => {
 
 const shellCases = [
   ['curl -s http://127.0.0.1/x 2>/dev/null', '查詢網站'],
-  ['cat a.json 2>&1 | head', '查看資料'],
+  // W14-01 F4：管線屬複合指令，無法證明單純讀取，不標查看（原預期為查看資料）。
+  ['cat a.json 2>&1 | head', '執行操作'],
   ['grep -r foo . >/dev/null', '查看資料'],
   ['ls 2> /dev/null', '查看資料'],
   ...['/dev/null', '/dev/stderr', '/dev/stdout', '&1', '&2'].map(target => [`printf x >${target}`, '查看資料']),

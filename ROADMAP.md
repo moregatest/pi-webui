@@ -12,6 +12,7 @@
 
 ## done
 
+- [x] W14-01 審查修正:(F1)點開場建議句一律送成對話,先退出命令模式、送出時強制路由為對話;有草稿或附件時只接在草稿後面、不送出(`public/composer-input.mjs`)。(F5)keydown 與 beforeinput 共用同一份狀態(slash 選單、組字、組字剛結束的 229、本次按鍵已處理、修飾鍵),手機換行在選單開啟時先完成選項,同次按鍵只送一次。(F4)步驟標籤保守原則:只有能證明是單純讀取的單一指令才標「查看資料」;複合指令、命令替換、解析不了的 heredoc、`date -s` 等改狀態參數不標查看,任一段寫入即「修改內容」(`scanShell`)。(F3/F8)`PI_WEBUI_PROFILE_DEFAULTS_DIR` 唯讀預設 profile 目錄:工作區自訂優先,再找預設目錄(一般檔、不跟隨符號連結),再用內建 fallback。
 - [x] 客戶閱讀版面與 Enter 送出:`[ui].reading_layout = "comfortable"`(置中閱讀欄約 72ch、無襯線 16px、行高 1.7、灰字對比 ≥ AA、開場引導與登入頁放大;server 在 `<html>` 首屏寫 `data-reading`);`[ui].enter_sends`(Enter 送出、Shift+Enter 換行;`isComposing`／keyCode 229／composition 旗標組字中不送出;手機鍵盤拿不到 keydown 時改由 `beforeinput` 換行事件判斷,`enterkeyhint="send"`;執行中 Enter 不會變成停止);`[welcome].input_placeholder`。沒設時行為不變。測試 `test/reading-enter.test.mjs`。
 - [x] 開場引導:profile `[welcome]`(`title`／`body`／`starters`)在還沒有對話時顯示說明與可點選的建議句,點了等於送出該句;有對話後消失。文案不寫死在 pi-webui,純文字輸出、有長度上限;沒設時畫面不變。登入頁文字由 profile `[login]`(`hint`／`password_placeholder`／`button`／`error`)提供,注入時 `<` 轉 `\u003c`。客戶步驟標籤修正:`publish_confirmed` 的 `check_only` 與 `publication_status` 標成「查看發布狀態」、heredoc 內文的 `>` 不再誤判成改檔、`echo`/`printenv`/`pwd` 等歸「查看資料」、開頭 `cd <dir> &&` 依後段指令分類。測試 `test/welcome.test.mjs`、`test/step-labels.test.mjs`、`test/server-profile.test.mjs`。
 - [x] 補齊工具結果白名單、舊進度標籤與重試錯誤遮蔽；撤銷過期續跑、錯誤重試保持進度、自訂標籤歷史一致，依最後助理訊息判定最終答案。

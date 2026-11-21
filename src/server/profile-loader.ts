@@ -435,13 +435,54 @@ const CUSTOMER_FALLBACK: ProfileFile = Object.freeze({
   }),
 }) as ProfileFile;
 
-export function loadProfile(name: string, cwd: string): ProfileFile {
-  const filePath = path.join(cwd, ".pi", "profiles", `${name}.toml`);
-  if (!fs.existsSync(filePath)) {
-    if (name === "customer") return CUSTOMER_FALLBACK;
-    throw new Error(`profile not found: ${filePath}`);
+// 唯讀的預設 profile 目錄(例如映像內 root:root 0644 的 /opt/pi-webui/profiles)。
+// 查找順序:工作區 <cwd>/.pi/profiles/<name>.toml(站台自訂優先,維持現行行為)
+//   → 預設目錄 <name>.toml → 內建 fallback(僅 customer)。
+// 沒設時行為與以前完全相同。外部打包流程以這個匯出常數判斷 pi-webui 是否支援此能力。
+export const PROFILE_DEFAULTS_DIR_ENV = "PI_WEBUI_PROFILE_DEFAULTS_DIR";
+
+export interface LoadProfileOptions {
+  // 未傳 opts 時讀環境變數 PI_WEBUI_PROFILE_DEFAULTS_DIR;傳了 opts 就只看 opts。
+  defaultsDir?: string;
+}
+
+// 讀預設目錄的 profile:必須是一般檔、不跟隨符號連結(O_NOFOLLOW + fstat)。
+// 檔案不存在回 null;其他異常一律啟動失敗,不默默改用內建 fallback。
+function readDefaultsProfile(name: string, dir: string): { filePath: string; raw: string } | null {
+  if (!path.isAbsolute(dir)) throw new Error(`${PROFILE_DEFAULTS_DIR_ENV} 必須是絕對路徑: ${dir}`);
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error(`profile 名稱只允許英數、_、-(預設目錄查找): ${name}`);
+  const filePath = path.join(dir, `${name}.toml`);
+  let fd: number;
+  try {
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | (fs.constants.O_NONBLOCK ?? 0));
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    if (code === "ELOOP" || code === "EMLINK") throw new Error(`預設 profile 不可是符號連結: ${filePath}`);
+    throw new Error(`預設 profile 無法讀取: ${filePath}: ${code ?? String(e)}`);
   }
-  const raw = fs.readFileSync(filePath, "utf8");
+  try {
+    if (!fs.fstatSync(fd).isFile()) throw new Error(`預設 profile 必須是一般檔: ${filePath}`);
+    return { filePath, raw: fs.readFileSync(fd, "utf8") };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+export function loadProfile(name: string, cwd: string, opts?: LoadProfileOptions): ProfileFile {
+  const filePath = path.join(cwd, ".pi", "profiles", `${name}.toml`);
+  let raw: string;
+  if (fs.existsSync(filePath)) {
+    raw = fs.readFileSync(filePath, "utf8");
+  } else {
+    const defaultsDir = (opts ? opts.defaultsDir : process.env[PROFILE_DEFAULTS_DIR_ENV])?.trim();
+    const fromDefaults = defaultsDir ? readDefaultsProfile(name, defaultsDir) : null;
+    if (!fromDefaults) {
+      if (name === "customer") return CUSTOMER_FALLBACK;
+      throw new Error(`profile not found: ${filePath}`);
+    }
+    raw = fromDefaults.raw;
+  }
   let parsed;
   try {
     parsed = TOML.parse(raw);

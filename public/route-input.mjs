@@ -4,9 +4,12 @@
 // Bash commands must NOT show an optimistic "You: !cmd" user bubble or
 // flip the running/typing state — the assistant is not invoked, and the
 // bash output renders on its own once the server replies.
-export function routeInput({ message, bashMode }) {
+//
+// forcePrompt:點開場建議句時強制送成對話,不看命令模式、也不看 / ! 開頭。
+export function routeInput({ message, bashMode, forcePrompt = false }) {
   const text = String(message ?? "").trim();
   if (!text) return { kind: "empty" };
+  if (forcePrompt) return { kind: "prompt", message: text, optimistic: true, setRunning: true };
 
   const bashCommand = bashMode
     ? text

@@ -37,3 +37,11 @@ test("empty input: routed as empty", () => {
   assert.equal(routeInput({ message: "   ", bashMode: false }).kind, "empty");
   assert.equal(routeInput({ message: "!  ", bashMode: false }).kind, "empty");
 });
+
+test("forcePrompt(點建議句):命令模式或 / ! 開頭都強制送成對話", () => {
+  for (const [message, bashMode] of [["echo safe", true], ["!ls", false], ["/new", false]]) {
+    const r = routeInput({ message, bashMode, forcePrompt: true });
+    assert.equal(r.kind, "prompt", message);
+    assert.equal(r.message, message);
+  }
+});

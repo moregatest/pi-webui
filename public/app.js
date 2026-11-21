@@ -49,9 +49,8 @@ import { planBlockRenders, reconcileChildrenInPlace } from "./render-blocks.mjs"
 import { createFollowState, onScrollEvent, shouldAutoScroll } from "./scroll-follow.mjs";
 import { log as logger } from "./log.mjs";
 import { createCustomOverlayHost } from "./ext-custom.mjs";
-import { routeInput } from "./route-input.mjs";
 import { normalizeWelcome, shouldShowWelcome, createWelcomeView, welcomePlaceholder } from "./welcome.mjs";
-import { decideEnterKey, decideBeforeInput } from "./enter-send.mjs";
+import { createComposerController } from "./composer-input.mjs";
 import { decideSubmit, createUnsentTracker, saveDraft, takeDraft } from "./unsent-guard.mjs";
 
 let socket;
@@ -556,11 +555,19 @@ function getWelcomeEl() {
   if (!welcome) return null;
   if (!welcomeEl || welcomeSource !== uiProfile.welcome) {
     welcomeSource = uiProfile.welcome;
-    // 點建議句 = 把那句放進輸入框並走正常送出流程(斷線保護、附件判斷都沿用)。
+    // 點建議句:一律當對話送出(先退出命令模式);已有草稿或附件時只接在草稿後面、不送出。
+    // 送出仍走正常流程(斷線保護沿用),見 composer-input.mjs。
     welcomeEl = createWelcomeView({ document, welcome, onPick: (text) => {
-      if (chatState.isRunning) return;
-      input.value = text;
-      composer.requestSubmit();
+      const pick = composerCtl.pickStarter({
+        text,
+        draft: input.value,
+        hasAttachments: pendingImages.length > 0 || pendingFiles.length > 0,
+      });
+      if (pick.action === "ignore") return;
+      input.value = pick.value;
+      resizeInput();
+      if (pick.action === "send") composer.requestSubmit();
+      else input.focus();
     } });
   }
   return welcomeEl;
@@ -2030,43 +2037,29 @@ function applySlashSelection() {
   input.focus();
 }
 
-// Enter 送出(profile [ui].enter_sends)的狀態:輸入法組字中、上一個 Enter 是否帶 Shift。
-let imeComposing = false;
-let shiftEnterPending = false;
-input.addEventListener("compositionstart", () => { imeComposing = true; });
-input.addEventListener("compositionend", () => { imeComposing = false; });
-
-// 執行中按 Enter 不可變成「停止」(送出鈕執行中是 abort),直接忽略。
-function submitFromEnter() {
-  if (chatState.isRunning) return;
-  composer.requestSubmit();
-}
+// 命令模式、建議句、Enter 送出共用一個控制器(public/composer-input.mjs):
+// keydown 與 beforeinput 看同一份狀態(slash 選單、組字、229、已處理、修飾鍵)。
+// profile [ui].enter_sends 未開時 Enter 一律自然換行,送出唯一入口是送出鈕。
+const composerCtl = createComposerController({
+  getEnterSends: () => !!uiProfile?.enterSends,
+  isRunning: () => chatState.isRunning,
+  isSlashMenuOpen: () => !slashMenu.hidden && slashFiltered.length > 0,
+  applySlash: () => applySlashSelection(),
+  submit: () => composer.requestSubmit(),
+  onBashModeChange: (on) => composer.classList.toggle("bash-mode", on),
+});
+input.addEventListener("compositionstart", () => composerCtl.compositionStart());
+input.addEventListener("compositionend", () => composerCtl.compositionEnd());
 
 // 手機虛擬鍵盤可能拿不到 keydown Enter(keyCode 229),改由換行的 beforeinput 判斷。
 input.addEventListener("beforeinput", (event) => {
-  const decision = decideBeforeInput({
-    enterSends: !!uiProfile?.enterSends,
-    inputType: event.inputType,
-    isComposing: event.isComposing,
-    composing: imeComposing,
-    shiftEnter: shiftEnterPending,
-  });
-  if (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph") shiftEnterPending = false;
-  if (decision === "submit") {
-    event.preventDefault();
-    submitFromEnter();
-  }
+  if (composerCtl.beforeInput(event)) event.preventDefault();
 });
 
 input.addEventListener("keydown", (event) => {
-  if (event.key === "!" && input.value === "" && !event.isComposing) {
+  // !/Backspace 切換命令模式、slash 選單的 Enter、Enter 送出
+  if (composerCtl.keydown(event, input.value)) {
     event.preventDefault();
-    setBashMode(!bashMode);
-    return;
-  }
-  if (event.key === "Backspace" && input.value === "" && bashMode) {
-    event.preventDefault();
-    setBashMode(false);
     return;
   }
   if (!slashMenu.hidden && slashFiltered.length > 0) {
@@ -2092,31 +2085,6 @@ input.addEventListener("keydown", (event) => {
       slashMenu.hidden = true;
       return;
     }
-    if (event.key === "Enter" && !event.isComposing) {
-      // slash menu 開啟時 Enter 跟 Tab 一致:填入 autocomplete + 關 menu,
-      // 不送出 — 維持「Enter 永遠不送出、只能點 send 按鈕」全站規則。
-      event.preventDefault();
-      applySlashSelection();
-      return;
-    }
-  }
-  // 預設:Enter / Shift+Enter 一律讓 textarea 自然斷行;送出唯一入口是 send 按鈕。
-  // profile [ui].enter_sends=true 時:Enter 送出、Shift+Enter 換行、組字中不送出。
-  if (event.key === "Enter") shiftEnterPending = event.shiftKey;
-  if (decideEnterKey({
-    enterSends: !!uiProfile?.enterSends,
-    key: event.key,
-    keyCode: event.keyCode,
-    shiftKey: event.shiftKey,
-    altKey: event.altKey,
-    ctrlKey: event.ctrlKey,
-    metaKey: event.metaKey,
-    isComposing: event.isComposing,
-    composing: imeComposing,
-  }) === "submit") {
-    event.preventDefault();
-    submitFromEnter();
-    return;
   }
   if (event.key === "ArrowUp" && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
     if (input.selectionStart !== 0 || input.selectionEnd !== 0) return;
@@ -2147,11 +2115,6 @@ input.addEventListener("keydown", (event) => {
   }
 });
 
-let bashMode = false;
-function setBashMode(on) {
-  bashMode = on;
-  composer.classList.toggle("bash-mode", on);
-}
 
 input.addEventListener("input", () => {
   resizeInput();
@@ -2547,6 +2510,8 @@ composer.addEventListener("submit", (event) => {
   const raw = input.value;
   const message = raw.trim();
   const hasImages = pendingImages.length > 0;
+  // 「建議句強制對話」旗標在送出開頭就取出,避免被斷線等提早返回留到下一次。
+  const forcePrompt = composerCtl.takeForcePrompt();
   // 只把上傳完成的(status === "ready")檔案算進送出條件;uploading / error 的
   // 排除。若還在 uploading,提示使用者稍候。
   const readyFiles = pendingFiles.filter((f) => f.status === "ready");
@@ -2582,16 +2547,15 @@ composer.addEventListener("submit", (event) => {
   // bash/slash routing applies only when there are no pasted attachments —
   // images / files can only be carried by a regular prompt message.
   if (!hasImages && !hasFiles) {
-    const route = routeInput({ message, bashMode });
+    const route = composerCtl.routeSubmit({ message, force: forcePrompt });
     if (route.kind === "empty") return;
     if (route.kind === "bash") {
-      if (bashMode) setBashMode(false);
       logger.info("bash sent", { length: route.command.length });
       send({ type: "bash", command: route.command });
       return;
     }
 
-    const slash = parseSlash(message);
+    const slash = route.kind === "slash" ? parseSlash(message) : null;
     if (slash) {
       if (slash.name === "name" && !slash.arg.trim()) {
         const current = currentSessionState?.sessionName || "";

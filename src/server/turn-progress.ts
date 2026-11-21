@@ -60,21 +60,109 @@ function isTemporaryFile(value: string): boolean {
   // 正規化後再判斷，/tmp/../site 不屬於暫存區；動態展開不猜目標。
   return !/[`$]/.test(value) && /^\/(?:private\/)?tmp\//.test(posix.normalize(value));
 }
-// heredoc 內文是給程式的輸入,不是 shell 導向;python 的 `if n > 0` 等不可被當成寫檔。
-// 只保留起始行(含 <<'EOF' 與其後的導向),略過內文直到結束標記行。
-export function stripHeredocBodies(command: string): string {
-  const lines = command.split("\n");
-  const out: string[] = [];
-  const pending: string[] = [];
-  for (const line of lines) {
-    if (pending.length) {
-      if (line.replace(/^\t+/, "").trim() === pending[0]) pending.shift();
-      continue;
+// 只用於摘要分類的保守 shell 掃描，不執行、也不假裝完整解析 shell。
+// - 依引號狀態找出指令分隔（| ; & && || 換行），引號內的字元不算。
+// - 找出命令替換 $( )、反引號、行程替換 <( ) >( )；雙引號內的 $( ) 與反引號也算（會執行）。
+// - heredoc 內文是給程式的輸入，不是 shell 導向（python 的 `if n > 0` 不可被當成寫檔）：
+//   內文從 text 移除；未加引號的內文若含 $( ) 或反引號視為命令替換；
+//   找不到結束標記即標為 unparseable。引號內的 `<<EOF` 不是 heredoc。
+export type ShellScan = {text: string; segments: string[]; hasSubst: boolean; unparseable: boolean; background: boolean};
+export function scanShell(command: string): ShellScan {
+  let text = '';
+  const segments: string[] = [];
+  let seg = '';
+  let hasSubst = false, unparseable = false, background = false;
+  let quote: '' | "'" | '"' = '';
+  const pending: {delim: string; quoted: boolean}[] = [];
+  const emit = (chunk: string) => { text += chunk; seg += chunk; };
+  const split = () => { segments.push(seg); seg = ''; };
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i];
+    const next = command[i + 1];
+    if (quote === "'") { emit(ch); if (ch === "'") quote = ''; i++; continue; }
+    if (ch === '\\' && i + 1 < command.length) { emit(ch + next); i += 2; continue; }
+    if (quote === '"') {
+      if (ch === '`' || (ch === '$' && next === '(')) hasSubst = true;
+      emit(ch); if (ch === '"') quote = ''; i++; continue;
     }
-    out.push(line);
-    for (const m of line.matchAll(/<<-?\s*(['"]?)([A-Za-z_][\w-]*)\1/g)) pending.push(m[2]);
+    if (ch === "'" || ch === '"') { quote = ch; emit(ch); i++; continue; }
+    if (ch === '`' || (ch === '$' && next === '(') || ((ch === '<' || ch === '>') && next === '(')) hasSubst = true;
+    if (ch === '<' && next === '<') {
+      if (command[i + 2] === '<') { emit('<<<'); i += 3; continue; }
+      // heredoc 起始：<<[-] 空白 標記（可加引號）
+      const m = command.slice(i).match(/^<<(-?)[ \t]*('([^'\n]*)'|"([^"\n]*)"|([^\s;&|<>()]+))/);
+      if (!m) { unparseable = true; emit('<<'); i += 2; continue; }
+      const word = m[5] ?? '';
+      const quoted = m[3] !== undefined || m[4] !== undefined || /['"\\]/.test(word);
+      const delim = m[3] ?? m[4] ?? word.replace(/['"\\]/g, '');
+      if (!delim) unparseable = true;
+      pending.push({delim, quoted});
+      emit(m[0]); i += m[0].length; continue;
+    }
+    if (ch === '\n') {
+      if (pending.length) {
+        // 逐一吃掉 heredoc 內文，直到各自的結束標記行。
+        let pos = i + 1;
+        while (pending.length) {
+          const {delim, quoted} = pending.shift()!;
+          const body: string[] = [];
+          let found = false;
+          while (pos <= command.length) {
+            const nl = command.indexOf('\n', pos);
+            const line = command.slice(pos, nl === -1 ? command.length : nl);
+            pos = nl === -1 ? command.length + 1 : nl + 1;
+            if (line.replace(/^\t+/, '') === delim) { found = true; break; }
+            body.push(line);
+          }
+          if (!found) unparseable = true;
+          if (!quoted && /\$\(|`/.test(body.join('\n'))) hasSubst = true;
+        }
+        split(); text += '\n';
+        i = Math.min(pos, command.length);
+        continue;
+      }
+      split(); text += '\n'; i++; continue;
+    }
+    if (ch === '|' || ch === ';' || ch === '&') {
+      const prev = command[i - 1];
+      // >| >& <& &> 是導向，不是分隔
+      if ((ch === '|' || ch === '&') && (prev === '>' || prev === '<')) { emit(ch); i++; continue; }
+      if (ch === '&' && next === '>') { emit(ch); i++; continue; }
+      if (ch === '&' && next !== '&' && prev !== '&') background = true;
+      text += ch;
+      if (seg) split();
+      i++; continue;
+    }
+    emit(ch); i++;
   }
-  return out.join("\n");
+  if (quote || pending.length) unparseable = true;
+  split();
+  return {text, segments: segments.map(s => s.trim()).filter(Boolean), hasSubst, unparseable, background};
+}
+// 相容舊名稱：只保留起始行，移除 heredoc 內文。
+export function stripHeredocBodies(command: string): string {
+  return scanShell(command).text;
+}
+const WRITE_VERBS = ['touch','mkdir','cp','mv','tee','rm'];
+function isWriteSegment(part: string): boolean {
+  const words = part.trim().split(/\s+/);
+  return WRITE_VERBS.includes(words[0]) || (words[0] === 'sed' && words.some(t => /^-i/.test(t)));
+}
+// 唯讀動詞帶了會改狀態的參數就不算唯讀（date -s / 設時、sed 的 w 指令、file -C）。
+function readOnlyArgs(verb: string | undefined, tokens: string[]): boolean {
+  const rest = tokens.slice(1);
+  if (verb === 'date') {
+    return rest.every(t => t.startsWith('+') || /^(?:-u|-R|--utc|--universal|--rfc-2822|--rfc-email|-I\w*|--iso-8601(?:=\w+)?)$/.test(t));
+  }
+  if (verb === 'sed') {
+    if (!rest.includes('-n') || rest.some(t => /^-i|^--in-place/.test(t))) return false;
+    const script = rest.find(t => !/^-[nEr]$/.test(t));
+    // 只認常見的純印出寫法：1,80p、$p、/pattern/p
+    return !!script && /^(?:(?:\d+|\$)(?:,(?:\d+|\$))?p|\/[^/]*\/p)$/.test(script);
+  }
+  if (verb === 'file') return !rest.some(t => /^-C|^--compile/.test(t));
+  return true;
 }
 // 只讀取、不改檔的小指令(導向到檔案時仍由寫入判斷優先處理)。
 const READ_ONLY_VERBS = ['cat','grep','ls','head','tail','jq','echo','printf','printenv','pwd','which','date','wc','stat','file'];
@@ -90,23 +178,24 @@ export function describeStep(toolName: string, args: any = {}, profile?: UiProfi
   else if (toolName === 'publication_status') category = '查看發布狀態';
   else if (toolName === 'bash') {
     // 開頭的 cd <dir> && 只是切目錄,依後段指令分類。
-    let command = stripHeredocBodies(String(args.command ?? '').trim());
-    for (let m; (m = command.match(/^cd\s+(?:"[^"]*"|'[^']*'|[^\s|;&<>]+)\s*&&\s*/)); ) command = command.slice(m[0].length);
+    const scan = scanShell(String(args.command ?? '').trim());
+    let command = scan.text;
+    let cdCount = 0;
+    for (let m; (m = command.match(/^cd\s+(?:"[^"]*"|'[^']*'|[^\s|;&<>]+)\s*&&\s*/)); cdCount++) command = command.slice(m[0].length);
+    const segments = scan.segments.slice(cdCount);
     const verb = command.match(/^([\w-]+)(?:\s|$)/)?.[1];
     // 複合指令只分類、不猜測其實際目標，避免把 shell 片段當檔名。
     const simple = !/[|;&<>`$\n]/.test(command);
     const tokens = command.match(/"[^"]*"|'[^']*'|\S+/g)?.map(t => t.replace(/^['"]|['"]$/g, '')) ?? [];
     const {files: outputs, count: redirectCount} = outputFiles(command);
-    const writes = ['touch','mkdir','cp','mv','tee','rm'].includes(verb) || (verb === 'sed' && tokens.some(t => /^-i/.test(t)));
+    // 任一段是寫入動詞就算寫入（echo ready && rm x、printf x | tee y）。
+    const laterWrite = segments.slice(1).some(isWriteSegment);
+    const writes = WRITE_VERBS.includes(verb) || (verb === 'sed' && tokens.some(t => /^-i/.test(t))) || laterWrite;
     // 寫入優先於讀取分類，cat input > output 也確實會改檔案。
     if (writes || outputs.length) {
       const target = simple ? tokens.at(-1) : undefined;
       // 沒有寫入動詞時只看導向目的地：全部落在暫存區就不算改內容（複合指令、2>&1 亦同）。
       // 複合指令逐段看開頭動詞，後段出現寫入動詞就不降級。
-      const laterWrite = command.split(/[|;&\n]+/).slice(1).some(part => {
-        const words = part.trim().split(/\s+/);
-        return ['touch','mkdir','cp','mv','tee','rm'].includes(words[0]) || (words[0] === 'sed' && words.some(t => /^-i/.test(t)));
-      });
       const temporary = !laterWrite && outputs.every(isTemporaryFile) && (!writes ? outputs.length > 0 : !/[|;&`$\n]/.test(command) &&
         (simple && ((verb === 'cp' && tokens.length === 3 && !tokens[1].startsWith('-')) ||
           (verb === 'tee' && tokens.length === 2)) && target && isTemporaryFile(target)));
@@ -116,7 +205,9 @@ export function describeStep(toolName: string, args: any = {}, profile?: UiProfi
         else if (redirectCount === 1 && outputs.length === 1 && !/[|;&`$\n]/.test(command)) detail = safeFile(outputs[0]);
       }
     } else if (verb === 'mktemp') category = '處理資料';
-    else if (READ_ONLY_VERBS.includes(verb) || (verb === 'sed' && tokens.includes('-n'))) {
+    // 只有能證明是單純讀取的單一指令才標查看：不可是複合指令、不可有命令替換、heredoc 要能解析、參數不可改狀態。
+    else if ((READ_ONLY_VERBS.includes(verb) || verb === 'sed') && segments.length === 1 && !scan.background &&
+      !scan.hasSubst && !scan.unparseable && readOnlyArgs(verb, tokens)) {
       // echo/printf/date 等的最後一個參數不是檔名,只對讀檔類動詞附檔名。
       category = '查看資料'; if (simple && !['echo','printf','printenv','pwd','which','date'].includes(verb)) detail = safeFile(tokens.at(-1));
     } else if (['curl','wget'].includes(verb)) {

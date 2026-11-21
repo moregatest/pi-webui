@@ -133,6 +133,7 @@ environment variables:
 | `PI_WEBUI_CHAT_LAYOUT` | (unset) | message layout `bubble` / `log` (same as `--chat-layout`) |
 | `PI_WEBUI_UI_PROFILE` | (unset) | preset name (`customer`); same as `--ui-profile` |
 | `PI_WEBUI_PROFILE` | (unset) | profile name (loads `.pi/profiles/<name>.toml`); same as `--profile` |
+| `PI_WEBUI_PROFILE_DEFAULTS_DIR` | (unset) | 唯讀的預設 profile 目錄(絕對路徑);工作區沒有 `.pi/profiles/<name>.toml` 時才讀 `<dir>/<name>.toml`,見下方「預設 profile 目錄」 |
 | `PI_WEBUI_UPLOAD_EXT` | (unset) | 取代預設上傳副檔名白名單(逗號分隔) |
 | `PI_WEBUI_UPLOAD_EXT_ADD` | (unset) | 在現有清單上加增副檔名(逗號分隔) |
 | `PI_WEBUI_UPLOAD_SUBDIR` | (`--profile` 名 or `default`) | `<cwd>/uploads/<subdir>/` 子目錄 |
@@ -448,6 +449,16 @@ readyai-webui --profile staff                     # back-office interface
 readyai-webui --profile customer --tunnel \
   --password "$(cat .secret)"                # customer interface, public URL
 ```
+
+### 預設 profile 目錄（`PI_WEBUI_PROFILE_DEFAULTS_DIR`）
+
+讓映像或部署環境提供預設 profile,又不必寫進可變的工作區。設定為絕對路徑(例如映像內 root:root 0644 的 `/opt/pi-webui/profiles`)後,`--profile <name>` 的查找順序是:
+
+1. 工作區 `<cwd>/.pi/profiles/<name>.toml`(站台自訂優先,與現行行為相同)
+2. 預設目錄 `<dir>/<name>.toml`
+3. 內建 fallback(只有 `customer` 有;其他名稱照舊報 `profile not found`)
+
+預設目錄的檔案必須是一般檔,不跟隨符號連結;是符號連結、目錄或無法讀取時直接啟動失敗,不會默默改用內建 fallback。profile 名稱只允許英數、`_`、`-`。內容同樣經過完整 schema 驗證。沒設這個變數時行為與以前完全相同。外部打包流程可用 `profile-loader` 匯出的 `PROFILE_DEFAULTS_DIR_ENV` 判斷打包的版本是否支援此能力。
 
 ### 客戶確認發布（PGC publication）
 
