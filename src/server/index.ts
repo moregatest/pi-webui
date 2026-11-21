@@ -681,6 +681,8 @@ function serializeUiProfile(profile: UiProfile) {
     chatLayout: profile.chatLayout,
     // 開場引導純文字;前端以 textContent 輸出
     welcome: profile.welcome,
+    readingLayout: profile.readingLayout,
+    enterSends: profile.enterSends,
     brand: {
       name: profile.brand.name,
       logoUrl: profile.brand.logoPath ? `${SERVER_BASE_PATH}/brand/logo` : null,
@@ -1557,6 +1559,10 @@ function serveStatic(req, res) {
     // <base> 必須是 <head> 首個子元素，才能 rebase 其後所有相對 asset（見 spec P1-a）；
     // 不可注在 </head> 前（會落在 head 尾端，對前面的 <link>/<script> 無效）。
     html = html.replace(/<head(\s[^>]*)?>/i, (m) => `${m}<base href="${baseHref}">`);
+    // 客戶閱讀版面寫在 <html> 上,首屏(含登入頁)就套用,不等 WS connected。
+    if (effectiveUiProfile.readingLayout === "comfortable") {
+      html = html.replace(/<html(\s[^>]*)?>/i, (m) => m.replace(/>$/, ' data-reading="comfortable">'));
+    }
     // 品牌名:設了就替換 <title> 初值(消除首屏閃 readyai-webui),並以 __BRAND_NAME__
     // 注入給 login.html 的 h1(index.html 的 header 由 WS applyBranding 填,首屏靠 title)。
     const brandName = effectiveUiProfile.brand.name || "";

@@ -41,6 +41,10 @@ export interface UiFlags {
   // 對話版型:"bubble"=Claude 式左右氣泡(user 右/assistant 左、隱藏角色標題);
   // "log"=工程師視圖(標題 + 左框線,預設)。customer fallback 用 bubble。
   chat_layout?: "bubble" | "log";
+  // 客戶閱讀版面:"comfortable"=置中閱讀欄、無襯線大字、提高對比;"default"=現行版面。
+  reading_layout?: "default" | "comfortable";
+  // true:Enter 送出、Shift+Enter 換行(組字中不送出);預設 false=Enter 只換行。
+  enter_sends?: boolean;
 }
 
 export interface SandboxConfig {
@@ -70,6 +74,8 @@ export interface WelcomeConfig {
   title?: string;
   body?: string;
   starters?: string[];
+  // 輸入框的提示文字(placeholder)
+  input_placeholder?: string;
 }
 
 // 登入頁文字:說明密碼從哪裡來、按鈕與錯誤訊息的語言。全部選填,純文字。
@@ -140,6 +146,12 @@ function validateUi(ui: UiFlags | undefined): void {
   if (ui.chat_layout !== undefined && !CHAT_LAYOUTS.has(ui.chat_layout)) {
     throw new Error(`[ui].chat_layout: 必須是 "bubble" 或 "log",收到 "${ui.chat_layout}"`);
   }
+  if (ui.reading_layout !== undefined && !READING_LAYOUTS.has(ui.reading_layout)) {
+    throw new Error(`[ui].reading_layout: 必須是 "default" 或 "comfortable",收到 ${JSON.stringify(ui.reading_layout)}`);
+  }
+  if (ui.enter_sends !== undefined && typeof ui.enter_sends !== "boolean") {
+    throw new Error(`[ui].enter_sends: 必須是 true 或 false,收到 ${JSON.stringify(ui.enter_sends)}`);
+  }
   if (ui.show_tool_results_for !== undefined) {
     if (!Array.isArray(ui.show_tool_results_for)) {
       throw new Error(`[ui].show_tool_results_for: 必須是字串陣列,收到 ${typeof ui.show_tool_results_for}`);
@@ -157,13 +169,14 @@ const ALLOWED_UI = new Set([
   "hide_thinking", "hide_tool_calls", "show_tool_progress",
   "hide_status_chips", "hide_session_picker", "hide_model",
   "safe_errors", "expose_tool_args", "chat_layout", "restrict_custom_messages",
-  "show_tool_results_for",
+  "show_tool_results_for", "reading_layout", "enter_sends",
 ]);
 const ALLOWED_BRAND = new Set([
   "name", "logo", "favicon", "mode", "bg", "panel", "text",
   "accent", "border", "muted", "css", "color",
 ]);
 const CHAT_LAYOUTS = new Set(["bubble", "log"]);
+const READING_LAYOUTS = new Set(["default", "comfortable"]);
 
 function validateUnknown(parsed: Record<string, unknown>): void {
   for (const key of Object.keys(parsed)) {
@@ -281,9 +294,9 @@ function validateUploads(uploads: UploadsConfig | undefined): void {
   }
 }
 
-const ALLOWED_WELCOME = new Set(["title", "body", "starters"]);
+const ALLOWED_WELCOME = new Set(["title", "body", "starters", "input_placeholder"]);
 // 上限以「字」(Unicode code point)計;開場引導是幾句話,不是文件。
-export const WELCOME_LIMITS = Object.freeze({ title: 60, body: 400, starter: 60, starters: 6 });
+export const WELCOME_LIMITS = Object.freeze({ title: 60, body: 400, starter: 60, starters: 6, input_placeholder: 60 });
 
 function charLen(s: string): number {
   return [...s].length;
@@ -314,6 +327,14 @@ function validateWelcome(welcome: WelcomeConfig | undefined): void {
     }
     if (charLen(welcome.body.trim()) > WELCOME_LIMITS.body) {
       throw new Error(`[welcome].body: 上限 ${WELCOME_LIMITS.body} 字(目前 ${charLen(welcome.body.trim())})`);
+    }
+  }
+  if (welcome.input_placeholder !== undefined) {
+    const v = welcome.input_placeholder;
+    if (typeof v !== "string") throw new Error(`[welcome].input_placeholder: 必須是字串,收到 ${typeof v}`);
+    if (/[\r\n]/.test(v)) throw new Error(`[welcome].input_placeholder: 不可換行`);
+    if (charLen(v.trim()) > WELCOME_LIMITS.input_placeholder) {
+      throw new Error(`[welcome].input_placeholder: 上限 ${WELCOME_LIMITS.input_placeholder} 字(目前 ${charLen(v.trim())})`);
     }
   }
   if (welcome.starters !== undefined) {

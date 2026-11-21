@@ -477,6 +477,9 @@ hide_model          = true         # hide model name
 safe_errors         = true         # wrap server_error as generic + ticket
 expose_tool_args    = false        # allow {tool_arg.*} placeholders (UNSAFE)
 chat_layout         = "bubble"     # bubble (Claude-style) | log (engineer view, default)
+reading_layout      = "comfortable" # 客戶閱讀版面:置中閱讀欄、無襯線 16px、灰字對比 ≥ AA;
+                                   # "default"(預設)= 現行版面
+enter_sends         = true         # Enter 送出、Shift+Enter 換行、輸入法組字中不送出;預設 false
 show_tool_results_for = ["publish_confirmed"]
                                    # whitelist: these tools' RESULTS stay visible even
                                    # with hide_tool_calls (tool_call args stay hidden).
@@ -520,7 +523,8 @@ end   = ""                          # empty = clear spinner only
 title    = "這裡可以確認這次的網站修改"   # ≤ 60 字,不可換行
 body     = "我是您的網站 AI 助理。…"      # ≤ 400 字,可換行
 starters = ["請告訴我這次改了什麼", "內容沒問題，我同意上線"]
-                                   # ≤ 6 句、每句 ≤ 60 字、不可 / 或 ! 開頭;
+input_placeholder = "輸入訊息，按 Enter 送出"  # 輸入框提示,≤ 60 字、單行
+                                   # starters:≤ 6 句、每句 ≤ 60 字、不可 / 或 ! 開頭;
                                    # 點一下等於送出該句。沒設 [welcome] → 畫面與以前相同
 
 [login]                             # 登入頁文字;全部選填,純文字。沒設 → 維持內建英文

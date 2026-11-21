@@ -27,6 +27,14 @@ export function normalizeWelcome(raw) {
   return { title, body, starters };
 }
 
+const MAX_PLACEHOLDER = 60;
+
+// 輸入框提示(profile [welcome].input_placeholder);與開場卡片分開判斷。
+export function welcomePlaceholder(raw) {
+  if (!raw || typeof raw !== "object" || typeof raw.inputPlaceholder !== "string") return "";
+  return clip(raw.inputPlaceholder.trim(), MAX_PLACEHOLDER);
+}
+
 // historyReady:已收到這次連線的 message_history,避免有歷史的對話在載入前閃一下引導。
 export function shouldShowWelcome(welcome, { historyReady, visibleCount }) {
   return !!welcome && !!historyReady && visibleCount === 0;

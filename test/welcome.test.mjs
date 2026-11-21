@@ -103,7 +103,7 @@ test("parseUiProfile: 沒有 [welcome] → welcome 為 null", () => {
 
 test("parseUiProfile: [welcome] → 去頭尾空白後帶入", () => {
   const p = parseUiProfile({}, {}, { welcome: { title: " 標題 ", body: "說明", starters: [" 甲 ", "乙"] } });
-  assert.deepEqual(p.welcome, { title: "標題", body: "說明", starters: ["甲", "乙"] });
+  assert.deepEqual(p.welcome, { title: "標題", body: "說明", starters: ["甲", "乙"], inputPlaceholder: "" });
 });
 
 test("parseUiProfile: [welcome] 全空 → null(畫面與沒設相同)", () => {

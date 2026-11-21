@@ -211,6 +211,7 @@ test("--profile customer 帶 [welcome] → connected uiProfile.welcome 為純文
       title: "這裡可以確認這次的網站修改",
       body: "我是您的網站 AI 助理。",
       starters: ["請告訴我這次改了什麼", "內容沒問題，我同意上線"],
+      inputPlaceholder: "",
     });
   } finally {
     await stopServer(child);
@@ -247,6 +248,40 @@ test("沒設 [login] → GET /login 的 __LOGIN__ 為 null(畫面與以前相同
   try {
     const body = await (await fetch(`${url}/login`, { redirect: "manual" })).text();
     assert.match(body, /window\.__LOGIN__=null/);
+  } finally {
+    await stopServer(child);
+  }
+});
+
+test("[ui] reading_layout=comfortable、enter_sends → connected 帶出,HTML 首屏就有 data-reading", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(cwd, ".pi", "profiles"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, ".pi", "profiles", "staff.toml"), `[ui]\nreading_layout = "comfortable"\nenter_sends = true\n`);
+  const { child, url } = await startServer(cwd, ["--profile", "staff"]);
+  try {
+    const payload = await getConnected(url);
+    assert.equal(payload.uiProfile.readingLayout, "comfortable");
+    assert.equal(payload.uiProfile.enterSends, true);
+    for (const p of ["/", "/login"]) {
+      const body = await (await fetch(`${url}${p}`, { redirect: "manual" })).text();
+      assert.match(body, /<html[^>]*data-reading="comfortable"/, p);
+    }
+  } finally {
+    await stopServer(child);
+  }
+});
+
+test("沒設 reading_layout → HTML 沒有 data-reading,connected 為 default / enterSends=false", async (t) => {
+  const cwd = makeCwd();
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const { child, url } = await startServer(cwd, []);
+  try {
+    const payload = await getConnected(url);
+    assert.equal(payload.uiProfile.readingLayout, "default");
+    assert.equal(payload.uiProfile.enterSends, false);
+    const body = await (await fetch(`${url}/`)).text();
+    assert.doesNotMatch(body, /data-reading=/);
   } finally {
     await stopServer(child);
   }

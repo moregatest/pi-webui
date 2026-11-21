@@ -1296,3 +1296,162 @@ body.drag-active .composer-wrapper {
 .progress-notice pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .thinking-block > summary { cursor: pointer; }
 .thinking-content { max-height: 12rem; overflow: auto; white-space: pre-wrap; }
+
+/* ── 客戶閱讀版面(profile [ui].reading_layout = "comfortable") ──────────
+   server 在 <html> 寫 data-reading="comfortable";沒設時以下規則全部不生效。
+   - 對話、開場引導、輸入框都收在置中的閱讀欄(約 72ch)
+   - 無襯線、正文 16px、行高 1.7;輸入框 16px 也避免 iOS 聚焦時自動放大
+   - 說明／進度類灰字調亮,對 --bg、--panel 皆 ≥ 6.3:1(WCAG AA 4.5)
+   品牌色票(brand.tokens)以 inline style 設在 :root,仍會覆蓋這裡的預設。 */
+:root[data-reading="comfortable"] {
+  --muted: #a39d92;
+  --thinking: #a39d92;
+  --reading-width: 72ch;
+  --reading-gutter: max(1rem, calc((100% - var(--reading-width)) / 2));
+}
+
+:root[data-reading="comfortable"] body,
+:root[data-reading="comfortable"] button,
+:root[data-reading="comfortable"] textarea,
+:root[data-reading="comfortable"] input {
+  font-family: system-ui, -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.7;
+}
+
+:root[data-reading="comfortable"] .brand-header {
+  padding: 0.75rem var(--reading-gutter);
+}
+:root[data-reading="comfortable"] .brand-header .brand-name {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+:root[data-reading="comfortable"] .log {
+  padding: 1.5rem var(--reading-gutter) 2rem;
+}
+
+:root[data-reading="comfortable"] .message {
+  margin-bottom: 1.5rem;
+}
+
+/* 閱讀欄內:助理回覆用滿整欄,使用者氣泡最多 85% 靠右 */
+:root[data-reading="comfortable"][data-chat-layout="bubble"] .message.assistant {
+  width: auto;
+  max-width: 100%;
+}
+:root[data-reading="comfortable"][data-chat-layout="bubble"] .message.user {
+  max-width: 85%;
+}
+:root[data-reading="comfortable"][data-chat-layout="bubble"] .message.user > .message-body {
+  padding: 0.6rem 1rem;
+  border-radius: 16px;
+}
+
+:root[data-reading="comfortable"] .message-body a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+:root[data-reading="comfortable"] .progress-details > summary,
+:root[data-reading="comfortable"] .progress-heartbeat {
+  font-size: 0.95rem;
+}
+
+/* 輸入框:同一閱讀欄、明顯的外框;客戶不需要 ">" 提示符 */
+:root[data-reading="comfortable"] .composer-wrapper {
+  padding: 0.75rem var(--reading-gutter) 1rem;
+  border-top: none;
+}
+:root[data-reading="comfortable"] .composer {
+  padding: 0.35rem 0.4rem 0.35rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+}
+:root[data-reading="comfortable"] .composer:focus-within {
+  border-color: var(--accent);
+}
+:root[data-reading="comfortable"] .composer::before {
+  content: none;
+}
+:root[data-reading="comfortable"] .composer textarea {
+  min-height: 44px;
+}
+:root[data-reading="comfortable"] .composer textarea::placeholder {
+  color: var(--muted);
+  opacity: 1;
+  /* 窄螢幕提示太長時單行省略,不把輸入框撐出捲軸 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 開場引導:沒有對話時垂直偏上置中、字放大、建議句是明顯的按鈕 */
+:root[data-reading="comfortable"] .welcome {
+  max-width: 100%;
+  margin: max(2rem, 12vh) 0 1rem;
+  padding: 2rem 2rem 1.75rem;
+  border-radius: 18px;
+}
+:root[data-reading="comfortable"] .welcome-title {
+  font-size: 1.6rem;
+  line-height: 1.35;
+  margin-bottom: 0.75rem;
+}
+:root[data-reading="comfortable"] .welcome-body {
+  font-size: 1.05rem;
+  margin-bottom: 1.5rem;
+}
+:root[data-reading="comfortable"] .welcome-starters {
+  gap: 0.75rem;
+}
+:root[data-reading="comfortable"] .welcome-starter {
+  font-size: 1.05rem;
+  font-weight: 500;
+  min-height: 48px;
+  padding: 0.7rem 1.25rem;
+  border: 1.5px solid var(--accent);
+  border-radius: 12px;
+  background: var(--panel-2);
+}
+
+/* 登入頁:卡片放大、字放大(login.html 的 inline 樣式較弱,這裡覆蓋) */
+:root[data-reading="comfortable"] .login-card {
+  width: min(440px, 92vw);
+  padding: 40px 32px 32px;
+  border-radius: 16px;
+}
+:root[data-reading="comfortable"] .login-card h1 {
+  font-size: 24px;
+  margin-bottom: 12px;
+}
+:root[data-reading="comfortable"] .login-card .login-hint {
+  font-size: 16px;
+  opacity: 1;
+  margin-bottom: 20px;
+}
+:root[data-reading="comfortable"] .login-card input[type="password"] {
+  font-size: 16px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  margin-bottom: 14px;
+}
+:root[data-reading="comfortable"] .login-card button {
+  font-size: 16px;
+  font-weight: 600;
+  padding: 12px;
+  border-radius: 10px;
+  color: #0d0d0d;
+}
+:root[data-reading="comfortable"] .login-error {
+  font-size: 15px;
+}
+
+@media (max-width: 480px) {
+  :root[data-reading="comfortable"] .log { padding: 1rem 1rem 1.5rem; }
+  :root[data-reading="comfortable"] .composer-wrapper { padding: 0.5rem 0.75rem 0.75rem; }
+  :root[data-reading="comfortable"] .welcome { margin-top: 1.5rem; padding: 1.25rem; }
+  :root[data-reading="comfortable"] .welcome-title { font-size: 1.35rem; }
+  :root[data-reading="comfortable"] .welcome-starter { width: 100%; }
+}

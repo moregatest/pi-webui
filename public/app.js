@@ -50,7 +50,8 @@ import { createFollowState, onScrollEvent, shouldAutoScroll } from "./scroll-fol
 import { log as logger } from "./log.mjs";
 import { createCustomOverlayHost } from "./ext-custom.mjs";
 import { routeInput } from "./route-input.mjs";
-import { normalizeWelcome, shouldShowWelcome, createWelcomeView } from "./welcome.mjs";
+import { normalizeWelcome, shouldShowWelcome, createWelcomeView, welcomePlaceholder } from "./welcome.mjs";
+import { decideEnterKey, decideBeforeInput } from "./enter-send.mjs";
 import { decideSubmit, createUnsentTracker, saveDraft, takeDraft } from "./unsent-guard.mjs";
 
 let socket;
@@ -857,6 +858,21 @@ function applyChatLayout() {
   document.documentElement.setAttribute("data-chat-layout", layout);
 }
 
+// 客戶閱讀版面與輸入框:server 已在 HTML 首屏寫 data-reading,這裡與 connected 同步;
+// 輸入框提示與 Enter 送出(手機鍵盤的 Enter 鍵顯示「傳送」)。
+function applyReadingAndInput() {
+  if (uiProfile?.readingLayout === "comfortable") {
+    document.documentElement.setAttribute("data-reading", "comfortable");
+  } else {
+    document.documentElement.removeAttribute("data-reading");
+  }
+  const placeholder = welcomePlaceholder(uiProfile?.welcome);
+  if (placeholder) input.setAttribute("placeholder", placeholder);
+  else input.removeAttribute("placeholder");
+  if (uiProfile?.enterSends) input.setAttribute("enterkeyhint", "send");
+  else input.removeAttribute("enterkeyhint");
+}
+
 function connect() {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   const url = `${protocol}://${location.host}${BASE}/ws`;
@@ -911,6 +927,7 @@ function connect() {
         hideModel = !!(uiProfile?.hideModel ?? packet.payload.hideModel);
         applyBranding(uiProfile.brand);
         applyChatLayout();
+        applyReadingAndInput();
         renderSandboxChip();
         renderTunnelChip();
         logger.info("connected", {
@@ -1533,7 +1550,9 @@ function showScopedModelsPicker(payload) {
 
 function showHotkeysModal() {
   const items = [
-    { keys: "Enter", desc: "Newline in input (送出請點右下角 send 按鈕)" },
+    uiProfile?.enterSends
+      ? { keys: "Enter / Shift+Enter", desc: "Send / newline (送出 / 換行)" }
+      : { keys: "Enter", desc: "Newline in input (送出請點右下角 send 按鈕)" },
     { keys: "Tab", desc: "Complete slash command" },
     { keys: "↑ / ↓", desc: "Navigate slash menu / picker" },
     { keys: "Esc", desc: "Abort running session / close picker" },
@@ -2011,6 +2030,34 @@ function applySlashSelection() {
   input.focus();
 }
 
+// Enter 送出(profile [ui].enter_sends)的狀態:輸入法組字中、上一個 Enter 是否帶 Shift。
+let imeComposing = false;
+let shiftEnterPending = false;
+input.addEventListener("compositionstart", () => { imeComposing = true; });
+input.addEventListener("compositionend", () => { imeComposing = false; });
+
+// 執行中按 Enter 不可變成「停止」(送出鈕執行中是 abort),直接忽略。
+function submitFromEnter() {
+  if (chatState.isRunning) return;
+  composer.requestSubmit();
+}
+
+// 手機虛擬鍵盤可能拿不到 keydown Enter(keyCode 229),改由換行的 beforeinput 判斷。
+input.addEventListener("beforeinput", (event) => {
+  const decision = decideBeforeInput({
+    enterSends: !!uiProfile?.enterSends,
+    inputType: event.inputType,
+    isComposing: event.isComposing,
+    composing: imeComposing,
+    shiftEnter: shiftEnterPending,
+  });
+  if (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph") shiftEnterPending = false;
+  if (decision === "submit") {
+    event.preventDefault();
+    submitFromEnter();
+  }
+});
+
 input.addEventListener("keydown", (event) => {
   if (event.key === "!" && input.value === "" && !event.isComposing) {
     event.preventDefault();
@@ -2053,8 +2100,24 @@ input.addEventListener("keydown", (event) => {
       return;
     }
   }
-  // Enter / Shift+Enter 一律讓 textarea 自然斷行;送出唯一入口是 send 按鈕。
-  // 不在這裡 preventDefault,讓 browser default 處理換行。
+  // 預設:Enter / Shift+Enter 一律讓 textarea 自然斷行;送出唯一入口是 send 按鈕。
+  // profile [ui].enter_sends=true 時:Enter 送出、Shift+Enter 換行、組字中不送出。
+  if (event.key === "Enter") shiftEnterPending = event.shiftKey;
+  if (decideEnterKey({
+    enterSends: !!uiProfile?.enterSends,
+    key: event.key,
+    keyCode: event.keyCode,
+    shiftKey: event.shiftKey,
+    altKey: event.altKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    isComposing: event.isComposing,
+    composing: imeComposing,
+  }) === "submit") {
+    event.preventDefault();
+    submitFromEnter();
+    return;
+  }
   if (event.key === "ArrowUp" && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
     if (input.selectionStart !== 0 || input.selectionEnd !== 0) return;
     event.preventDefault();

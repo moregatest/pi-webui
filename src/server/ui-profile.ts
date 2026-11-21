@@ -60,7 +60,11 @@ export interface UiProfile {
   // profileFile.tool_labels 讀入後放置於此;resolveLabel 依此覆蓋 built-in 標籤
   toolLabels: Record<string, ToolLabelEntry>;
   // 開場引導(profile [welcome]);沒設或內容全空時為 null,前端畫面與未設時相同。
-  welcome: { title: string; body: string; starters: string[] } | null;
+  welcome: { title: string; body: string; starters: string[]; inputPlaceholder: string } | null;
+  // 客戶閱讀版面(profile [ui].reading_layout);default=現行版面。
+  readingLayout: "default" | "comfortable";
+  // Enter 送出(profile [ui].enter_sends);預設 false。
+  enterSends: boolean;
   // 登入頁文字(profile [login]);沒設或全空為 null,登入頁維持內建文字。
   login: { hint: string; passwordPlaceholder: string; button: string; error: string } | null;
 }
@@ -136,6 +140,8 @@ export function parseUiProfile(
     toolLabels: {},
     welcome: null,
     login: null,
+    readingLayout: "default",
+    enterSends: false,
   };
 
   // profileFile 套用(precedence 在 default 之上、preset / CLI / env 之下)
@@ -152,6 +158,8 @@ export function parseUiProfile(
     if (ui.restrict_custom_messages !== undefined) profile.restrictCustomMessages = ui.restrict_custom_messages;
     if (ui.show_tool_results_for !== undefined) profile.showToolResultsFor = [...ui.show_tool_results_for];
     if (ui.chat_layout !== undefined) profile.chatLayout = ui.chat_layout;
+    if (ui.reading_layout !== undefined) profile.readingLayout = ui.reading_layout;
+    if (ui.enter_sends !== undefined) profile.enterSends = ui.enter_sends;
   }
 
   if (profileFile?.brand) {
@@ -175,7 +183,8 @@ export function parseUiProfile(
     const starters = Array.isArray(w.starters)
       ? w.starters.filter((s) => typeof s === "string" && s.trim()).map((s) => s.trim())
       : [];
-    if (title || body || starters.length) profile.welcome = { title, body, starters };
+    const inputPlaceholder = typeof w.input_placeholder === "string" ? w.input_placeholder.trim() : "";
+    if (title || body || starters.length || inputPlaceholder) profile.welcome = { title, body, starters, inputPlaceholder };
   }
 
   if (profileFile?.login) {
