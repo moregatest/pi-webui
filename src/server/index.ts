@@ -679,6 +679,8 @@ function serializeUiProfile(profile: UiProfile) {
     // 否則 server 放行的 tool_result 會在 client 端被二次過濾掉。
     showToolResultsFor: profile.showToolResultsFor,
     chatLayout: profile.chatLayout,
+    // 開場引導純文字;前端以 textContent 輸出
+    welcome: profile.welcome,
     brand: {
       name: profile.brand.name,
       logoUrl: profile.brand.logoPath ? `${SERVER_BASE_PATH}/brand/logo` : null,
@@ -1562,9 +1564,13 @@ function serveStatic(req, res) {
       html = html.replace(/<title>[\s\S]*?<\/title>/i, `<title>${escapeHtmlText(brandName)}</title>`);
     }
     // __BASE__ / __BRAND_NAME__ 只設 JS 變數，位置不敏感，維持注在 </head> 前。
+    // 登入頁文字(profile [login])只注入 login.html;< 轉 \u003c,profile 文字無法結束 <script>。
+    const loginJs = filePath.endsWith("login.html")
+      ? `;window.__LOGIN__=${JSON.stringify(effectiveUiProfile.login).replace(/</g, "\\u003c")}`
+      : "";
     html = html.replace(
       "</head>",
-      `<script>window.__BASE__=${JSON.stringify(base)};window.__BRAND_NAME__=${JSON.stringify(brandName)}</script></head>`,
+      `<script>window.__BASE__=${JSON.stringify(base)};window.__BRAND_NAME__=${JSON.stringify(brandName)}${loginJs}</script></head>`,
     );
     res.writeHead(200, {
       "content-type": "text/html; charset=utf-8",

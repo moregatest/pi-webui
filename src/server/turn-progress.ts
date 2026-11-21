@@ -60,6 +60,24 @@ function isTemporaryFile(value: string): boolean {
   // 正規化後再判斷，/tmp/../site 不屬於暫存區；動態展開不猜目標。
   return !/[`$]/.test(value) && /^\/(?:private\/)?tmp\//.test(posix.normalize(value));
 }
+// heredoc 內文是給程式的輸入,不是 shell 導向;python 的 `if n > 0` 等不可被當成寫檔。
+// 只保留起始行(含 <<'EOF' 與其後的導向),略過內文直到結束標記行。
+export function stripHeredocBodies(command: string): string {
+  const lines = command.split("\n");
+  const out: string[] = [];
+  const pending: string[] = [];
+  for (const line of lines) {
+    if (pending.length) {
+      if (line.replace(/^\t+/, "").trim() === pending[0]) pending.shift();
+      continue;
+    }
+    out.push(line);
+    for (const m of line.matchAll(/<<-?\s*(['"]?)([A-Za-z_][\w-]*)\1/g)) pending.push(m[2]);
+  }
+  return out.join("\n");
+}
+// 只讀取、不改檔的小指令(導向到檔案時仍由寫入判斷優先處理)。
+const READ_ONLY_VERBS = ['cat','grep','ls','head','tail','jq','echo','printf','printenv','pwd','which','date','wc','stat','file'];
 export function describeStep(toolName: string, args: any = {}, profile?: UiProfile) {
   let category = '執行操作';
   let detail: string | undefined;
@@ -67,9 +85,13 @@ export function describeStep(toolName: string, args: any = {}, profile?: UiProfi
   if (['read','ls','grep','find'].includes(toolName)) { category = '查看資料'; detail = safeFile(file); }
   else if (['edit','write'].includes(toolName)) { category = '修改內容'; detail = safeFile(file); }
   else if (['fetch','web_fetch','web_search','browser','curl','wget'].includes(toolName)) { category = '查詢網站'; detail = safeHost(args.url); }
-  else if (toolName === 'publish_confirmed') category = '發布網站';
+  // check_only 只呼叫唯讀 summary,不發布;只認布林 true,與工具本身判斷一致。
+  else if (toolName === 'publish_confirmed') category = args.check_only === true ? '查看發布狀態' : '發布網站';
+  else if (toolName === 'publication_status') category = '查看發布狀態';
   else if (toolName === 'bash') {
-    const command = String(args.command ?? '').trim();
+    // 開頭的 cd <dir> && 只是切目錄,依後段指令分類。
+    let command = stripHeredocBodies(String(args.command ?? '').trim());
+    for (let m; (m = command.match(/^cd\s+(?:"[^"]*"|'[^']*'|[^\s|;&<>]+)\s*&&\s*/)); ) command = command.slice(m[0].length);
     const verb = command.match(/^([\w-]+)(?:\s|$)/)?.[1];
     // 複合指令只分類、不猜測其實際目標，避免把 shell 片段當檔名。
     const simple = !/[|;&<>`$\n]/.test(command);
@@ -94,8 +116,9 @@ export function describeStep(toolName: string, args: any = {}, profile?: UiProfi
         else if (redirectCount === 1 && outputs.length === 1 && !/[|;&`$\n]/.test(command)) detail = safeFile(outputs[0]);
       }
     } else if (verb === 'mktemp') category = '處理資料';
-    else if (['cat','grep','ls','head','jq'].includes(verb) || (verb === 'sed' && tokens.includes('-n'))) {
-      category = '查看資料'; if (simple) detail = safeFile(tokens.at(-1));
+    else if (READ_ONLY_VERBS.includes(verb) || (verb === 'sed' && tokens.includes('-n'))) {
+      // echo/printf/date 等的最後一個參數不是檔名,只對讀檔類動詞附檔名。
+      category = '查看資料'; if (simple && !['echo','printf','printenv','pwd','which','date'].includes(verb)) detail = safeFile(tokens.at(-1));
     } else if (['curl','wget'].includes(verb)) {
       category = '查詢網站'; if (simple) detail = safeHost(tokens.find(t => /^https?:\/\//.test(t)));
     } else if (['python','python3','node'].includes(verb) || (verb === 'uv' && tokens[1] === 'run')) category = '處理資料';

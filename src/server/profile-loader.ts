@@ -64,6 +64,22 @@ export interface UploadsConfig {
   max_files?: number;
 }
 
+// 開場引導:客戶還沒有任何對話時,畫面上顯示的說明與可直接點選的建議句。
+// 全部選填;前端一律以純文字輸出(textContent),不當 HTML 解析。
+export interface WelcomeConfig {
+  title?: string;
+  body?: string;
+  starters?: string[];
+}
+
+// 登入頁文字:說明密碼從哪裡來、按鈕與錯誤訊息的語言。全部選填,純文字。
+export interface LoginConfig {
+  hint?: string;
+  password_placeholder?: string;
+  button?: string;
+  error?: string;
+}
+
 export interface ProfileFile {
   meta?: { description?: string };
   ui?: UiFlags;
@@ -74,6 +90,8 @@ export interface ProfileFile {
   tool_labels?: Record<string, ToolLabelEntry>;
   sandbox?: SandboxConfig;
   uploads?: UploadsConfig;
+  welcome?: WelcomeConfig;
+  login?: LoginConfig;
 }
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/;
@@ -134,7 +152,7 @@ function validateUi(ui: UiFlags | undefined): void {
   }
 }
 
-const ALLOWED_TOP = new Set(["meta", "ui", "brand", "skills", "commands", "defaults", "tool_labels", "sandbox", "uploads"]);
+const ALLOWED_TOP = new Set(["meta", "ui", "brand", "skills", "commands", "defaults", "tool_labels", "sandbox", "uploads", "welcome", "login"]);
 const ALLOWED_UI = new Set([
   "hide_thinking", "hide_tool_calls", "show_tool_progress",
   "hide_status_chips", "hide_session_picker", "hide_model",
@@ -263,6 +281,92 @@ function validateUploads(uploads: UploadsConfig | undefined): void {
   }
 }
 
+const ALLOWED_WELCOME = new Set(["title", "body", "starters"]);
+// 上限以「字」(Unicode code point)計;開場引導是幾句話,不是文件。
+export const WELCOME_LIMITS = Object.freeze({ title: 60, body: 400, starter: 60, starters: 6 });
+
+function charLen(s: string): number {
+  return [...s].length;
+}
+
+function validateWelcome(welcome: WelcomeConfig | undefined): void {
+  if (welcome === undefined) return;
+  if (welcome === null || typeof welcome !== "object" || Array.isArray(welcome)) {
+    throw new Error(`[welcome]: 必須是 table`);
+  }
+  for (const key of Object.keys(welcome)) {
+    if (!ALLOWED_WELCOME.has(key)) {
+      throw new Error(`unknown field [welcome].${key}`);
+    }
+  }
+  if (welcome.title !== undefined) {
+    if (typeof welcome.title !== "string") {
+      throw new Error(`[welcome].title: 必須是字串,收到 ${typeof welcome.title}`);
+    }
+    if (/[\r\n]/.test(welcome.title)) throw new Error(`[welcome].title: 不可換行`);
+    if (charLen(welcome.title.trim()) > WELCOME_LIMITS.title) {
+      throw new Error(`[welcome].title: 上限 ${WELCOME_LIMITS.title} 字(目前 ${charLen(welcome.title.trim())})`);
+    }
+  }
+  if (welcome.body !== undefined) {
+    if (typeof welcome.body !== "string") {
+      throw new Error(`[welcome].body: 必須是字串,收到 ${typeof welcome.body}`);
+    }
+    if (charLen(welcome.body.trim()) > WELCOME_LIMITS.body) {
+      throw new Error(`[welcome].body: 上限 ${WELCOME_LIMITS.body} 字(目前 ${charLen(welcome.body.trim())})`);
+    }
+  }
+  if (welcome.starters !== undefined) {
+    if (!Array.isArray(welcome.starters)) {
+      throw new Error(`[welcome].starters: 必須是字串陣列,收到 ${typeof welcome.starters}`);
+    }
+    if (welcome.starters.length > WELCOME_LIMITS.starters) {
+      throw new Error(`[welcome].starters: 最多 ${WELCOME_LIMITS.starters} 句(目前 ${welcome.starters.length})`);
+    }
+    for (const item of welcome.starters) {
+      if (typeof item !== "string" || item.trim() === "") {
+        throw new Error(`[welcome].starters: 陣列項目必須是非空字串,收到 ${JSON.stringify(item)}`);
+      }
+      const text = item.trim();
+      if (/[\r\n]/.test(text)) throw new Error(`[welcome].starters: 不可換行,收到 ${JSON.stringify(item)}`);
+      if (charLen(text) > WELCOME_LIMITS.starter) {
+        throw new Error(`[welcome].starters: 每句上限 ${WELCOME_LIMITS.starter} 字,收到 ${JSON.stringify(item)}`);
+      }
+      // 點建議句等於送出該句;/ 與 ! 開頭會被前端當成 slash 指令或 bash。
+      if (text.startsWith("/") || text.startsWith("!")) {
+        throw new Error(`[welcome].starters: 不可以 / 或 ! 開頭(會被當成指令),收到 ${JSON.stringify(item)}`);
+      }
+    }
+  }
+}
+
+// 上限以字計;hint 可換行,其他欄位單行。
+const LOGIN_LIMITS: Record<keyof LoginConfig, { max: number; multiline: boolean }> = {
+  hint: { max: 300, multiline: true },
+  password_placeholder: { max: 40, multiline: false },
+  button: { max: 20, multiline: false },
+  error: { max: 80, multiline: false },
+};
+
+function validateLogin(login: LoginConfig | undefined): void {
+  if (login === undefined) return;
+  if (login === null || typeof login !== "object" || Array.isArray(login)) {
+    throw new Error(`[login]: 必須是 table`);
+  }
+  for (const key of Object.keys(login)) {
+    if (!(key in LOGIN_LIMITS)) throw new Error(`unknown field [login].${key}`);
+    const value = (login as Record<string, unknown>)[key];
+    const { max, multiline } = LOGIN_LIMITS[key as keyof LoginConfig];
+    if (typeof value !== "string") {
+      throw new Error(`[login].${key}: 必須是字串,收到 ${typeof value}`);
+    }
+    if (!multiline && /[\r\n]/.test(value)) throw new Error(`[login].${key}: 不可換行`);
+    if (charLen(value.trim()) > max) {
+      throw new Error(`[login].${key}: 上限 ${max} 字(目前 ${charLen(value.trim())})`);
+    }
+  }
+}
+
 const PLACEHOLDER_RE = /\{([^}]+)\}/g;
 const ALLOWED_PLACEHOLDERS = new Set(["file_basename", "url_host", "progress_count"]);
 
@@ -330,5 +434,7 @@ export function loadProfile(name: string, cwd: string): ProfileFile {
   validatePlaceholders(profile.tool_labels);
   validateSandbox(profile.sandbox);
   validateUploads(profile.uploads);
+  validateWelcome(profile.welcome);
+  validateLogin(profile.login);
   return profile;
 }

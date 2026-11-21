@@ -174,9 +174,92 @@ test("--profile customer 無檔走內建 fallback", async (t) => {
     assert.equal(payload.uiProfile.hideThinking, true);
     assert.equal(payload.uiProfile.hideToolCalls, true);
     assert.equal(payload.uiProfile.safeErrors, true);
+    // 內建 fallback 沒有 [welcome]:畫面與未設時相同
+    assert.equal(payload.uiProfile.welcome, null);
   } finally {
     await stopServer(child);
   }
+});
+
+test("--profile customer 帶 [welcome] → connected uiProfile.welcome 為純文字欄位", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(cwd, ".pi", "profiles"), { recursive: true });
+  fs.writeFileSync(
+    path.join(cwd, ".pi", "profiles", "customer.toml"),
+    [
+      `[ui]`,
+      `hide_model = true`,
+      ``,
+      `[welcome]`,
+      `title = "這裡可以確認這次的網站修改"`,
+      `body = "我是您的網站 AI 助理。"`,
+      `starters = ["請告訴我這次改了什麼", "內容沒問題，我同意上線"]`,
+      ``,
+    ].join("\n"),
+  );
+  const CUSTOMER_PW = "test-pw-customer";
+  const { child, url } = await startServer(cwd, ["--profile", "customer", "--allow-unsafe-customer"], {
+    PI_WEBUI_PASSWORD: CUSTOMER_PW, PI_WEBUI_MODEL: "m",
+    LITELLM_BASE_URL: "http://litellm.test.internal:4001",
+    LITELLM_API_KEY: "dummy-litellm-virtual-key",
+    PC2_SERVICE_HOST: "h", PC2_API_TOKEN: "t", PI_WEBUI_BASE_PATH: "/webui", PI_PROJECT_CWD: cwd,
+  });
+  try {
+    const payload = await getConnected(url, CUSTOMER_PW);
+    assert.deepEqual(payload.uiProfile.welcome, {
+      title: "這裡可以確認這次的網站修改",
+      body: "我是您的網站 AI 助理。",
+      starters: ["請告訴我這次改了什麼", "內容沒問題，我同意上線"],
+    });
+  } finally {
+    await stopServer(child);
+  }
+});
+
+test("--profile 帶 [login] → GET /login 注入登入頁文字且不能跳出 <script>", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(cwd, ".pi", "profiles"), { recursive: true });
+  fs.writeFileSync(
+    path.join(cwd, ".pi", "profiles", "staff.toml"),
+    `[login]\nhint = "請輸入密碼</script><script>alert(1)</script>"\nbutton = "登入"\n`,
+  );
+  const { child, url } = await startServer(cwd, ["--profile", "staff"], { PI_WEBUI_PASSWORD: "pw-login-test" });
+  try {
+    const res = await fetch(`${url}/login`, { redirect: "manual" });
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /window\.__LOGIN__=/);
+    assert.match(body, /"button":"登入"/);
+    // < 一律轉成 \u003c,profile 文字不能結束注入的 <script>
+    assert.doesNotMatch(body, /<\/script><script>alert/);
+    assert.match(body, /\\u003c\/script>/);
+  } finally {
+    await stopServer(child);
+  }
+});
+
+test("沒設 [login] → GET /login 的 __LOGIN__ 為 null(畫面與以前相同)", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const { child, url } = await startServer(cwd, [], { PI_WEBUI_PASSWORD: "pw-login-test" });
+  try {
+    const body = await (await fetch(`${url}/login`, { redirect: "manual" })).text();
+    assert.match(body, /window\.__LOGIN__=null/);
+  } finally {
+    await stopServer(child);
+  }
+});
+
+test("--profile 帶不合法 [welcome] → 啟動失敗並指出欄位", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "readyai-webui-profile-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(cwd, ".pi", "profiles"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, ".pi", "profiles", "staff.toml"), `[welcome]\nstarters = ["/model"]\n`);
+  const { code, stderr } = await spawnAndWaitExit(cwd, ["--profile", "staff"]);
+  assert.notEqual(code, 0);
+  assert.match(stderr, /\[welcome\]\.starters: 不可以 \/ 或 ! 開頭/);
 });
 
 test("--profile staff 套用 fixture 內容", async (t) => {

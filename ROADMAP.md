@@ -12,6 +12,7 @@
 
 ## done
 
+- [x] 開場引導:profile `[welcome]`(`title`／`body`／`starters`)在還沒有對話時顯示說明與可點選的建議句,點了等於送出該句;有對話後消失。文案不寫死在 pi-webui,純文字輸出、有長度上限;沒設時畫面不變。登入頁文字由 profile `[login]`(`hint`／`password_placeholder`／`button`／`error`)提供,注入時 `<` 轉 `\u003c`。客戶步驟標籤修正:`publish_confirmed` 的 `check_only` 與 `publication_status` 標成「查看發布狀態」、heredoc 內文的 `>` 不再誤判成改檔、`echo`/`printenv`/`pwd` 等歸「查看資料」、開頭 `cd <dir> &&` 依後段指令分類。測試 `test/welcome.test.mjs`、`test/step-labels.test.mjs`、`test/server-profile.test.mjs`。
 - [x] 補齊工具結果白名單、舊進度標籤與重試錯誤遮蔽；撤銷過期續跑、錯誤重試保持進度、自訂標籤歷史一致，依最後助理訊息判定最終答案。
 
 - [x] 前端回合步驟區、思考心跳、異常提示與請繼續、續跑累計及歷史重建；工具與思考原文預設收合。

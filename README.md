@@ -515,6 +515,19 @@ end   = "網頁抓取完成"
 [tool_labels._default]
 start = "正在處理..."
 end   = ""                          # empty = clear spinner only
+
+[welcome]                           # 開場引導:還沒有任何對話時顯示;全部選填,純文字
+title    = "這裡可以確認這次的網站修改"   # ≤ 60 字,不可換行
+body     = "我是您的網站 AI 助理。…"      # ≤ 400 字,可換行
+starters = ["請告訴我這次改了什麼", "內容沒問題，我同意上線"]
+                                   # ≤ 6 句、每句 ≤ 60 字、不可 / 或 ! 開頭;
+                                   # 點一下等於送出該句。沒設 [welcome] → 畫面與以前相同
+
+[login]                             # 登入頁文字;全部選填,純文字。沒設 → 維持內建英文
+hint                 = "請輸入 LINE 訊息中提供的密碼。"  # ≤ 300 字,可換行
+password_placeholder = "請輸入密碼"                      # ≤ 40 字
+button               = "登入"                            # ≤ 20 字
+error                = "密碼不正確，請再試一次"          # ≤ 80 字;登入失敗時取代 server 英文訊息
 ```
 
 ### resolution priority
@@ -540,6 +553,8 @@ fallback (only when `--profile customer` and no file present) > defaults.
 - `[brand].logo` or `[brand].css` path missing
 - `[brand].css` > 100KB
 - `[tool_labels.<name>].<phase>` contains unknown placeholder
+- `[login]` 未知欄位、型別錯誤、超過長度上限、單行欄位換行
+- `[welcome]` 型別錯誤、超過長度／句數上限、標題或建議句換行、建議句以 `/` 或 `!` 開頭
 - unknown toml field (strict mode catches typos like `hide_thiking`)
 
 ### backwards compatibility

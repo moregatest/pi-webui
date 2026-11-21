@@ -50,6 +50,7 @@ import { createFollowState, onScrollEvent, shouldAutoScroll } from "./scroll-fol
 import { log as logger } from "./log.mjs";
 import { createCustomOverlayHost } from "./ext-custom.mjs";
 import { routeInput } from "./route-input.mjs";
+import { normalizeWelcome, shouldShowWelcome, createWelcomeView } from "./welcome.mjs";
 import { decideSubmit, createUnsentTracker, saveDraft, takeDraft } from "./unsent-guard.mjs";
 
 let socket;
@@ -544,6 +545,25 @@ setInterval(() => { for (const view of visibleProgressViews) view.tick(); }, 100
 const extraEls = new WeakMap(); // chat-state extra item -> { el, blocks }
 let canonicalEls = [];          // index-aligned [{ el, message }, ...]
 let typingEl = null;
+// 開場引導:本次連線的 message_history 到達後才判斷是否顯示(見 welcome.mjs)。
+let historyReady = false;
+let welcomeEl = null;
+let welcomeSource = null;
+
+function getWelcomeEl() {
+  const welcome = normalizeWelcome(uiProfile?.welcome);
+  if (!welcome) return null;
+  if (!welcomeEl || welcomeSource !== uiProfile.welcome) {
+    welcomeSource = uiProfile.welcome;
+    // 點建議句 = 把那句放進輸入框並走正常送出流程(斷線保護、附件判斷都沿用)。
+    welcomeEl = createWelcomeView({ document, welcome, onPick: (text) => {
+      if (chatState.isRunning) return;
+      input.value = text;
+      composer.requestSubmit();
+    } });
+  }
+  return welcomeEl;
+}
 
 function reconcileChildren(parent, desired) {
   // Walk desired list; ensure each element sits at the matching index.
@@ -643,6 +663,11 @@ function renderLog() {
       el = typingEl;
     }
     desired.push(el);
+  }
+
+  if (shouldShowWelcome(normalizeWelcome(uiProfile?.welcome), { historyReady, visibleCount: desired.length })) {
+    const el = getWelcomeEl();
+    if (el) desired.push(el);
   }
 
   canonicalEls = newCanonicalEls;
@@ -939,6 +964,7 @@ function connect() {
         return;
       }
       case "message_history":
+        historyReady = true;
         csSetHistory(chatState, packet.payload || []);
         renderLog();
         return;
@@ -947,6 +973,8 @@ function connect() {
         // session switch, or replay miss.
         logger.info("session reset", { currentSeq: packet.payload?.currentSeq ?? null });
         csResetHistory(chatState, []);
+        // reset 之後一定接著送 message_history;歷史到之前不顯示開場引導,避免閃爍。
+        historyReady = false;
         // 把進行中的 tool_progress 也整批清掉(切 session / cold start)。
         for (const el of toolProgressNodes.values()) el.remove();
         toolProgressNodes.clear();

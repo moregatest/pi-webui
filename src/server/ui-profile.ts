@@ -59,6 +59,10 @@ export interface UiProfile {
   };
   // profileFile.tool_labels 讀入後放置於此;resolveLabel 依此覆蓋 built-in 標籤
   toolLabels: Record<string, ToolLabelEntry>;
+  // 開場引導(profile [welcome]);沒設或內容全空時為 null,前端畫面與未設時相同。
+  welcome: { title: string; body: string; starters: string[] } | null;
+  // 登入頁文字(profile [login]);沒設或全空為 null,登入頁維持內建文字。
+  login: { hint: string; passwordPlaceholder: string; button: string; error: string } | null;
 }
 
 // preset 名 → 展開後的 boolean 預設(brand 維持 null)。
@@ -130,6 +134,8 @@ export function parseUiProfile(
       cssPath: null,
     },
     toolLabels: {},
+    welcome: null,
+    login: null,
   };
 
   // profileFile 套用(precedence 在 default 之上、preset / CLI / env 之下)
@@ -159,6 +165,29 @@ export function parseUiProfile(
       const v = b[k];
       if (v !== undefined) profile.brand.tokens[k] = v;
     }
+  }
+
+  // profileFile.welcome → 去頭尾空白;全空視同未設(驗證已在 profile-loader 做)
+  if (profileFile?.welcome) {
+    const w = profileFile.welcome;
+    const title = typeof w.title === "string" ? w.title.trim() : "";
+    const body = typeof w.body === "string" ? w.body.trim() : "";
+    const starters = Array.isArray(w.starters)
+      ? w.starters.filter((s) => typeof s === "string" && s.trim()).map((s) => s.trim())
+      : [];
+    if (title || body || starters.length) profile.welcome = { title, body, starters };
+  }
+
+  if (profileFile?.login) {
+    const l = profileFile.login;
+    const pick = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+    const login = {
+      hint: pick(l.hint),
+      passwordPlaceholder: pick(l.password_placeholder),
+      button: pick(l.button),
+      error: pick(l.error),
+    };
+    if (login.hint || login.passwordPlaceholder || login.button || login.error) profile.login = login;
   }
 
   // profileFile.tool_labels → 覆蓋 toolLabels(shallow copy)

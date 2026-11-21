@@ -549,6 +549,65 @@ body.drag-active .composer-wrapper {
   min-width: 0;
 }
 
+/* 開場引導(profile [welcome]):還沒有對話時顯示;內容皆為純文字 */
+.welcome {
+  max-width: 40rem;
+  margin: 2rem auto 1rem;
+  padding: 1.25rem 1.25rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+}
+
+.welcome-title {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.welcome-body {
+  margin: 0 0 1rem;
+  color: var(--muted);
+  line-height: 1.6;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.welcome-starters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.welcome-starter {
+  font: inherit;
+  font-size: 0.95rem;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 0.45rem 0.9rem;
+  cursor: pointer;
+  text-align: left;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.welcome-starter:hover,
+.welcome-starter:focus-visible {
+  background: var(--accent);
+  color: var(--bg);
+  outline: none;
+}
+
+@media (max-width: 480px) {
+  .welcome { margin: 1rem 0 0.75rem; padding: 1rem; }
+  .welcome-starters { flex-direction: column; }
+  .welcome-starter { width: 100%; }
+}
+
 .message {
   border: none;
   padding: 0;
