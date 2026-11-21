@@ -224,3 +224,17 @@ test("F1:送出流程開頭取出強制旗標後,routeSubmit 仍照該旗標送�
   assert.equal(ctl.takeForcePrompt(), false, "只取一次");
   assert.equal(ctl.routeSubmit({ message: pick.value, force }).kind, "prompt");
 });
+
+test("F5 複審:slash 選單開啟＋選字剛結束的 229 Enter(與緊接的換行)不選取選項、不送出;之後真正的 Enter 才選取", () => {
+  const { ctl, calls, menu } = setup({ enterSends: true });
+  menu.open = true;
+  ctl.compositionStart();
+  ctl.compositionEnd();
+  assert.equal(ctl.keydown(kd({ keyCode: 229, key: "Enter" }), "/新"), false);
+  ctl.beforeInput(bi());
+  assert.equal(calls.applySlash, 0);
+  assert.equal(calls.submit, 0);
+  assert.equal(ctl.keydown(kd(), "/新"), true);
+  assert.equal(calls.applySlash, 1);
+  assert.equal(calls.submit, 0);
+});

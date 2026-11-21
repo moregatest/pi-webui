@@ -68,6 +68,8 @@ export function createComposerController({
         return true;
       }
       if (event.key !== "Enter") return false;
+      // 選字剛結束的那一下（Safari：compositionend 後才來 keyCode 229 的 Enter）是輸入法的確認鍵，不當成選取選項（RV9-07 複審 F5）。
+      if (isSlashMenuOpen() && pending.imeCommit) return false;
       if (isSlashMenuOpen() && !event.isComposing && !composing) {
         // slash 選單開啟時 Enter 跟 Tab 一致:填入選項 + 關選單,不送出。
         pending.handled = true;

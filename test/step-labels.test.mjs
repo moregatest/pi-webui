@@ -100,3 +100,10 @@ test("F4:導向到 /dev/null、標準串流的單一唯讀指令仍是查看", (
     assert.equal(cat("bash", { command: c }), "查看資料", c);
   }
 });
+
+test("F4 複審:file 帶任何選項都不標查看(-C 會寫 magic.mgc,短選項可合併)", () => {
+  for (const c of ["file -C -m magic", "file -bC -m magic", "file -Cb -m magic", "file --compile -m magic", "file -b a.txt"]) {
+    assert.notEqual(cat("bash", { command: c }), "查看資料", c);
+  }
+  assert.equal(cat("bash", { command: "file a.txt" }), "查看資料");
+});

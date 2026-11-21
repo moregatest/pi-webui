@@ -161,7 +161,8 @@ function readOnlyArgs(verb: string | undefined, tokens: string[]): boolean {
     // 只認常見的純印出寫法：1,80p、$p、/pattern/p
     return !!script && /^(?:(?:\d+|\$)(?:,(?:\d+|\$))?p|\/[^/]*\/p)$/.test(script);
   }
-  if (verb === 'file') return !rest.some(t => /^-C|^--compile/.test(t));
+  // file 的 -C／--compile 會寫出 magic.mgc，短選項可以合併（-bC）；只認不帶任何選項的寫法（RV9-07 複審 F4-R1）。
+  if (verb === 'file') return rest.every(t => !t.startsWith('-'));
   return true;
 }
 // 只讀取、不改檔的小指令(導向到檔案時仍由寫入判斷優先處理)。
