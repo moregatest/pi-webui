@@ -2,6 +2,7 @@
 // - 對父頁 postMessage（readyai:ready／auth／turn-end／content-changed）
 // - 收父頁的 readyai:page（客戶目前在看的頁面，契約第 9 點），轉成 page_view 送 server 保存
 // - 斷線橫幅延遲顯示：先靜默重連，連續失敗超過約 5 秒才顯示
+// - 對話裡的站內連結改送 readyai:navigate，由父頁在原分頁換頁（契約第 11 點）
 
 /** 自身網址 embed=1，或登入頁 next 指向的網址帶 embed=1 */
 export function isEmbedSearch(search) {
@@ -173,4 +174,75 @@ export function createDisconnectNotice({
     },
   };
   return state;
+}
+
+// ---------- 契約第 11 點：助理對話裡的站內連結在原頁開啟 ----------
+
+// 不在原頁換頁的路徑段：助理自身、載入碼、修改報表
+const NON_PAGE_PATH = /^\/(agent|agent-embed|_review)(\/|$)/i;
+// 看副檔名就知道是下載的檔案（網頁類 .html／.php 等不在此列）
+const DOWNLOAD_EXT = new Set([
+  "pdf", "zip", "rar", "7z", "gz", "tgz", "tar", "bz2", "xz",
+  "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "rtf", "csv", "txt", "json", "xml",
+  "jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico", "tif", "tiff", "heic", "avif",
+  "mp3", "mp4", "mov", "avi", "wmv", "webm", "wav", "ogg", "m4a",
+  "dwg", "dxf", "step", "stp", "igs", "iges", "stl", "exe", "dmg", "apk", "msi",
+]);
+
+/**
+ * 點擊對話裡的連結時，若應改由父頁在原分頁換頁，回傳絕對網址；否則 null（維持開新分頁或瀏覽器原本行為）。
+ * 條件：左鍵且沒按 Cmd／Ctrl／Shift／Alt、沒有 download 屬性、http(s) 且與 iframe 同源、
+ * 路徑不是 /agent、/agent-embed、/_review 開頭、副檔名不是下載檔、不是只有 # 錨點。
+ */
+export function embedLinkNavigateUrl({ href, hasDownload, baseUrl, button, metaKey, ctrlKey, shiftKey, altKey }) {
+  if (button !== 0 || metaKey || ctrlKey || shiftKey || altKey || hasDownload) return null;
+  if (typeof href !== "string" || !href.trim() || href.trim().startsWith("#")) return null;
+  let base;
+  let u;
+  try {
+    base = new URL(baseUrl);
+    u = new URL(href, base);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  if (u.origin !== base.origin) return null;
+  let path;
+  try {
+    path = decodeURIComponent(u.pathname);
+  } catch {
+    path = u.pathname;
+  }
+  if (NON_PAGE_PATH.test(path)) return null;
+  const last = path.split("/").pop() || "";
+  const dot = last.lastIndexOf(".");
+  if (dot > 0 && DOWNLOAD_EXT.has(last.slice(dot + 1).toLowerCase())) return null;
+  return u.href;
+}
+
+/**
+ * embed 且在框內時，在 document 掛 click 監聽：符合條件的連結改送 readyai:navigate 給父頁。
+ * 不符合的連結完全不碰（原本的 target="_blank" 照常開新分頁）。回傳是否有掛。
+ */
+export function installEmbedLinkHandler({ doc, bridge, win }) {
+  if (!doc || !bridge || !bridge.active) return false;
+  doc.addEventListener("click", (ev) => {
+    if (!ev || ev.defaultPrevented) return;
+    const a = ev.target && typeof ev.target.closest === "function" ? ev.target.closest("a[href]") : null;
+    if (!a) return;
+    const url = embedLinkNavigateUrl({
+      href: a.getAttribute("href"),
+      hasDownload: a.hasAttribute("download"),
+      baseUrl: win.location.href,
+      button: ev.button,
+      metaKey: ev.metaKey,
+      ctrlKey: ev.ctrlKey,
+      shiftKey: ev.shiftKey,
+      altKey: ev.altKey,
+    });
+    if (!url) return;
+    ev.preventDefault();
+    bridge.post({ type: "readyai:navigate", url });
+  });
+  return true;
 }

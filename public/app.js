@@ -44,6 +44,7 @@ import {
   createEmbedTurnState,
   createDisconnectNotice,
   readParentPage,
+  installEmbedLinkHandler,
 } from "./embed.mjs";
 import {
   formatMessage,
@@ -95,6 +96,8 @@ if (EMBED) document.documentElement.setAttribute("data-embed", "1");
 const parentBridge = createParentBridge({ win: window, embed: EMBED });
 // 父頁「處理中」的 iframe 端鏡像：重連補送的 embed_turn_end 只有一輪開著時才轉給父頁
 const embedTurn = createEmbedTurnState();
+// 對話裡的站內連結：改由父頁在原分頁換頁(契約第 11 點);外部、報表、下載與 Cmd/Ctrl 點擊照舊開新分頁
+installEmbedLinkHandler({ doc: document, bridge: parentBridge, win: window });
 // 頁面感知(契約第 9 點):父頁送來的 readyai:page 立刻轉成 page_view 交給 server 依對話保存;
 // iframe 換頁就重新載入,所以不能只留在前端。連線還沒好就先暫存,connected 後補送。
 let pendingPageView = null;

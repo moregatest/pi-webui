@@ -10,6 +10,8 @@ import {
   createDisconnectNotice,
   DISCONNECT_NOTICE_DELAY_MS,
   createEmbedTurnState,
+  embedLinkNavigateUrl,
+  installEmbedLinkHandler,
 } from "../public/embed.mjs";
 
 const ORIGIN = "https://site.fly.dev";
@@ -186,4 +188,106 @@ test("createEmbedTurnState：重連補送的結束，只有斷線前有一輪開
   // 沒有開著的一輪：網路抖動重連不提示
   assert.deepEqual(t.end({ contentChanged: true, reconnect: true }), []);
   assert.deepEqual(createEmbedTurnState().end({ contentChanged: true, reconnect: true }), []);
+});
+
+// ---------- 契約第 11 點：助理對話裡的站內連結在原頁開啟 ----------
+const BASE_URL = `${ORIGIN}/agent/?embed=1`;
+const click = (over = {}) => ({ button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, ...over });
+
+test("embedLinkNavigateUrl：同源站內網頁 → 絕對網址（相對、絕對、帶查詢與錨點都可）", () => {
+  const nav = (href) => embedLinkNavigateUrl({ href, hasDownload: false, baseUrl: BASE_URL, ...click() });
+  assert.equal(nav("/en/page/translation-quality-assurance.html"), `${ORIGIN}/en/page/translation-quality-assurance.html`);
+  assert.equal(nav(`${ORIGIN}/en/index.html?x=1#top`), `${ORIGIN}/en/index.html?x=1#top`);
+  assert.equal(nav("/"), `${ORIGIN}/`);
+  assert.equal(nav("/agents.html"), `${ORIGIN}/agents.html`); // 只擋 /agent 這一段，不擋同字首的網頁
+  assert.equal(nav("/en/product/a"), `${ORIGIN}/en/product/a`);
+});
+
+test("embedLinkNavigateUrl：外部網址、助理自身、報表、下載、非 http 一律 null（維持開新分頁）", () => {
+  const nav = (href, over = {}) => embedLinkNavigateUrl({ href, hasDownload: false, baseUrl: BASE_URL, ...click(), ...over });
+  for (const href of [
+    "https://example.com/a.html", "http://site.fly.dev/a.html", "//evil.test/a",
+    "/agent", "/agent/", "/agent/?embed=1", "/AGENT/x", "/agent-embed/loader.js", "/_review/abc/index.html", "/_review",
+    "/files/catalog.pdf", "/upload/a.ZIP", "/img/photo.jpg", "/x/report.xlsx", "/x/data.csv",
+    "mailto:a@b.c", "tel:123", "javascript:alert(1)", "data:text/html,hi", "#sec2", "", null, undefined,
+  ]) {
+    assert.equal(nav(href), null, String(href));
+  }
+  assert.equal(nav("/en/page/a.html", { hasDownload: true }), null, "download 屬性");
+});
+
+test("embedLinkNavigateUrl：Cmd／Ctrl／Shift／Alt 或非左鍵 → null（照瀏覽器原本行為）", () => {
+  const nav = (over) => embedLinkNavigateUrl({ href: "/en/page/a.html", hasDownload: false, baseUrl: BASE_URL, ...click(over) });
+  for (const over of [{ metaKey: true }, { ctrlKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }, { button: 2 }]) {
+    assert.equal(nav(over), null, JSON.stringify(over));
+  }
+  assert.equal(nav({}), `${ORIGIN}/en/page/a.html`);
+});
+
+function fakeDoc() {
+  const listeners = {};
+  return {
+    listeners,
+    addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
+    dispatch(type, ev) { for (const fn of listeners[type] || []) fn(ev); },
+  };
+}
+
+function fakeAnchor(href, { download = false } = {}) {
+  const a = {
+    getAttribute: (n) => (n === "href" ? href : null),
+    hasAttribute: (n) => (n === "download" ? download : n === "href"),
+  };
+  a.closest = (sel) => (sel === "a[href]" ? a : null);
+  return a;
+}
+
+function fakeClick(anchor, over = {}) {
+  const ev = { ...click(over), defaultPrevented: false, target: anchor };
+  ev.preventDefault = () => { ev.defaultPrevented = true; };
+  return ev;
+}
+
+test("installEmbedLinkHandler：embed 框內點站內連結 → 送 readyai:navigate 並 preventDefault", () => {
+  const { win, parent } = fakeWindows();
+  win.location.href = BASE_URL;
+  const doc = fakeDoc();
+  const bridge = createParentBridge({ win, embed: true });
+  assert.equal(installEmbedLinkHandler({ doc, bridge, win }), true);
+  const ev = fakeClick(fakeAnchor("/en/page/translation-quality-assurance.html"));
+  doc.dispatch("click", ev);
+  assert.equal(ev.defaultPrevented, true);
+  assert.deepEqual(parent.sent, [{ msg: { type: "readyai:navigate", url: `${ORIGIN}/en/page/translation-quality-assurance.html` }, origin: ORIGIN }]);
+});
+
+test("installEmbedLinkHandler：外部、報表、下載、Cmd 點擊、已被處理的點擊都不攔不送", () => {
+  const { win, parent } = fakeWindows();
+  win.location.href = BASE_URL;
+  const doc = fakeDoc();
+  installEmbedLinkHandler({ doc, bridge: createParentBridge({ win, embed: true }), win });
+  const cases = [
+    fakeClick(fakeAnchor("https://example.com/")),
+    fakeClick(fakeAnchor("/_review/abc/")),
+    fakeClick(fakeAnchor("/en/a.html", { download: true })),
+    fakeClick(fakeAnchor("/en/a.html"), { metaKey: true }),
+    fakeClick(fakeAnchor("/en/a.html"), { ctrlKey: true }),
+    fakeClick({ closest: () => null }),
+    { ...fakeClick(fakeAnchor("/en/a.html")), defaultPrevented: true },
+  ];
+  for (const ev of cases) {
+    const before = ev.defaultPrevented;
+    doc.dispatch("click", ev);
+    assert.equal(ev.defaultPrevented, before);
+  }
+  assert.deepEqual(parent.sent, []);
+});
+
+test("installEmbedLinkHandler：非 embed 或不在框內時不掛監聽（全螢幕版行為不變）", () => {
+  for (const [embed, framed] of [[false, true], [true, false]]) {
+    const { win } = fakeWindows({ framed });
+    win.location.href = BASE_URL;
+    const doc = fakeDoc();
+    assert.equal(installEmbedLinkHandler({ doc, bridge: createParentBridge({ win, embed }), win }), false);
+    assert.deepEqual(doc.listeners, {});
+  }
 });

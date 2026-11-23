@@ -247,6 +247,12 @@ token. the embed loader uses it to decide whether to show the launcher.
 `readyai:turn-end`、`readyai:content-changed`(本輪有非唯讀工具執行過,不論成功失敗,判斷不出來
 寧可多送)。收訊檢查 origin 與 source。
 
+**對話裡的站內連結在原頁開啟:** embed 且在同源框內時,點助理回覆裡的連結,若網址與 iframe 同源、
+路徑不是 `/agent`／`/agent-embed`／`/_review` 開頭、不是下載(`download` 屬性或檔案副檔名如
+`.pdf`、`.zip`、圖片、Office 檔),就不開新分頁,改送 `readyai:navigate {url}`(絕對網址)給父頁,
+由 loader 在原分頁換頁(處理中會先提醒)。外部網址、修改報表、附件下載維持開新分頁;按住
+Cmd／Ctrl／Shift／Alt 或中鍵照瀏覽器原本行為。非 embed 的全螢幕版不變。
+
 **頁面感知:** 父頁送 `readyai:page {url,path,title,lang,dir,h1,canonical,description,referrer_path,viewport}`,
 iframe 轉成 WS `page_view` 交給 server:「最近看過的頁面」依對話保存最多 10 頁(相鄰去重、含時間;
 iframe 換頁重載後仍在;最多保留 200 個對話,超過丟最久沒更新的),「目前頁面」記在每條連線上
