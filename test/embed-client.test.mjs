@@ -9,6 +9,7 @@ import {
   turnEndMessages,
   createDisconnectNotice,
   DISCONNECT_NOTICE_DELAY_MS,
+  createEmbedTurnState,
 } from "../public/embed.mjs";
 
 const ORIGIN = "https://site.fly.dev";
@@ -168,4 +169,21 @@ test("selectItems：頁面上下文（readyai_page_context）不顯示在對話�
   const items = selectItems(s);
   assert.equal(items.some((i) => i.message?.customType === "readyai_page_context"), false);
   assert.equal(items.some((i) => i.message?.customType === "other_custom"), true);
+});
+
+test("createEmbedTurnState：一般一輪 start → end 照常轉給父頁", () => {
+  const t = createEmbedTurnState();
+  assert.deepEqual(t.start(), [{ type: "readyai:turn-start" }]);
+  assert.deepEqual(t.end({ contentChanged: false }), [{ type: "readyai:turn-end" }]);
+  assert.deepEqual(t.end({ contentChanged: true }), [{ type: "readyai:turn-end" }, { type: "readyai:content-changed" }]);
+});
+
+test("createEmbedTurnState：重連補送的結束，只有斷線前有一輪開著才轉（父頁解除處理中並提示重整）", () => {
+  const t = createEmbedTurnState();
+  t.start();
+  assert.deepEqual(t.end({ contentChanged: true, reconnect: true }),
+    [{ type: "readyai:turn-end" }, { type: "readyai:content-changed" }]);
+  // 沒有開著的一輪：網路抖動重連不提示
+  assert.deepEqual(t.end({ contentChanged: true, reconnect: true }), []);
+  assert.deepEqual(createEmbedTurnState().end({ contentChanged: true, reconnect: true }), []);
 });

@@ -117,6 +117,26 @@ export function turnEndMessages(result) {
   return out;
 }
 
+/**
+ * 父頁「處理中」狀態的 iframe 端鏡像：記得是否有一輪開著。
+ * 一般的 embed_turn_end 照常轉；重連補送的（payload.reconnect）只有斷線前有一輪開著才轉，
+ * 避免網路抖動重連就跳「網站已更新」。
+ */
+export function createEmbedTurnState() {
+  let open = false;
+  return {
+    start() {
+      open = true;
+      return [{ type: "readyai:turn-start" }];
+    },
+    end(result) {
+      if (result && result.reconnect === true && !open) return [];
+      open = false;
+      return turnEndMessages(result);
+    },
+  };
+}
+
 export const DISCONNECT_NOTICE_DELAY_MS = 5000;
 
 /**

@@ -63,7 +63,7 @@ import {
   readAuthCookie,
   shouldSetSecure,
 } from "./auth.js";
-import { createTurnWriteTracker, createWsHeartbeat, isEmbedRequest } from "./embed.js";
+import { createTurnWriteTracker, createWsHeartbeat, isEmbedRequest, reconnectTurnEnd } from "./embed.js";
 import { attachPageContext, buildPageTool, createPageTracker, createRateLimitedWarn, PAGE_AWARENESS_PROMPT, sanitizePageView } from "./page-awareness.js";
 // 頁面感知:依對話保存客戶在網站上看過的頁面(iframe 每次換頁重新載入,必須放伺服器端)
 const pageTracker = createPageTracker();
@@ -2574,6 +2574,9 @@ class NativePiSessionController {
         }
         // 契約第 10 點:接回時這個對話正有一輪在跑,補送 turn-start 讓父頁進入「處理中」
         if (this.session?.isStreaming) sendJson(this.ws, { type: "embed_turn_start" });
+        // 重連時已不在串流:斷線期間那一輪的 embed_turn_end 可能沒送到,補送一次讓父頁解除處理中
+        const missedEnd = reconnectTurnEnd({ lastSeq, isStreaming: !!this.session?.isStreaming });
+        if (missedEnd) sendJson(this.ws, { type: "embed_turn_end", payload: missedEnd });
         return;
       }
       case "refresh":

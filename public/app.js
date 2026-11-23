@@ -41,7 +41,7 @@ import { ACTIVE_SESSION_KEY, extractSessionFileFromState } from "./storage.mjs";
 import {
   isEmbedSearch,
   createParentBridge,
-  turnEndMessages,
+  createEmbedTurnState,
   createDisconnectNotice,
   readParentPage,
 } from "./embed.mjs";
@@ -93,6 +93,8 @@ let lastSeq = null;
 const EMBED = isEmbedSearch(location.search) || document.documentElement.dataset.embed === "1";
 if (EMBED) document.documentElement.setAttribute("data-embed", "1");
 const parentBridge = createParentBridge({ win: window, embed: EMBED });
+// 父頁「處理中」的 iframe 端鏡像：重連補送的 embed_turn_end 只有一輪開著時才轉給父頁
+const embedTurn = createEmbedTurnState();
 // 頁面感知(契約第 9 點):父頁送來的 readyai:page 立刻轉成 page_view 交給 server 依對話保存;
 // iframe 換頁就重新載入,所以不能只留在前端。連線還沒好就先暫存,connected 後補送。
 let pendingPageView = null;
@@ -1159,10 +1161,10 @@ function connect() {
         customOverlay.close(packet.payload || {});
         return;
       case "embed_turn_start":
-        parentBridge.post({ type: "readyai:turn-start" });
+        for (const msg of embedTurn.start()) parentBridge.post(msg);
         return;
       case "embed_turn_end":
-        for (const msg of turnEndMessages(packet.payload)) parentBridge.post(msg);
+        for (const msg of embedTurn.end(packet.payload)) parentBridge.post(msg);
         return;
       case "tunnel_state":
         tunnelInfo = { enabled: true, ...packet.payload };

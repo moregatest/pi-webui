@@ -51,6 +51,18 @@ export function createTurnWriteTracker() {
   };
 }
 
+/**
+ * WebSocket 重連（同一個 iframe 頁面，client 帶數字 lastSeq）處理完 ready 時，若對話已不在串流，
+ * 斷線期間那一輪可能已經結束、但 embed_turn_end 沒送到（第二期才進 eventLog 補播）。
+ * 補送一次「一輪結束」讓父頁解除處理中；寫入與否判斷不出來，當作有改（提示重整）。
+ * iframe 剛載入（lastSeq 不是數字）不送；client 端另以 createEmbedTurnState 只在有一輪開著時才轉給父頁。
+ */
+export function reconnectTurnEnd(opts: { lastSeq: unknown; isStreaming: boolean }):
+  { contentChanged: true; reconnect: true } | null {
+  if (typeof opts.lastSeq !== "number" || opts.isStreaming) return null;
+  return { contentChanged: true, reconnect: true };
+}
+
 /** 25 秒：遠小於預覽機 Apache 代理的 300 秒閒置逾時，也低於多數 LB 的 60 秒 */
 export const HEARTBEAT_INTERVAL_MS = 25_000;
 

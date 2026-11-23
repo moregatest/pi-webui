@@ -6,6 +6,7 @@ import {
   createTurnWriteTracker,
   createWsHeartbeat,
   HEARTBEAT_INTERVAL_MS,
+  reconnectTurnEnd,
 } from "../dist/server/embed.js";
 
 test("isEmbedRequest：自身網址帶 embed=1", () => {
@@ -98,4 +99,19 @@ test("createWsHeartbeat：stop 會清掉計時器", () => {
   const hb = createWsHeartbeat({ setInterval: () => 7, clearInterval: (id) => { if (id === 7) cleared++; } });
   hb.stop();
   assert.equal(cleared, 1);
+});
+
+test("reconnectTurnEnd：重連（lastSeq 是數字）且不在串流 → 補送一輪結束，判斷不出寫入就當有改", () => {
+  assert.deepEqual(reconnectTurnEnd({ lastSeq: 12, isStreaming: false }), { contentChanged: true, reconnect: true });
+  assert.deepEqual(reconnectTurnEnd({ lastSeq: 0, isStreaming: false }), { contentChanged: true, reconnect: true });
+});
+
+test("reconnectTurnEnd：iframe 剛載入（lastSeq 不是數字）不送，避免每次換頁都跳「網站已更新」", () => {
+  assert.equal(reconnectTurnEnd({ lastSeq: null, isStreaming: false }), null);
+  assert.equal(reconnectTurnEnd({ lastSeq: undefined, isStreaming: false }), null);
+  assert.equal(reconnectTurnEnd({ lastSeq: "3", isStreaming: false }), null);
+});
+
+test("reconnectTurnEnd：仍在串流就不送（由 turn-start 接手）", () => {
+  assert.equal(reconnectTurnEnd({ lastSeq: 12, isStreaming: true }), null);
 });
