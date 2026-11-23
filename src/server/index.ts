@@ -63,6 +63,12 @@ import {
   readAuthCookie,
   shouldSetSecure,
 } from "./auth.js";
+import { createTurnWriteTracker, createWsHeartbeat, isEmbedRequest } from "./embed.js";
+import { attachPageContext, buildPageTool, createPageTracker, createRateLimitedWarn, PAGE_AWARENESS_PROMPT, sanitizePageView } from "./page-awareness.js";
+// 頁面感知:依對話保存客戶在網站上看過的頁面(iframe 每次換頁重新載入,必須放伺服器端)
+const pageTracker = createPageTracker();
+// 被拒的 page_view 每分鐘最多記一筆
+const warnPageRejected = createRateLimitedWarn((msg, fields) => logger.warn(msg, fields));
 import { Sandbox, GUEST_WORKSPACE } from "./sandbox.js";
 import { buildSandboxSystemPrompt } from "./sandbox-prompt.js";
 import { TunnelManager } from "./tunnel.js";
@@ -1061,7 +1067,7 @@ function buildSandboxCustomTools(cwd, workspaceRoot) {
   return buildSandboxGuardedTools(sandbox, cwd, workspaceRoot);
 }
 
-const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
+const createRuntime = async ({ cwd, sessionManager, sessionStartEvent, pageSource = null }) => {
   // sandbox 啟用時把身份提示注入 system prompt:LLM 在 VM 內看不到「自己在哪」,
   // 沒這段會把 cwd=/workspace 誤認 Fly.io / Docker。
   const sandboxAppend: string[] = [];
@@ -1080,7 +1086,7 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
   }
   const customerOpen = isCustomerOpenMode(profileName, process.env);
   const isCustomer = isCustomerMode(profileName, profileFile);
-  if (isCustomer) sandboxAppend.push(CUSTOMER_PROGRESS_PROMPT);
+  if (isCustomer) sandboxAppend.push(CUSTOMER_PROGRESS_PROMPT, PAGE_AWARENESS_PROMPT);
   // noExtensions/noSkills 不受 sandboxTools 影響，此處 sandboxTools 省略（= undefined）
   const loaderInjection = resolveCustomerInjection({ isCustomer, customerOpen });
   const hasProjectResources = hasTrustRequiringProjectResources(cwd);
@@ -1156,10 +1162,13 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
     : undefined;
   // extraTools（如 customer-open 的 publish_confirmed）要*附加*在 base 之後,
   // 不能塞進 customTools——否則會把上面的 hostGuardTools / sandboxTools 整組蓋掉。
+  // current_page(頁面感知,唯讀)一律附加;有 tools 白名單時一併加入名單。
+  const pageTool = buildPageTool(pageTracker, () => pageSource?.currentPage ?? null);
   const finalCustomTools = mergeInjectedTools(
     toolInjection.customTools ?? hostGuardTools,
-    toolInjection.extraTools,
+    [...(toolInjection.extraTools ?? []), pageTool],
   );
+  const finalToolNames = toolInjection.tools ? [...toolInjection.tools, pageTool.name] : undefined;
 
   return {
     ...(await createAgentSessionFromServices({
@@ -1169,7 +1178,7 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
       model: cliModel,
       scopedModels,
       noTools: toolInjection.noTools,
-      tools: toolInjection.tools,
+      tools: finalToolNames,
       customTools: finalCustomTools,
     })),
     services,
@@ -1562,6 +1571,10 @@ function serveStatic(req, res) {
     // 不可注在 </head> 前（會落在 head 尾端，對前面的 <link>/<script> 無效）。
     html = html.replace(/<head(\s[^>]*)?>/i, (m) => `${m}<base href="${baseHref}">`);
     // 客戶閱讀版面寫在 <html> 上,首屏(含登入頁)就套用,不等 WS connected。
+    // 鑲嵌版面(?embed=1,登入頁看 next)寫在 <html> 上,首屏就套用;沒帶就不動,全螢幕版不變。
+    if (isEmbedRequest(url.search)) {
+      html = html.replace(/<html(\s[^>]*)?>/i, (m) => m.replace(/>$/, ' data-embed="1">'));
+    }
     if (effectiveUiProfile.readingLayout === "comfortable") {
       html = html.replace(/<html(\s[^>]*)?>/i, (m) => m.replace(/>$/, ' data-reading="comfortable">'));
     }
@@ -1953,6 +1966,11 @@ class NativePiSessionController {
     this.lastReportedTurnError = null;
     this.turnProgress = createTurnProgress(randomUUID());
     this.markAutoContinue = false;
+    this.turnWrites = createTurnWriteTracker();
+    // ready(可能切回客戶原本的對話)處理完才記頁面,避免記到切換前的對話
+    this.resumed = new Promise((resolve) => { this.markResumed = resolve; });
+    // 頁面感知:本連線最後一次回報的頁面(current_page 工具與每則訊息的「目前頁面」用它)
+    this.currentPage = null;
     this.eventLog = createEventLog();
     // F12（W41）：customer 模式發布後的「我會主動通知您」承諾，自動要求 agent 追加更正
     this.promiseGuard = isCustomerMode(profileName, profileFile)
@@ -1971,7 +1989,7 @@ class NativePiSessionController {
   }
 
   async init() {
-    this.runtime = await createAgentSessionRuntime(createRuntime, {
+    this.runtime = await createAgentSessionRuntime((opts) => createRuntime({ ...opts, pageSource: this }), {
       cwd: this.cwd,
       agentDir,
       sessionManager: SessionManager.create(this.cwd, resolveSessionDir(this.cwd, { cliSessionDir, envSessionDir })),
@@ -2027,7 +2045,7 @@ class NativePiSessionController {
     this.unsubscribe = undefined;
     try { await this.runtime?.dispose(); } catch { /* ignore */ }
     this.cwd = newCwd;
-    this.runtime = await createAgentSessionRuntime(createRuntime, {
+    this.runtime = await createAgentSessionRuntime((opts) => createRuntime({ ...opts, pageSource: this }), {
       cwd: newCwd,
       agentDir,
       sessionManager: SessionManager.create(newCwd, resolveSessionDir(newCwd, { cliSessionDir, envSessionDir })),
@@ -2093,6 +2111,12 @@ class NativePiSessionController {
     } else {
       sendJson(this.ws, { type: "session_event", payload: filtered.event, seq });
     }
+
+    // 鑲嵌父頁(契約第 10 點):一輪開始送 embed_turn_start,loader 據此在換頁前提醒。
+    if (event.type === "agent_start") sendJson(this.ws, { type: "embed_turn_start" });
+    // 鑲嵌父頁的「一輪結束／網站已更新」:只送布林,不洩漏工具名稱。
+    const turnResult = this.turnWrites.observe(event);
+    if (turnResult) sendJson(this.ws, { type: "embed_turn_end", payload: turnResult });
 
     if (shouldRefreshState(event.type)) {
       this.sendState();
@@ -2485,6 +2509,11 @@ class NativePiSessionController {
     this.markAutoContinue = false;
   }
 
+  // ready 一定是客戶端第一則訊息;萬一沒送,prompt 最多等 3 秒,不被卡住(page_view 不設逾時)
+  waitResumed() {
+    return Promise.race([this.resumed, sleep(3000)]);
+  }
+
   async promptWithProgress(message, options = {}) {
     this.cancelPendingContinuation();
     const generation = this.promptGeneration;
@@ -2538,7 +2567,13 @@ class NativePiSessionController {
       case "ready": {
         const lastSeq = typeof payload.lastSeq === "number" ? payload.lastSeq : null;
         const sessionFile = typeof payload.sessionFile === "string" && payload.sessionFile ? payload.sessionFile : null;
-        await this.handleReady(lastSeq, sessionFile);
+        try {
+          await this.handleReady(lastSeq, sessionFile);
+        } finally {
+          this.markResumed();
+        }
+        // 契約第 10 點:接回時這個對話正有一輪在跑,補送 turn-start 讓父頁進入「處理中」
+        if (this.session?.isStreaming) sendJson(this.ws, { type: "embed_turn_start" });
         return;
       }
       case "refresh":
@@ -2573,6 +2608,14 @@ class NativePiSessionController {
           streaming: this.session.isStreaming,
           streamingBehavior,
         });
+        // 頁面感知:把「頁面資訊」區塊當作下一輪的背景資訊(display:false,不進客戶泡泡,但寫進對話紀錄)。
+        // 只在非串流時附上;串流中的 followUp 不會觸發新一輪,留到下一則訊息再附。
+        // 與 page_view 一樣等 ready 處理完,依到達順序處理,剛送的頁面才不會被略過
+        await this.waitResumed();
+        // 目前頁面用本連線的(多分頁共用對話時不互相覆蓋);附加失敗只記 log,照常送出
+        if (!this.session.isStreaming) {
+          await attachPageContext(this.session, pageTracker.takePromptContext(this.session.sessionId, this.currentPage), logger);
+        }
         void this.runCommand("prompt", async () => {
           await this.promptWithProgress(message, {
             images: images.length ? images : undefined,
@@ -2587,6 +2630,18 @@ class NativePiSessionController {
           await this.sendSessions();
           return { accepted: true };
         });
+        return;
+      }
+
+      case "page_view": {
+        // 鑲嵌父頁回報的頁面;url 必須與 iframe(WebSocket Origin)同源,否則丟棄
+        // 不設逾時:一定等接回對話,頁面才不會記到切換前的對話
+        await this.resumed;
+        const page = sanitizePageView(payload.page, this.wsOrigin);
+        if (page) {
+          this.currentPage = page;
+          pageTracker.record(this.session.sessionId, page);
+        } else warnPageRejected("page_view rejected");
         return;
       }
 
@@ -2798,6 +2853,11 @@ const server = createServer(async (req, res) => {
       handleUpload(req, res);
       return;
     }
+    // 登入狀態探針(鑲嵌 loader 用):handleAuth 已擋掉未登入(401);沒設密碼時視同已登入。不回任何 token。
+    if (url.pathname === "/api/session" && (req.method || "GET") === "GET") {
+      sendJsonHttp(res, 200, { authenticated: true });
+      return;
+    }
     // artifact 截圖路由：/artifacts/<filename>.png（已通過 handleAuth 驗證）
     if (url.pathname.startsWith("/artifacts/")) {
       serveArtifact(req, res);
@@ -2814,6 +2874,8 @@ const server = createServer(async (req, res) => {
 });
 
 const wss = new WebSocketServer({ noServer: true });
+// 協定層 ping 讓閒置連線不被反向代理切斷(預覽機 Apache 代理 /agent/ws 閒置 300 秒就斷)。
+const wsHeartbeat = createWsHeartbeat();
 
 server.on("upgrade", (req, socket, head) => {
   let url;
@@ -2842,6 +2904,9 @@ wss.on("connection", (ws, req) => {
   logger.info("ws connect", { remote });
   const controller = new NativePiSessionController(ws);
   activeControllers.add(controller);
+  wsHeartbeat.track(ws);
+  // 頁面感知用:iframe 的來源;瀏覽器 WebSocket 一定帶 Origin
+  controller.wsOrigin = typeof req?.headers?.origin === "string" ? req.headers.origin : undefined;
 
   ws.on("message", (raw) => {
     try {

@@ -235,6 +235,34 @@ are redirected to the login page or rejected with 401.
 session cookies are kept in memory and revoked on server restart — users
 have to log in again after every restart. cookie lifetime is 7 days.
 
+`GET /api/session` returns `200 {"authenticated":true}` for a logged-in
+cookie (or when no password is set) and `401` otherwise; it never returns a
+token. the embed loader uses it to decide whether to show the launcher.
+
+**鑲嵌模式 embed mode(`/?embed=1`):** 網站內的助理抽屜/手機全螢幕 iframe 用。
+不顯示品牌列、邊距縮小、觸控目標 44px、高度跟著 `visualViewport`;未登入導向的
+登入頁同樣是 embed 版面,登入後回到 `?embed=1`。沒帶 `embed=1` 時畫面不變。
+在框內且同源時對父頁 `postMessage`:`readyai:ready`、`readyai:auth`、
+`readyai:turn-start`(一輪開始;接回對話時正有一輪在跑也會補送,loader 據此在換頁前提醒)、
+`readyai:turn-end`、`readyai:content-changed`(本輪有非唯讀工具執行過,不論成功失敗,判斷不出來
+寧可多送)。收訊檢查 origin 與 source。
+
+**頁面感知:** 父頁送 `readyai:page {url,path,title,lang,dir,h1,canonical,description,referrer_path,viewport}`,
+iframe 轉成 WS `page_view` 交給 server:「最近看過的頁面」依對話保存最多 10 頁(相鄰去重、含時間;
+iframe 換頁重載後仍在;最多保留 200 個對話,超過丟最久沒更新的),「目前頁面」記在每條連線上
+(同一對話開多個分頁時不互相覆蓋)。被拒的 `page_view` 每分鐘最多記一筆 log。
+url 必須與 iframe 同源(WS `Origin`),欄位截長、去控制字元。客戶每次送出訊息時,把「頁面資訊」區塊
+(目前頁面＋上一則訊息以來新看過的頁面,明講不是客戶指示)以 `display:false` 的 custom 訊息
+`readyai_page_context` 附給代理:不顯示在客戶泡泡,但寫進對話紀錄。代理可用唯讀工具 `current_page`
+主動查(唯讀,不算寫入);附加頁面資訊失敗只記 log,客戶訊息照常送出;customer profile 的系統提示補一段「這一頁/這裡/這個標題」指目前頁面、不確定先確認。
+父頁沒送 `readyai:page` 時,iframe 同源直接讀父頁當備援。
+
+**連線保活:** server 每 25 秒對每條 WebSocket 送協定層 ping(反向代理閒置逾時前就有流量),
+上一個 ping 沒回 pong 的連線會被切掉。前端斷線先靜默重連,連續斷線超過約 5 秒才顯示
+斷線橫幅與狀態列錯誤,重連成功立即收起;斷線期間送出仍會被擋下並提示。
+**這個延遲在非 embed 的全螢幕版 `/agent/` 同樣生效**(斷線前 5 秒狀態列不顯示錯誤、不出橫幅;
+這段期間送出會被擋下並出現「尚未送出」提示,輸入保留,訊息不遺失)。
+
 **behind a reverse proxy (cloudflare tunnel, nginx, etc.):** add `--trust-proxy`
 so the cookie's `Secure` flag is set when `X-Forwarded-Proto: https` is forwarded.
 without `--trust-proxy`, the cookie has no `Secure` flag and works in both plain

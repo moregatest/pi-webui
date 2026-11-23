@@ -8,6 +8,7 @@ export const WS_CLIENT_TYPES: ReadonlySet<string> = new Set([
   "new_session", "switch_session", "set_session_name", "cycle_model",
   "bash", "list_dir", "slash_command",
   "ext_ui_response", "ext_ui_custom_input", "ext_ui_custom_resize", "ext_ui_custom_close",
+  "page_view",
 ]);
 
 /** 停用 ready 會讓連線無法初始化，視為設定錯誤 */

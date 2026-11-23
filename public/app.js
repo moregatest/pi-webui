@@ -39,6 +39,13 @@ import {
 } from "./tool-result.mjs";
 import { ACTIVE_SESSION_KEY, extractSessionFileFromState } from "./storage.mjs";
 import {
+  isEmbedSearch,
+  createParentBridge,
+  turnEndMessages,
+  createDisconnectNotice,
+  readParentPage,
+} from "./embed.mjs";
+import {
   formatMessage,
   sdkContentToBlocks,
   hasVisibleContent,
@@ -81,6 +88,38 @@ let slashIndex = 0;
 // session_event with a seq; we send our latest one back on (re)connect via
 // `ready` so the server can replay missed events without a full reset.
 let lastSeq = null;
+
+// 鑲嵌模式(/agent/?embed=1):server 首屏已在 <html> 寫 data-embed,這裡再以網址確認。
+const EMBED = isEmbedSearch(location.search) || document.documentElement.dataset.embed === "1";
+if (EMBED) document.documentElement.setAttribute("data-embed", "1");
+const parentBridge = createParentBridge({ win: window, embed: EMBED });
+// 頁面感知(契約第 9 點):父頁送來的 readyai:page 立刻轉成 page_view 交給 server 依對話保存;
+// iframe 換頁就重新載入,所以不能只留在前端。連線還沒好就先暫存,connected 後補送。
+let pendingPageView = null;
+let pageViewSeen = false;
+let embedConnected = false;
+let embedReadySent = false;
+function flushPageView() {
+  if (!pendingPageView || !embedConnected || socket?.readyState !== WebSocket.OPEN) return;
+  send({ type: "page_view", page: pendingPageView });
+  pendingPageView = null;
+}
+window.addEventListener("message", (event) => {
+  const page = parentBridge.accept(event);
+  if (!page) return;
+  pageViewSeen = true;
+  pendingPageView = page;
+  flushPageView();
+});
+// 父頁 loader 沒送 readyai:page 時,同源 iframe 直接讀父頁當備援
+function fallbackPageView() {
+  if (!parentBridge.active || pageViewSeen || pendingPageView) return;
+  try {
+    pendingPageView = readParentPage(window.parent);
+  } catch {
+    // 讀不到就算了
+  }
+}
 
 // Track the visual viewport so the app shell shrinks when the mobile virtual
 // keyboard opens. Without this, `100vh` stays the full screen and the top of
@@ -880,6 +919,36 @@ function applyReadingAndInput() {
   else input.removeAttribute("enterkeyhint");
 }
 
+// 斷線先靜默重連;連續斷線超過約 5 秒才顯示橫幅與狀態列錯誤,重連成功立即收起。
+// (預覽機代理會切閒置連線,幾秒內就重連成功,不該每次都跳警示。)
+const disconnectNotice = createDisconnectNotice({
+  show() {
+    csSetError(chatState, "disconnected from server");
+    renderStatusBar();
+    const banner = document.getElementById("disconnected-banner");
+    if (banner) banner.style.display = "block";
+    logger.warn("disconnect notice shown");
+    // 鑲嵌模式:可能是登入失效(預覽機重啟後 token 不在了),查一次登入狀態
+    if (parentBridge.active) void checkEmbedAuth();
+  },
+  hide() {
+    const banner = document.getElementById("disconnected-banner");
+    if (banner) banner.style.display = "none";
+  },
+});
+
+async function checkEmbedAuth() {
+  try {
+    const res = await fetch(`${BASE}/api/session`, { credentials: "same-origin", cache: "no-store" });
+    if (res.status !== 401) return;
+    parentBridge.post({ type: "readyai:auth", authenticated: false });
+    saveDraft(getSessionStorage(), input.value);
+    location.href = `${BASE}/login?next=${encodeURIComponent(`${BASE}/?embed=1`)}`;
+  } catch {
+    // 伺服器連不上:維持橫幅,繼續重連
+  }
+}
+
 function connect() {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   const url = `${protocol}://${location.host}${BASE}/ws`;
@@ -888,8 +957,7 @@ function connect() {
 
   socket.addEventListener("open", () => {
     logger.info("ws open", { lastSeq });
-    const banner = document.getElementById("disconnected-banner");
-    if (banner) banner.style.display = "none";
+    disconnectNotice.onConnected();
     // 斷線時被擋下的訊息:只提醒,不自動重送(readyai#163)
     const reconnectNotice = unsentTracker.onReconnect();
     if (reconnectNotice) showUnsentNotice(reconnectNotice);
@@ -933,6 +1001,15 @@ function connect() {
         // hideModel 沿用既有變數;優先取 uiProfile.hideModel,fallback 到舊欄位。
         hideModel = !!(uiProfile?.hideModel ?? packet.payload.hideModel);
         applyBranding(uiProfile.brand);
+        embedConnected = true;
+        if (!embedReadySent) {
+          embedReadySent = true;
+          parentBridge.post({ type: "readyai:auth", authenticated: true });
+          parentBridge.post({ type: "readyai:ready" });
+          // 給父頁一點時間回送 readyai:page,沒有才用備援
+          setTimeout(() => { fallbackPageView(); flushPageView(); }, 1000);
+        }
+        flushPageView();
         applyChatLayout();
         applyReadingAndInput();
         renderSandboxChip();
@@ -1081,6 +1158,12 @@ function connect() {
       case "ext_ui_custom_close":
         customOverlay.close(packet.payload || {});
         return;
+      case "embed_turn_start":
+        parentBridge.post({ type: "readyai:turn-start" });
+        return;
+      case "embed_turn_end":
+        for (const msg of turnEndMessages(packet.payload)) parentBridge.post(msg);
+        return;
       case "tunnel_state":
         tunnelInfo = { enabled: true, ...packet.payload };
         renderTunnelChip();
@@ -1092,12 +1175,12 @@ function connect() {
 
   socket.addEventListener("close", (event) => {
     logger.warn("ws close", { code: event.code, reason: event.reason || undefined });
-    csSetError(chatState, "disconnected from server");
+    embedConnected = false;
+    // 立即結束進行中的狀態(送出鍵回復、送出被擋下會提示);警示延後到確定連不回來
     dispatchSessionEvent(chatState, { type: "agent_end" });
     renderLog();
     renderStatusBar();
-    const banner = document.getElementById("disconnected-banner");
-    if (banner) banner.style.display = "block";
+    disconnectNotice.onDisconnected();
     // Auto-reconnect after a short delay
     logger.info("ws reconnect scheduled", { delayMs: 1000 });
     setTimeout(connect, 1000);
@@ -1105,7 +1188,6 @@ function connect() {
 
   socket.addEventListener("error", () => {
     logger.error("ws error");
-    csSetError(chatState, "websocket error");
     dispatchSessionEvent(chatState, { type: "agent_end" });
     renderLog();
     renderStatusBar();
@@ -2627,6 +2709,15 @@ document.getElementById("reconnect-button")?.addEventListener("click", () => {
     input.value = draft;
     showUnsentNotice(unsentTracker.markBlocked());
   }
+}
+
+// 鑲嵌在手機上:虛擬鍵盤彈出後把輸入框捲進可視範圍
+if (EMBED) {
+  input.addEventListener("focus", () => {
+    setTimeout(() => {
+      try { input.scrollIntoView({ block: "nearest" }); } catch { /* 舊瀏覽器 */ }
+    }, 300);
+  });
 }
 
 input.focus();

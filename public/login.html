@@ -59,6 +59,35 @@
         white-space: pre-line;
         overflow-wrap: anywhere;
       }
+      /* 鑲嵌版面(server 依 ?embed=1 或 next 帶 embed=1 在 <html> 寫 data-embed):
+         窄抽屜與手機全螢幕;頂端對齊、去陰影、觸控目標 44px、輸入 16px 避免 iOS 放大 */
+      /* 未登入時 styles.css 也要登入才拿得到,embed 這裡自己補底色與字型,避免白邊 */
+      html[data-embed="1"] body {
+        margin: 0;
+        background: var(--bg, #111);
+        font-family: system-ui, -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+      }
+      html[data-embed="1"] .login-shell {
+        min-height: 100vh;
+        min-height: 100dvh;
+        align-items: flex-start;
+        padding: 24px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+        box-sizing: border-box;
+      }
+      html[data-embed="1"] .login-card {
+        width: 100%;
+        max-width: 420px;
+        padding: 20px 16px;
+        box-shadow: none;
+      }
+      html[data-embed="1"] .login-card input[type="password"] {
+        min-height: 44px;
+        font-size: 16px;
+      }
+      html[data-embed="1"] .login-card button {
+        min-height: 44px;
+        font-size: 16px;
+      }
       .login-error {
         color: #f87171;
         font-size: 13px;
@@ -90,6 +119,14 @@
       if (window.__BRAND_NAME__) {
         document.getElementById("brand-h1").textContent = window.__BRAND_NAME__;
       }
+      // 鑲嵌模式:通知父頁登入狀態(契約 readyai:auth);只送同源父頁
+      const embed = document.documentElement.getAttribute("data-embed") === "1";
+      const framed = window.parent && window.parent !== window;
+      function postParent(msg) {
+        if (!embed || !framed) return;
+        try { window.parent.postMessage(msg, location.origin); } catch {}
+      }
+      postParent({ type: "readyai:auth", authenticated: false });
       const form = document.getElementById("login-form");
       const pw = document.getElementById("password");
       const btn = document.getElementById("submit");
@@ -120,7 +157,9 @@
             const base = window.__BASE__ || "";
             const raw = new URLSearchParams(location.search).get("next") || "";
             // 僅接受「單一 / 開頭、且次字元非 / 或 \」的內部路徑；其餘（含 protocol-relative //、/\）一律回 base 根
-            const next = /^\/(?![/\\])/.test(raw) ? raw : `${base}/`;
+            const fallback = embed ? `${base}/?embed=1` : `${base}/`;
+            const next = /^\/(?![/\\])/.test(raw) ? raw : fallback;
+            postParent({ type: "readyai:auth", authenticated: true });
             location.href = next;
             return;
           }

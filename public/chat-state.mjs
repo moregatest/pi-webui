@@ -308,6 +308,8 @@ export function selectItems(state, uiProfile = {}) {
       : state.canonical.length;
   for (let i = 0; i < canonicalEnd; i++) {
     const message = state.canonical[i];
+    // 鑲嵌模式附給代理的「客戶目前在看」是背景資訊，不顯示在對話裡（server embed.ts）
+    if (message?.role === 'custom' && message.customType === 'readyai_page_context') continue;
     if (message?.role === 'assistant') {
       const group = [];
       let j = i;
