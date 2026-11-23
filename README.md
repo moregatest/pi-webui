@@ -247,7 +247,7 @@ token. the embed loader uses it to decide whether to show the launcher.
 `readyai:turn-end`、`readyai:content-changed`(本輪有非唯讀工具執行過,不論成功失敗,判斷不出來
 寧可多送)。收訊檢查 origin 與 source。
 
-**對話裡的站內連結在原頁開啟:** embed 且在同源框內時,點助理回覆裡的連結,若網址與 iframe 同源、
+**對話裡的站內連結在原頁開啟:** embed 且在框內、父頁同源時(父頁跨源就不攔),點助理回覆裡的連結,若網址與 iframe 同源、不帶帳密、
 路徑不是 `/agent`／`/agent-embed`／`/_review` 開頭、不是下載(`download` 屬性或檔案副檔名如
 `.pdf`、`.zip`、圖片、Office 檔),就不開新分頁,改送 `readyai:navigate {url}`(絕對網址)給父頁,
 由 loader 在原分頁換頁(處理中會先提醒)。外部網址、修改報表、附件下載維持開新分頁;按住

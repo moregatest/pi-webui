@@ -16,8 +16,15 @@ import {
 
 const ORIGIN = "https://site.fly.dev";
 
-function fakeWindows({ framed = true } = {}) {
+function fakeWindows({ framed = true, parentOrigin = ORIGIN } = {}) {
   const parent = { sent: [], postMessage(msg, origin) { this.sent.push({ msg, origin }); } };
+  // 父頁 location：同源可讀；parentOrigin=null 模擬跨源（讀 location.origin 會丟 SecurityError）
+  Object.defineProperty(parent, "location", {
+    get() {
+      if (parentOrigin === null) throw new Error("SecurityError: cross-origin");
+      return { origin: parentOrigin };
+    },
+  });
   const win = { location: { origin: ORIGIN } };
   win.parent = framed ? parent : win;
   return { win, parent };
@@ -289,5 +296,24 @@ test("installEmbedLinkHandler：非 embed 或不在框內時不掛監聽（全�
     const doc = fakeDoc();
     assert.equal(installEmbedLinkHandler({ doc, bridge: createParentBridge({ win, embed }), win }), false);
     assert.deepEqual(doc.listeners, {});
+  }
+});
+
+test("embedLinkNavigateUrl：帶帳密的同源網址 → null（RV21-01 低-1）", () => {
+  const nav = (href) => embedLinkNavigateUrl({ href, hasDownload: false, baseUrl: BASE_URL, ...click() });
+  assert.equal(nav("https://u:p@site.fly.dev/en/a.html"), null);
+  assert.equal(nav("https://u@site.fly.dev/en/a.html"), null);
+  assert.equal(nav("https://:p@site.fly.dev/en/a.html"), null);
+  assert.equal(nav("https://site.fly.dev/en/a.html"), `${ORIGIN}/en/a.html`);
+});
+
+test("installEmbedLinkHandler：父頁不同源（跨源讀不到或 origin 不同）就不掛監聽（RV21-01 低-2）", () => {
+  for (const parentOrigin of [null, "https://other.example"]) {
+    const { win, parent } = fakeWindows({ parentOrigin });
+    win.location.href = BASE_URL;
+    const doc = fakeDoc();
+    assert.equal(installEmbedLinkHandler({ doc, bridge: createParentBridge({ win, embed: true }), win }), false, String(parentOrigin));
+    assert.deepEqual(doc.listeners, {});
+    assert.deepEqual(parent.sent, []);
   }
 });

@@ -191,7 +191,7 @@ const DOWNLOAD_EXT = new Set([
 
 /**
  * 點擊對話裡的連結時，若應改由父頁在原分頁換頁，回傳絕對網址；否則 null（維持開新分頁或瀏覽器原本行為）。
- * 條件：左鍵且沒按 Cmd／Ctrl／Shift／Alt、沒有 download 屬性、http(s) 且與 iframe 同源、
+ * 條件：左鍵且沒按 Cmd／Ctrl／Shift／Alt、沒有 download 屬性、http(s) 且與 iframe 同源、不帶帳密、
  * 路徑不是 /agent、/agent-embed、/_review 開頭、副檔名不是下載檔、不是只有 # 錨點。
  */
 export function embedLinkNavigateUrl({ href, hasDownload, baseUrl, button, metaKey, ctrlKey, shiftKey, altKey }) {
@@ -207,6 +207,8 @@ export function embedLinkNavigateUrl({ href, hasDownload, baseUrl, button, metaK
   }
   if (u.protocol !== "http:" && u.protocol !== "https:") return null;
   if (u.origin !== base.origin) return null;
+  // 帶帳密的網址（https://u:p@同站/…）不轉給父頁（RV21-01 低-1）
+  if (u.username || u.password) return null;
   let path;
   try {
     path = decodeURIComponent(u.pathname);
@@ -221,11 +223,18 @@ export function embedLinkNavigateUrl({ href, hasDownload, baseUrl, button, metaK
 }
 
 /**
- * embed 且在框內時，在 document 掛 click 監聽：符合條件的連結改送 readyai:navigate 給父頁。
+ * embed、在框內且父頁同源時，在 document 掛 click 監聽：符合條件的連結改送 readyai:navigate 給父頁。
  * 不符合的連結完全不碰（原本的 target="_blank" 照常開新分頁）。回傳是否有掛。
  */
 export function installEmbedLinkHandler({ doc, bridge, win }) {
   if (!doc || !bridge || !bridge.active) return false;
+  // 父頁必須同源（loader 只會在同源網站頁建立 iframe）；跨源讀 location 會丟例外，
+  // 不同源就不攔，維持開新分頁，避免 preventDefault 後訊息沒人收、點了沒反應（RV21-01 低-2）
+  try {
+    if (win.parent.location.origin !== win.location.origin) return false;
+  } catch {
+    return false;
+  }
   doc.addEventListener("click", (ev) => {
     if (!ev || ev.defaultPrevented) return;
     const a = ev.target && typeof ev.target.closest === "function" ? ev.target.closest("a[href]") : null;
