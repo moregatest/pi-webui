@@ -19,7 +19,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { resolveSessionDir, canonicalize } from "./session-dir.js";
 import { shouldResumeStoredSession } from "./session-guard.js";
-import { isValidSessionIdParam, pickSessionFileName } from "./session-param.js";
+import { isValidSessionIdParam, pickSessionFileName, readSessionHeaderId } from "./session-param.js";
 // read/write/edit/bash 的 sandbox/guarded 版工具改由 ./guarded-tools.js 統一組裝
 // （create*ToolDefinition 由 package root 直接 import）。
 
@@ -990,18 +990,6 @@ function readSessionCwdSync(sessionFile) {
     if (!head) return null;
     const parsed = JSON.parse(head);
     return typeof parsed?.cwd === "string" ? parsed.cwd : null;
-  } catch {
-    return null;
-  }
-}
-
-// ?session=<id> 直達:讀 session 標頭的 id,確認檔名對到的檔確實是這段對話。
-function readSessionHeaderIdSync(sessionFile) {
-  try {
-    const head = readFileSync(sessionFile, "utf8").split("\n", 2)[0] || "";
-    if (!head) return null;
-    const parsed = JSON.parse(head);
-    return parsed?.type === "session" && typeof parsed?.id === "string" ? parsed.id : null;
   } catch {
     return null;
   }
@@ -2458,17 +2446,21 @@ class NativePiSessionController {
     } catch {
       return { reason: "no-session-dir" };
     }
-    const name = pickSessionFileName(names, sessionId);
-    if (!name) return { reason: "not-found" };
-    const file = join(dir, name);
-    try {
-      // 只收一般檔:symlink 可能指到 session 目錄外
-      if (!lstatSync(file).isFile()) return { reason: "not-regular-file" };
-    } catch {
-      return { reason: "not-found" };
-    }
-    if (readSessionHeaderIdSync(file) !== sessionId) return { reason: "header-mismatch" };
-    return { file };
+    // 逐一檢查候選(新到舊):只收一般檔(symlink 可能指到 session 目錄外),且標頭 id 必須等於參數。
+    // 記下最後一個被拒的原因,全部不符時回報。
+    let reason = "not-found";
+    const name = pickSessionFileName(names, sessionId, (candidate) => {
+      const file = join(dir, candidate);
+      try {
+        if (!lstatSync(file).isFile()) { reason = "not-regular-file"; return false; }
+      } catch {
+        return false;
+      }
+      if (readSessionHeaderId(file) !== sessionId) { reason = "header-mismatch"; return false; }
+      return true;
+    });
+    if (!name) return { reason };
+    return { file: join(dir, name) };
   }
 
   // Handle the client's resume request. If we can replay missed events,
