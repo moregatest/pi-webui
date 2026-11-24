@@ -2,7 +2,7 @@
 // @ts-nocheck
 import { createServer } from "node:http";
 import { execSync } from "node:child_process";
-import { createReadStream, chmodSync, existsSync, readdirSync, readFileSync, statSync, watch as fsWatch, writeFileSync } from "node:fs";
+import { createReadStream, chmodSync, existsSync, lstatSync, readdirSync, readFileSync, statSync, watch as fsWatch, writeFileSync } from "node:fs";
 import { basename, extname, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
@@ -19,6 +19,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { resolveSessionDir, canonicalize } from "./session-dir.js";
 import { shouldResumeStoredSession } from "./session-guard.js";
+import { isValidSessionIdParam, pickSessionFileName } from "./session-param.js";
 // read/write/edit/bash 的 sandbox/guarded 版工具改由 ./guarded-tools.js 統一組裝
 // （create*ToolDefinition 由 package root 直接 import）。
 
@@ -989,6 +990,18 @@ function readSessionCwdSync(sessionFile) {
     if (!head) return null;
     const parsed = JSON.parse(head);
     return typeof parsed?.cwd === "string" ? parsed.cwd : null;
+  } catch {
+    return null;
+  }
+}
+
+// ?session=<id> 直達:讀 session 標頭的 id,確認檔名對到的檔確實是這段對話。
+function readSessionHeaderIdSync(sessionFile) {
+  try {
+    const head = readFileSync(sessionFile, "utf8").split("\n", 2)[0] || "";
+    if (!head) return null;
+    const parsed = JSON.parse(head);
+    return parsed?.type === "session" && typeof parsed?.id === "string" ? parsed.id : null;
   } catch {
     return null;
   }
@@ -2433,10 +2446,52 @@ class NativePiSessionController {
     await this.sendSessions();
   }
 
+  // ?session=<id> 直達(W31-01 §4.4):把 id 對到目前 session 目錄裡的檔。只負責「找檔」,
+  // 是否接受續接仍交給 handleReady 既有的 shouldResumeStoredSession 防線。
+  // 回 { file } 或 { reason }(reason 只進 log,不回給瀏覽器)。
+  resolveSessionParam(sessionId) {
+    if (!isValidSessionIdParam(sessionId)) return { reason: "invalid-id" };
+    const dir = resolveSessionDir(this.cwd, { cliSessionDir, envSessionDir });
+    let names;
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return { reason: "no-session-dir" };
+    }
+    const name = pickSessionFileName(names, sessionId);
+    if (!name) return { reason: "not-found" };
+    const file = join(dir, name);
+    try {
+      // 只收一般檔:symlink 可能指到 session 目錄外
+      if (!lstatSync(file).isFile()) return { reason: "not-regular-file" };
+    } catch {
+      return { reason: "not-found" };
+    }
+    if (readSessionHeaderIdSync(file) !== sessionId) return { reason: "header-mismatch" };
+    return { file };
+  }
+
   // Handle the client's resume request. If we can replay missed events,
   // do so without disturbing UI state. Otherwise fall back to a reset +
   // fresh bootstrap.
-  async handleReady(lastSeq, sessionFile) {
+  async handleReady(lastSeq, sessionFile, sessionId = null) {
+    if (sessionId) {
+      // 客戶模式、或 --ws-deny 停用了 switch_session:不開放用網址切換對話,靜默忽略(行為不變)。
+      if (isCustomerMode(profileName, profileFile) || wsDenySet?.has("switch_session")) {
+        logger.info("session param ignored", { reason: "not-permitted" });
+      } else {
+        const found = this.resolveSessionParam(sessionId);
+        if (found.file) {
+          sessionFile = found.file;
+        } else {
+          logger.info("session param rejected", { reason: found.reason });
+          sendJson(this.ws, {
+            type: "ext_ui_notify",
+            payload: { message: "找不到網址指定的對話，已改開原本的對話。", type: "warning" },
+          });
+        }
+      }
+    }
     if (sessionFile && sessionFile !== (this.session.sessionFile || null)) {
       // reconnect guard 判定抽到 session-guard.ts(純函式 shouldResumeStoredSession)。
       // 這裡只做 IO:讀 stored session 的 header cwd、canonicalize 路徑、算出對應 session 目錄。
@@ -2567,8 +2622,10 @@ class NativePiSessionController {
       case "ready": {
         const lastSeq = typeof payload.lastSeq === "number" ? payload.lastSeq : null;
         const sessionFile = typeof payload.sessionFile === "string" && payload.sessionFile ? payload.sessionFile : null;
+        // 網址 ?session=<id>(延續直達);格式由 handleReady → resolveSessionParam 嚴格驗證
+        const sessionId = payload.sessionId === undefined || payload.sessionId === null ? null : String(payload.sessionId);
         try {
-          await this.handleReady(lastSeq, sessionFile);
+          await this.handleReady(lastSeq, sessionFile, sessionId);
         } finally {
           this.markResumed();
         }

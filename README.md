@@ -671,6 +671,18 @@ project directory rather than your home directory.
 - **reconnect:** a browser reload only auto-resumes a stored session if it
   is a genuine project-local (or override-dir) session of its own cwd;
   otherwise it starts fresh in the project-local default.
+- **direct link `?session=<id>`:** opening `<base>/?session=<id>` resumes that
+  session on the page's first connection (later reconnects fall back to the
+  browser-remembered session). the server maps the id to
+  `<session dir>/<timestamp>_<id>.jsonl` (or `<id>.jsonl`) in the current
+  session dir only; the id must match `[A-Za-z0-9]([A-Za-z0-9_-]{0,126}[A-Za-z0-9])?`
+  (no `.`, no path separators), the file must be a regular file (no symlink)
+  whose header `id` equals the id, and it still has to pass the normal
+  reconnect guard above. an invalid / unknown id shows a warning toast and
+  keeps the previous behaviour. ignored in `customer` profile and when
+  `--ws-deny` includes `switch_session`. works behind a path-prefix reverse
+  proxy with `PI_WEBUI_BASE_PATH` (HTTP, WebSocket, upload and login cookie
+  path all carry the prefix).
 - **`/cwd` recent list** is sourced from the legacy home-dir index, so
   project-local-only projects do not appear there; use the directory
   browser to switch instead.

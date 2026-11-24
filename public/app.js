@@ -38,6 +38,7 @@ import {
   stripCatNLinePrefixes,
 } from "./tool-result.mjs";
 import { ACTIVE_SESSION_KEY, extractSessionFileFromState } from "./storage.mjs";
+import { readSessionParam } from "./session-param.mjs";
 import {
   isEmbedSearch,
   createParentBridge,
@@ -140,6 +141,10 @@ if (window.visualViewport) {
 } else {
   window.addEventListener("resize", syncAppHeight);
 }
+
+// 網址 ?session=<id>(延續直達):只在本頁第一次連線帶給伺服器;收到第一個 session_state 後清掉,
+// 之後斷線重連照舊用 localStorage 記的對話(避免使用者切到別段對話後,重連又被拉回網址那段)。
+let pendingSessionParam = readSessionParam(location.search);
 
 function loadStoredSessionFile() {
   try {
@@ -969,7 +974,12 @@ function connect() {
     // Tell the server where our event-log cursor is. If it can replay missed
     // events, we keep all streamed UI state. Otherwise it'll send a
     // session_reset followed by a fresh bootstrap.
-    send({ type: "ready", lastSeq, sessionFile: loadStoredSessionFile() });
+    send({
+      type: "ready",
+      lastSeq,
+      sessionFile: loadStoredSessionFile(),
+      ...(pendingSessionParam ? { sessionId: pendingSessionParam } : {}),
+    });
   });
 
   socket.addEventListener("message", (message) => {
@@ -1065,6 +1075,7 @@ function connect() {
           });
         }
         currentSessionState = next;
+        pendingSessionParam = null;
         saveStoredSessionFile(extractSessionFileFromState(next));
         renderStatusBar();
         return;
