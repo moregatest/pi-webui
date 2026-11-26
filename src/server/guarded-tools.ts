@@ -66,12 +66,18 @@ export function buildSandboxGuardedTools(
  * --allow-unsafe-customer 繞過 L2 時：用同名 custom tool 覆蓋 builtin read/bash（SDK: customTools
  * 同名覆蓋 builtin），掛 in-process L0（env 白名單＋縱深命令圍欄）+L1+L3。write/edit 維持 builtin。
  */
-export function buildHostGuardedTools(cwd: string, workspaceRoot: string): unknown[] {
+export function buildHostGuardedTools(
+  cwd: string,
+  workspaceRoot: string,
+  opts: { isCustomer?: boolean } = {},
+): unknown[] {
   const spawnHook = buildBashSpawnHook({ sandbox: false });
   return [
     wrapToolWithRedaction(wrapReadWithGuard(createReadToolDefinition(cwd) as any, cwd, workspaceRoot)),
     wrapBashWithCommandGuard(
       wrapToolWithRedaction(createBashToolDefinition(cwd, { spawnHook: spawnHook as any }) as any),
+      // W62-02：站台 ClientDB／cache／備份路徑只對 customer 擋；未指定時視同 customer（fail-safe）
+      { siteSecrets: opts.isCustomer !== false },
     ),
   ];
 }

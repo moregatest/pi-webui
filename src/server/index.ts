@@ -1226,7 +1226,7 @@ const createRuntime = async ({ cwd, sessionManager, sessionStartEvent, pageSourc
   //     VM 邊界拿掉,但 L0/L1/L3 in-process 仍套上,補掉「全開 bash 能 printenv 讀 L-甲」的洩漏,
   //     配 Fly 單租戶邊界。plain customer（僅 upload_image、不開 bash/read）不需,故排除。
   const hostGuardTools = shouldInjectHostGuards({ hasSandboxTools: !!sandboxTools, isCustomer, customerOpen })
-    ? buildHostGuardedTools(cwd, guardWorkspaceRoot)
+    ? buildHostGuardedTools(cwd, guardWorkspaceRoot, { isCustomer })
     : undefined;
   // extraTools（如 customer-open 的 publish_confirmed）要*附加*在 base 之後,
   // 不能塞進 customTools——否則會把上面的 hostGuardTools / sandboxTools 整組蓋掉。

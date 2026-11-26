@@ -118,6 +118,13 @@ const PROC_RECON_RE = /\/proc\/(\d+|self|thread-self)\/(environ|cmdline)\b/;
 const DOTENV_RECON_RE = /(^|[\s'"/=(])\.env(\.(?!example|sample|tpl|dist|md)[A-Za-z0-9_]+)?(?![\w.])/;
 // printenv 列舉。
 const PRINTENV_RE = /\bprintenv\b/;
+// W62-02（readyscript-ops#141 縱深 B3）：站台 ClientDB（api_tokens 存原站明文權杖，對原站有效）、
+// 站台 cache 目錄、站根備份 *.tgz。客戶協作只走 readyai-* 工具，不需直接讀這些檔。
+// deny-list 縱深（可被拼接繞過）；根治是預覽機只存雜湊（#141）與非 root 執行（B2）。
+const CLIENTDB_RE = /clientdb/i;
+// cache/…（相對或絕對）或結尾的 /cache；不含 .cache（~/.cache、node_modules/.cache）與 `npm cache` 子命令。
+const SITE_CACHE_RE = /(^|[\s'"=(/])cache\/|\/cache(?=$|[\s'";|&)])/;
+const SITE_BACKUP_RE = /\/var\/www\/html\/[^\s'"]*\.tgz\b|\b(data|pc2-site)\.tgz\b/;
 // 印所有變數含值/名的 builtin。
 const DUMP_BUILTIN_RE = /\b(export\s+-p|declare\s+-p|typeset\s+-p|compgen\s+-v)\b/;
 
@@ -157,11 +164,24 @@ function isBareSetEnumeration(segment: string): boolean {
 /**
  * bash 命令偵察圍欄：偵測 env/機密偵察手法回 block。定位見上方 block 註解——縱深、非根治。
  */
-export function guardBashCommand(command: unknown): GuardVerdict {
+export interface BashGuardOptions {
+  /**
+   * 站台機密路徑（ClientDB／站台 cache／站根備份 tgz）是否一律擋。預設 true（fail-safe）；
+   * 只有非 customer 模式（員工／開發者需要依技能直接處理 ClientDB）由呼叫端明確傳 false。
+   */
+  siteSecrets?: boolean;
+}
+
+export function guardBashCommand(command: unknown, opts: BashGuardOptions = {}): GuardVerdict {
   if (typeof command !== "string" || command.length === 0) return { block: false };
   if (PROC_RECON_RE.test(command)) return { block: true, reason: "proc environ/cmdline recon" };
   if (DOTENV_RECON_RE.test(command)) return { block: true, reason: ".env recon (含 workspace token)" };
   if (PRINTENV_RE.test(command)) return { block: true, reason: "printenv enumeration" };
+  if (opts.siteSecrets !== false) {
+    if (CLIENTDB_RE.test(command)) return { block: true, reason: "site ClientDB (api_tokens) access" };
+    if (SITE_CACHE_RE.test(command)) return { block: true, reason: "site cache directory access" };
+    if (SITE_BACKUP_RE.test(command)) return { block: true, reason: "site backup archive access" };
+  }
   if (DUMP_BUILTIN_RE.test(command)) return { block: true, reason: "env dump builtin" };
   for (const seg of splitCommandSegments(command)) {
     if (isBareEnvEnumeration(seg)) return { block: true, reason: "env enumeration" };
@@ -461,12 +481,12 @@ export function wrapToolWithRedaction<T extends ToolDefinitionLike>(
  * 包 bash tool：execute 前先跑 guardBashCommand，偵察類命令回 block 訊息（isError）、不執行；
  * 否則轉呼原 execute。定位為 L0 縱深（見 guardBashCommand 上方註解）——非根治、抬高門檻。
  */
-export function wrapBashWithCommandGuard<T extends ToolDefinitionLike>(def: T): T {
+export function wrapBashWithCommandGuard<T extends ToolDefinitionLike>(def: T, opts: BashGuardOptions = {}): T {
   return {
     ...def,
     execute: async (toolCallId, params, signal, onUpdate, ctx) => {
       const command = params ? (params as { command?: unknown }).command : undefined;
-      const verdict = guardBashCommand(command);
+      const verdict = guardBashCommand(command, opts);
       if (verdict.block) {
         return {
           content: [

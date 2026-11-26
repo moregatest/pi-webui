@@ -194,6 +194,51 @@ test("guardBashCommand: 正當 customer 協作命令放行（不誤傷）", () =
   }
 });
 
+test("guardBashCommand: 站台 ClientDB／cache／站根備份一律 block（W62-02，readyscript-ops#141 縱深）", () => {
+  const recon = [
+    "sqlite3 /var/www/html/www.example.com/cache/ClientDB.sqlite3 'select * from api_tokens'",
+    "python3 -c \"import sqlite3;sqlite3.connect('/var/www/html/x.com/cache/clientdb.sqlite3')\"",
+    "cp ../x.com/cache/ClientDB.sqlite3 /tmp/a",
+    "ls /var/www/html/www.example.com/cache/",
+    "ls /var/www/html/www.example.com/cache",
+    "cd /var/www/html/x.com && sqlite3 cache/Other.sqlite3 .dump",
+    "find / -name '*.sqlite3' -path '*/cache/*'",
+    "tar -tzf /var/www/html/www.example.com/data.tgz",
+    "tar -xzf /var/www/html/x.com/pc2-site.tgz -C /tmp",
+    "cd /var/www/html/x.com; tar tzf data.tgz",
+  ];
+  for (const cmd of recon) {
+    assert.equal(guardBashCommand(cmd).block, true, `應 block: ${cmd}`);
+  }
+  const ok = [
+    "ls ~/.cache",
+    "rm -rf node_modules/.cache/x",
+    "npm cache clean --force",
+    "cat docs/cache-design.md",
+    "readyai-db query --lang en",
+    "tar -czf uploads.tgz uploads/", // 工作區自己的打包（不在站根、不是站台備份名）
+  ];
+  for (const cmd of ok) {
+    assert.equal(guardBashCommand(cmd).block, false, `不該 block: ${cmd}`);
+  }
+  // 非 customer（員工／開發者）明確關掉站台路徑規則：技能（onboard-additional-lng 4.5）可直接處理 ClientDB；
+  // 其他偵察規則照舊
+  assert.equal(guardBashCommand(recon[0], { siteSecrets: false }).block, false);
+  assert.equal(guardBashCommand("printenv", { siteSecrets: false }).block, true);
+});
+
+test("wrapBashWithCommandGuard: siteSecrets 選項傳到圍欄（customer 擋、staff 放行）", async () => {
+  let ran = 0;
+  const def = { name: "bash", execute: async () => { ran += 1; return { content: [{ type: "text", text: "ok" }] }; } };
+  const cmd = { command: "sqlite3 /var/www/html/x.com/cache/ClientDB.sqlite3 .tables" };
+  const customer = await wrapBashWithCommandGuard(def).execute("t", cmd);
+  assert.equal(customer.isError, true);
+  assert.equal(ran, 0);
+  const staff = await wrapBashWithCommandGuard(def, { siteSecrets: false }).execute("t", cmd);
+  assert.equal(staff.isError, undefined);
+  assert.equal(ran, 1);
+});
+
 // ───────────────────────── L1：guardReadPath ─────────────────────────
 
 test("L1: read 圍欄 — workspace 內放行、外部/proc/symlink 擋", () => {
