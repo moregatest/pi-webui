@@ -2,6 +2,24 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-11-26 (信任上游身分、回到專案清單，W60-01)
+
+### 新增
+
+- `PI_WEBUI_TRUST_UPSTREAM_HEADER=<標頭名>`：中心閘道核過身分後以這個標頭送入登入身分，pi-webui 以它的值當身分、略過密碼。
+  - 只有綁定 `127.0.0.1`／`::1` 才能開，與 `--tunnel`、密碼同時設定時拒絕啟動（結束碼 2）；listen 後再確認實際綁定位址。
+  - 每個 HTTP 請求與 WebSocket 升級都要來自本機、帶唯一一個合格的標頭值，否則 401，不退回密碼頁。
+  - `POST /api/login`、`/api/logout` 回 400 `upstream_identity`；`GET /login` 轉回 `next`（只收站內路徑，保留 `?session=`）。
+  - `GET /api/session` 多回 `mode: "upstream"` 與 `user`；WebSocket 連線紀錄寫入身分。
+  - 閘道轉發時必須移除外部送來的同名標頭。
+- `PI_WEBUI_HOME_URL`：設定時畫面上方顯示「回到專案清單」連結（server 的 `connected` 帶 `homeUrl`；只收 http(s) 網址或站內路徑）。
+- 輸入框、清單搜尋框、重新連線按鈕補 `aria-label`，方便 AI 操作者與輔助工具辨識。
+
+### 相容性
+
+- 兩個環境變數都沒設時行為完全不變：預覽站的密碼登入、cookie、`/api/session` 回應形狀、`?session=` 直達都照舊。
+- 測試：新增 3 個測試檔；既有測試全過。
+
 ## 2026-11-06 (客戶發布子行程帶操作者，W125／W138)
 
 ### 修正

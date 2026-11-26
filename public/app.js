@@ -39,6 +39,7 @@ import {
 } from "./tool-result.mjs";
 import { ACTIVE_SESSION_KEY, extractSessionFileFromState } from "./storage.mjs";
 import { readSessionParam } from "./session-param.mjs";
+import { applyHomeLink } from "./home-link.mjs";
 import {
   isEmbedSearch,
   createParentBridge,
@@ -1016,6 +1017,7 @@ function connect() {
         // hideModel 沿用既有變數;優先取 uiProfile.hideModel,fallback 到舊欄位。
         hideModel = !!(uiProfile?.hideModel ?? packet.payload.hideModel);
         applyBranding(uiProfile.brand);
+        applyHomeLink(document, packet.payload.homeUrl);
         embedConnected = true;
         if (!embedReadySent) {
           embedReadySent = true;

@@ -65,6 +65,13 @@ import {
   shouldSetSecure,
 } from "./auth.js";
 import { createTurnWriteTracker, createWsHeartbeat, isEmbedRequest, reconnectTurnEnd } from "./embed.js";
+import {
+  assertTrustUpstreamAllowed,
+  isLoopbackAddress,
+  parseHomeUrl,
+  parseTrustUpstreamHeader,
+  readUpstreamIdentity,
+} from "./upstream-identity.js";
 import { attachPageContext, buildPageTool, createPageTracker, createRateLimitedWarn, PAGE_AWARENESS_PROMPT, sanitizePageView } from "./page-awareness.js";
 // 頁面感知:依對話保存客戶在網站上看過的頁面(iframe 每次換頁重新載入,必須放伺服器端)
 const pageTracker = createPageTracker();
@@ -297,6 +304,10 @@ function printHelp() {
     "  PI_WEBUI_WS_DENY           WebSocket message types to refuse (same as --ws-deny)",
     "  PI_WEBUI_PASSWORD          enable login with this password (same as --password)",
     "  PI_WEBUI_TRUST_PROXY       '1' to honor X-Forwarded-Proto for cookie Secure flag",
+    "  PI_WEBUI_TRUST_UPSTREAM_HEADER <name>  trust this request header as the login identity",
+    "                             (no password). Only allowed when bound to 127.0.0.1 or ::1,",
+    "                             not with --tunnel or a password; requests without it get 401.",
+    "  PI_WEBUI_HOME_URL          show a \"back to project list\" link to this http(s) URL or /path",
     "  PI_WEBUI_HIDE_MODEL        '1' to hide the model name in the status bar",
     "  PI_WEBUI_HIDE_THINKING     '1' to drop assistant thinking blocks",
     "  PI_WEBUI_HIDE_TOOL_CALLS   '1' to drop tool_execution_* events / tool_call blocks",
@@ -823,6 +834,24 @@ if (process.env.PI_AGENT_DIR) {
   }
 }
 
+// W60-01：信任上游身分（中心閘道核過身分後以固定標頭送入）與「回到專案清單」連結。
+// 設定不合格（非本機綁定、與 tunnel／密碼並存、名稱或網址錯）一律拒絕啟動，不默默關掉。
+let trustUpstreamHeader: string | null = null;
+let homeUrl: string | null = null;
+try {
+  trustUpstreamHeader = parseTrustUpstreamHeader(process.env.PI_WEBUI_TRUST_UPSTREAM_HEADER);
+  assertTrustUpstreamAllowed({
+    header: trustUpstreamHeader,
+    host,
+    tunnelEnabled,
+    passwordSet: authPassword.length > 0,
+  });
+  homeUrl = parseHomeUrl(process.env.PI_WEBUI_HOME_URL);
+} catch (error) {
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(2);
+}
+
 // tunnel 啟用且未帶 --password:自動產生 32 字元亂數並寫檔
 if (tunnelEnabled && !authPassword) {
   authPassword = generateTunnelPassword();
@@ -831,6 +860,21 @@ if (tunnelEnabled && !authPassword) {
 }
 const authEnabled = authPassword.length > 0;
 const authStore = authEnabled ? createAuthStore() : null;
+
+/** 信任上游模式下的請求身分：對端必須是本機、標頭合格；否則 null。 */
+function upstreamIdentityOf(req): string | null {
+  if (!trustUpstreamHeader) return null;
+  if (!isLoopbackAddress(req?.socket?.remoteAddress)) return null;
+  return readUpstreamIdentity(req.headers, trustUpstreamHeader);
+}
+
+/** /login?next= 只收站內路徑（同 base path），其他一律回首頁，避免成為開放轉址。 */
+function safeNextPath(raw: string | null): string {
+  const home = `${SERVER_BASE_PATH}/`;
+  if (!raw || !raw.startsWith("/") || raw.startsWith("//") || raw.startsWith("/\\")) return home;
+  if (SERVER_BASE_PATH && raw !== SERVER_BASE_PATH && !raw.startsWith(`${SERVER_BASE_PATH}/`)) return home;
+  return raw;
+}
 
 function generateTunnelPassword(): string {
   // 24 bytes → 32 字元 base64url(取掉 padding)
@@ -1290,6 +1334,7 @@ async function handleAuth(req, res) {
   const pathname = url.pathname;
   const method = req.method || "GET";
 
+  if (trustUpstreamHeader) return handleUpstreamAuth(req, res, url, pathname, method);
   if (!authEnabled) return false;
 
   if (pathname === "/api/login" && method === "POST") {
@@ -1310,6 +1355,39 @@ async function handleAuth(req, res) {
   }
   res.writeHead(302, { location: `${SERVER_BASE_PATH}${LOGIN_PATH}?next=${encodeURIComponent(SERVER_BASE_PATH + pathname + url.search)}` });
   res.end();
+  return true;
+}
+
+// W60-01：信任上游模式。身分由閘道的標頭決定，沒有密碼、cookie 與登入頁：
+// - 缺標頭（或對端不是本機、標頭重複／不合格）→ 401，不轉到密碼頁；
+// - /api/login、/api/logout → 400 upstream_identity（登入登出由閘道管，這裡不發也不撤 cookie）；
+// - GET /login → 已有身分時轉回 next（只收站內路徑），保留 ?session= 直達參數。
+async function handleUpstreamAuth(req, res, url, pathname, method) {
+  if ((pathname === "/api/login" || pathname === "/api/logout") && method === "POST") {
+    sendJsonHttp(res, 400, {
+      ok: false,
+      error: "upstream_identity",
+      message: "此實例由上游閘道驗證身分，登入與登出請在閘道操作",
+    });
+    return true;
+  }
+  const identity = upstreamIdentityOf(req);
+  if (identity) {
+    req.upstreamUser = identity;
+    if (pathname === LOGIN_PATH && method === "GET") {
+      res.writeHead(302, { location: safeNextPath(url.searchParams.get("next")) });
+      res.end();
+      return true;
+    }
+    return false;
+  }
+  if (isAuthPublic(pathname, method) && pathname !== LOGIN_PATH) return false;
+  if (pathname.startsWith("/api/") || pathname === "/ws") {
+    sendJsonHttp(res, 401, { ok: false, error: "Unauthorized", reason: "upstream_identity_missing" });
+    return true;
+  }
+  res.writeHead(401, { "content-type": "text/plain; charset=utf-8" });
+  res.end("401 Unauthorized：缺少上游身分（請從專案清單入口開啟）\n");
   return true;
 }
 
@@ -2011,6 +2089,8 @@ class NativePiSessionController {
         hideModel,
         modelWarning: modelResolveWarning,
         uiProfile: serializeUiProfile(effectiveUiProfile),
+        // W60-01：「回到專案清單」連結；沒設 PI_WEBUI_HOME_URL 就不送，前端不顯示
+        ...(homeUrl ? { homeUrl } : {}),
         sandbox: sandboxEnabled
           ? {
               enabled: !!sandbox,
@@ -2907,7 +2987,9 @@ const server = createServer(async (req, res) => {
     }
     // 登入狀態探針(鑲嵌 loader 用):handleAuth 已擋掉未登入(401);沒設密碼時視同已登入。不回任何 token。
     if (url.pathname === "/api/session" && (req.method || "GET") === "GET") {
-      sendJsonHttp(res, 200, { authenticated: true });
+      sendJsonHttp(res, 200, trustUpstreamHeader
+        ? { authenticated: true, mode: "upstream", user: req.upstreamUser }
+        : { authenticated: true });
       return;
     }
     // artifact 截圖路由：/artifacts/<filename>.png（已通過 handleAuth 驗證）
@@ -2943,17 +3025,21 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
-  if (authEnabled && !authStore.verify(readAuthCookie(req.headers))) {
+  const denied = trustUpstreamHeader
+    ? !upstreamIdentityOf(req)
+    : authEnabled && !authStore.verify(readAuthCookie(req.headers));
+  if (denied) {
     socket.write("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return;
   }
+  if (trustUpstreamHeader) req.upstreamUser = upstreamIdentityOf(req);
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
 });
 
 wss.on("connection", (ws, req) => {
   const remote = req?.socket?.remoteAddress || "unknown";
-  logger.info("ws connect", { remote });
+  logger.info("ws connect", trustUpstreamHeader ? { remote, user: req?.upstreamUser } : { remote });
   const controller = new NativePiSessionController(ws);
   activeControllers.add(controller);
   wsHeartbeat.track(ws);
@@ -2992,6 +3078,15 @@ if (miss.length) {
 }
 const actualPort = await listenWithFallback(server, { host, port, logger });
 const actualUrl = `http://${host}:${actualPort}`;
+// W60-01：信任上游模式再確認一次實際綁定的位址是本機（啟動前已檢查設定值，這裡防設定與實際不一致）
+if (trustUpstreamHeader) {
+  const bound = server.address();
+  const boundAddr = bound && typeof bound === "object" ? bound.address : "";
+  if (!isLoopbackAddress(boundAddr)) {
+    process.stderr.write(`PI_WEBUI_TRUST_UPSTREAM_HEADER: 實際綁定位址 ${boundAddr} 不是本機，停止\n`);
+    process.exit(2);
+  }
+}
 
 if (tunnelEnabled) {
   tunnel = new TunnelManager({
@@ -3020,7 +3115,7 @@ logger.info("listening", {
   appCwd,
   agentDir,
   sessionDir: resolveSessionDir(appCwd, { cliSessionDir, envSessionDir }),
-  auth: authEnabled ? "enabled" : "disabled",
+  auth: trustUpstreamHeader ? `upstream-header:${trustUpstreamHeader}` : authEnabled ? "enabled" : "disabled",
   trustProxy: authEnabled ? trustProxy : undefined,
   sandbox: sandboxEnabled ? (sandbox ? "enabled" : `error:${sandboxInitError}`) : "disabled",
   tunnel: tunnelEnabled ? "starting" : "disabled",

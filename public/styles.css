@@ -17,6 +17,25 @@
   --error: #c66a5a;
 }
 
+/* W60-01：回到專案清單（PI_WEBUI_HOME_URL 設定時顯示） */
+.home-nav {
+  padding: 0.35rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 0.85rem;
+}
+.home-nav[hidden] {
+  display: none;
+}
+.home-link {
+  color: var(--accent, inherit);
+  text-decoration: none;
+}
+.home-link:hover,
+.home-link:focus-visible {
+  text-decoration: underline;
+}
+
 /* brand header(--brand-name / --brand-logo 設定時顯示) */
 .brand-header {
   display: none;

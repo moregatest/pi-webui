@@ -114,6 +114,8 @@ environment variables:
 | `PI_WEBUI_WS_DENY` | (unset) | WebSocket message types to refuse (comma-separated) |
 | `PI_WEBUI_PASSWORD` | (unset) | enable login with this password (same as `--password`) |
 | `PI_WEBUI_TRUST_PROXY` | `0` | `1` to honor `X-Forwarded-Proto` for cookie `Secure` flag |
+| `PI_WEBUI_TRUST_UPSTREAM_HEADER` | (unset) | trust this request header (e.g. `X-ReadyAI-User`) as the login identity instead of a password. only allowed when bound to `127.0.0.1`／`::1`; refuses to start with `--tunnel` or a password; requests without the header get `401` (see "trusted upstream identity") |
+| `PI_WEBUI_HOME_URL` | (unset) | show a "回到專案清單" link pointing at this `http(s)://` URL or `/path` |
 | `PI_WEBUI_SANDBOX` | `0` | `1` to run tools inside a Gondolin micro-VM (same as `--sandbox`) |
 | `PI_WEBUI_SANDBOX_WORKSPACE` | (launch cwd) | host directory mounted as `/workspace` (same as `--sandbox-workspace`) |
 | `PI_WEBUI_SANDBOX_IMAGE` | (unset) | gondolin image selector(same as `--sandbox-image`) |
@@ -238,6 +240,31 @@ have to log in again after every restart. cookie lifetime is 7 days.
 `GET /api/session` returns `200 {"authenticated":true}` for a logged-in
 cookie (or when no password is set) and `401` otherwise; it never returns a
 token. the embed loader uses it to decide whether to show the launcher.
+
+### trusted upstream identity (`PI_WEBUI_TRUST_UPSTREAM_HEADER`)
+
+for a gateway on the same host that has already authenticated the user (for
+example the center gateway that checks the Tailscale identity), set
+`PI_WEBUI_TRUST_UPSTREAM_HEADER=<header name>`. the webui then uses that
+header's value as the login identity and skips the password. it is off by
+default; preview sites keep their password login unchanged.
+
+- startup fails (exit 2) unless the bind address is `127.0.0.1` or `::1`
+  (literal, not `localhost`), and when combined with `--tunnel` (cloudflared
+  connects over loopback) or `--password`／`PI_WEBUI_PASSWORD`. the bound
+  address is checked again after listening.
+- header names reserved by HTTP, browsers or proxies (`cookie`, `host`,
+  `authorization`, `origin`, `x-forwarded-*`, …) are refused.
+- every HTTP request and WebSocket upgrade must come from a loopback peer and
+  carry exactly one header value (printable ASCII, no commas, ≤ 256 chars);
+  otherwise `401` — there is no fallback to the password page.
+- `POST /api/login` and `POST /api/logout` return `400 {"error":"upstream_identity"}`;
+  `GET /login` redirects to its `next` (same-site paths only, so
+  `?session=<id>` survives) or to `/`.
+- `GET /api/session` returns `{"authenticated":true,"mode":"upstream","user":"<identity>"}`;
+  the WebSocket connect log line records the identity.
+- **the gateway must strip any incoming header with the same name before
+  adding its own**; the webui only trusts loopback peers.
 
 **鑲嵌模式 embed mode(`/?embed=1`):** 網站內的助理抽屜/手機全螢幕 iframe 用。
 不顯示品牌列、邊距縮小、觸控目標 44px、高度跟著 `visualViewport`;未登入導向的

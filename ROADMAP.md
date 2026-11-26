@@ -12,6 +12,7 @@
 
 ## done
 
+- [x] W60-01 信任上游身分與回到專案清單:`PI_WEBUI_TRUST_UPSTREAM_HEADER=<標頭名>` 以閘道送來的標頭當登入身分、略過密碼(只限綁定 127.0.0.1／::1,與 tunnel、密碼互斥,啟動時檢查;缺標頭或重複一律 401,不退回密碼頁;WebSocket 同規則;登入／登出 API 回 400;`/login` 轉回 next)。`PI_WEBUI_HOME_URL` 設定時顯示「回到專案清單」連結。主要控制項補 aria-label。測試 `test/upstream-identity.test.mjs`、`test/server-upstream-identity.test.mjs`、`test/home-link.test.mjs`。
 - [x] W32-02 對話延續直達參數:`?session=<id>` 在本頁第一次連線時續接該段對話(伺服器只在目前 session 目錄找 `<時間>_<id>.jsonl`／`<id>.jsonl`,id 嚴格驗證不含「.」與分隔字元、只收一般檔、標頭 id 必須相符,之後仍走既有續接防線);不合法或找不到時跳警告、行為不變;customer 模式與 `--ws-deny switch_session` 時忽略。反向代理路徑前綴 `/c/<instance_id>/` 下 HTTP、WebSocket、上傳、登入 cookie 端到端驗證。測試 `test/session-param*.test.mjs`。
 - [x] W18-01 鑲嵌模式與連線保活:`?embed=1` 精簡版面(含登入頁,server 首屏寫 `data-embed`)、`GET /api/session`、與父頁 postMessage(`readyai:ready`／`auth`／`turn-start`／`turn-end`／`content-changed`)、頁面感知(契約第 9 點:`page_view` 依對話保存最近 10 頁、目前頁面記在每條連線、每則訊息附「頁面資訊」區塊並寫進對話紀錄、`current_page` 工具、客戶系統提示)、WebSocket 每 25 秒 ping、斷線橫幅延遲約 5 秒。全螢幕版外觀與基準版像素一致。測試 `test/embed-*.test.mjs`。
 - [x] W21-01 鑲嵌模式對話裡的站內連結在原頁開啟(契約第 11 點):同源、非 `/agent`／`/agent-embed`／`/_review`、非下載、無修飾鍵的左鍵點擊改送 `readyai:navigate` 給父頁;其餘照舊開新分頁。測試 `test/embed-client.test.mjs`。
