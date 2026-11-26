@@ -1,0 +1,130 @@
+{
+ "source": "readymarket/readyai-project-template origin/main 37acab7 template/customer-skills/*/SKILL.md 的 bash 區塊（W62-02 修訂抽取）",
+ "blocks": [
+  {
+   "skill": "customer-content-edit",
+   "index": 0,
+   "body": "ls data/output/pgc/*.json 2>/dev/null | grep -vE '\\.(meta|changes|report-data)\\.|/batch' || echo \"無 PGC goal\"\n"
+  },
+  {
+   "skill": "customer-content-edit",
+   "index": 1,
+   "body": "DOMAIN=$(python3 -c 'import json; print(json.load(open(\"data/preview-meta.json\"))[\"domain\"])')\npython3 .claude/skills/customer-pgc-dialogue/scripts/site_context.py --workspace . \\\n  --db \"/var/www/html/$DOMAIN/cache/ClientDB.sqlite3\" \\\n  --custom-root /var/www/html/.custom_templates --skill customer-content-edit\n"
+  },
+  {
+   "skill": "customer-content-edit",
+   "index": 2,
+   "body": "# 確認目標表的實際欄位（必做，不可跳過）\nreadyai-db --lng {lng} structure {table}\n"
+  },
+  {
+   "skill": "customer-content-edit",
+   "index": 3,
+   "body": "# 預覽站網址取法與理由見 Step 5\nPREVIEW=$(python3 -c \"import json;print(json.load(open('data/preview-meta.json'))['preview_url'].rstrip('/'))\")\ncurl -sI \"$PREVIEW/Templates/att/{filename}\"\n"
+  },
+  {
+   "skill": "customer-content-edit",
+   "index": 4,
+   "body": "# 存成暫存檔\nmkdir -p data/output/pgc-dialogue\n# 寫入 JSON...\n\n# 執行更新\nreadyai-db --lng {lng} update {table} data/output/pgc-dialogue/{operation-id}-{table}-update.json\n"
+  },
+  {
+   "skill": "customer-content-edit",
+   "index": 5,
+   "body": "readyai-db --lng {lng} query {table} --id {record-id} 2>/dev/null > data/output/pgc-dialogue/{operation-id}-backup-{record-id}-before.json\n"
+  },
+  {
+   "skill": "customer-content-edit",
+   "index": 6,
+   "body": "# 網址「只」從 data/preview-meta.json 的 preview_url 取，且務必去尾斜線：\n# 該值常帶尾斜線，直接拼 \"$PREVIEW/{lng}\" 會變 \"//{lng}\" 雙斜線 → readyscript fallback 回首頁 → grep 永遠抓不到\nPREVIEW=$(python3 -c \"import json;print(json.load(open('data/preview-meta.json'))['preview_url'].rstrip('/'))\")\n# 表對路徑：page→/{lng}/page/{id}.html；product→/{lng}/product/{id}.html；其餘集合表同理 /{lng}/{table}/{id}.html\n# {id} 含空格／中文要 URL 編碼（空格→%20）\ncurl -sL \"$PREVIEW/{lng}/{table}/{id}.html\" | grep \"新內容關鍵字\"\n"
+  },
+  {
+   "skill": "customer-content-edit",
+   "index": 7,
+   "body": "# 先確認 table 名稱是否存在\nreadyai-db --lng en tables\n"
+  },
+  {
+   "skill": "customer-content-edit",
+   "index": 8,
+   "body": "readyai-db --lng {lng} update {table} data/output/pgc-dialogue/{operation-id}-backup-{record-id}-before.json\n"
+  },
+  {
+   "skill": "customer-pgc-dialogue",
+   "index": 0,
+   "body": "# 有沒有 PGC 待辦？（排除 sidecar：.meta. / .changes. / .report-data. / batch*）\nls data/output/pgc/*.json 2>/dev/null | grep -vE '\\.(meta|changes|report-data)\\.|/batch' || echo \"無 PGC goal\"\n\n# 有沒有既有驗收訊號檔？\nls data/output/pgc-dialogue/*-acceptance.json 2>/dev/null || echo \"無 acceptance\"\n"
+  },
+  {
+   "skill": "customer-pgc-dialogue",
+   "index": 1,
+   "body": "python3 .claude/skills/customer-pgc-dialogue/scripts/acceptance.py status --domain \"{domain}\"\n"
+  },
+  {
+   "skill": "customer-pgc-dialogue",
+   "index": 2,
+   "body": "DOMAIN=$(python3 -c 'import json; print(json.load(open(\"data/preview-meta.json\"))[\"domain\"])')\npython3 .claude/skills/customer-pgc-dialogue/scripts/site_context.py --workspace . \\\n  --db \"/var/www/html/$DOMAIN/cache/ClientDB.sqlite3\" \\\n  --custom-root /var/www/html/.custom_templates --skill customer-pgc-dialogue\n"
+  },
+  {
+   "skill": "customer-pgc-dialogue",
+   "index": 3,
+   "body": "# 預覽站\ncurl -s -o /dev/null -w '%{http_code}' \"https://<app>.fly.dev/{targetUrl 去掉開頭的 /}\"\n# 對外站\ncurl -s -o /dev/null -w '%{http_code}' \"https://{domain}/{targetUrl 去掉開頭的 /}\"\n"
+  },
+  {
+   "skill": "customer-pgc-dialogue",
+   "index": 4,
+   "body": "PRECHECK=.claude/skills/customer-pgc-dialogue/scripts/precheck.py\npython3 \"$PRECHECK\" scan --domain \"{domain}\" --lng \"{目標語系}\"\n"
+  },
+  {
+   "skill": "customer-pgc-dialogue",
+   "index": 5,
+   "body": "# partial update：只寫入要修改的欄位，其他欄位保持不動\nreadyai-db --lng {目標語系} update <table> data/output/pgc-dialogue/<goal-id>-task.json\n"
+  },
+  {
+   "skill": "customer-pgc-dialogue",
+   "index": 6,
+   "body": "mkdir -p .artifacts/pgc-dialogue\nreadyai-screenshot --url \"{preview_url}\" --device desktop --output .artifacts/pgc-dialogue/{goal-id}-desktop.png\nreadyai-screenshot --url \"{preview_url}\" --device mobile  --output .artifacts/pgc-dialogue/{goal-id}-mobile.png\n"
+  },
+  {
+   "skill": "customer-pgc-dialogue",
+   "index": 7,
+   "body": "ACCEPTANCE=.claude/skills/customer-pgc-dialogue/scripts/acceptance.py\n\n# 確認（changed table／截圖可重複帶）\npython3 \"$ACCEPTANCE\" goal --domain \"{domain}\" --goal-id \"{goal-id}\" \\\n  --status confirmed --changed-table page \\\n  --screenshot-path .artifacts/pgc-dialogue/{goal-id}-desktop.png \\\n  --screenshot-path .artifacts/pgc-dialogue/{goal-id}-mobile.png\n\n# 客戶自己已完成（求證通過；不動 DB，因此不帶 --changed-table）\npython3 \"$ACCEPTANCE\" goal --domain \"{domain}\" --goal-id \"{goal-id}\" \\\n  --status confirmed --already-done\n\n# 跳過（客戶理由必填）\npython3 \"$ACCEPTANCE\" goal --domain \"{domain}\" --goal-id \"{goal-id}\" \\\n  --status skipped --skipped-reason \"{客戶原話／理由}\"\n"
+  },
+  {
+   "skill": "customer-pgc-dialogue",
+   "index": 8,
+   "body": "python3 .claude/skills/customer-pgc-dialogue/scripts/acceptance.py accept \\\n  --domain \"{domain}\" --session-id \"{current-session-id}\"\n"
+  },
+  {
+   "skill": "customer-pgc-dialogue",
+   "index": 9,
+   "body": "# 同意發布\npython3 .claude/skills/customer-pgc-dialogue/scripts/acceptance.py sync \\\n  --domain \"{domain}\" --requested yes --customer-reply \"{客戶完整原話}\"\n\n# 暫緩發布\npython3 .claude/skills/customer-pgc-dialogue/scripts/acceptance.py sync \\\n  --domain \"{domain}\" --requested no --customer-reply \"{客戶完整原話}\"\n"
+  },
+  {
+   "skill": "customer-image-upload",
+   "index": 0,
+   "body": "# 指定檔名前綴（推薦——清楚命名，不跑 AI）\nreadyai-image-uploader \\\n  --local-file {本地圖片路徑} \\\n  --output-name {seo友善的檔名前綴} \\\n  --output data/output/pgc-dialogue/image_upload_records.jsonl \\\n  -v\n\n# 讓 AI 自動生成 SEO 檔名（省略 --output-name）\nreadyai-image-uploader \\\n  --local-file {本地圖片路徑} \\\n  --output data/output/pgc-dialogue/image_upload_records.jsonl \\\n  -v\n"
+  },
+  {
+   "skill": "customer-image-upload",
+   "index": 1,
+   "body": "readyai-image-uploader \\\n  -d data/documents.jsonl \\\n  --output data/output/pgc-dialogue/image_upload_records.jsonl \\\n  -v\n"
+  },
+  {
+   "skill": "customer-attachment-upload",
+   "index": 0,
+   "body": "# -layout 保留版面：規格書那種左右對照的表格，少了它欄位會錯位\npdftotext -layout {本地附件路徑} -\n"
+  },
+  {
+   "skill": "customer-attachment-upload",
+   "index": 1,
+   "body": "readyai-attachment-uploader \\\n  --local-file {本地附件路徑} \\\n  --output data/output/pgc-dialogue/attachment_upload_records.jsonl \\\n  -v\n"
+  },
+  {
+   "skill": "customer-attachment-upload",
+   "index": 2,
+   "body": "readyai-attachment-uploader \\\n  -d data/documents.jsonl \\\n  --output data/output/pgc-dialogue/attachment_upload_records.jsonl \\\n  -v\n"
+  },
+  {
+   "skill": "customer-attachment-upload",
+   "index": 3,
+   "body": "readyai-db --lng {lng} update page data/output/pgc-dialogue/page-attachment-update.json\n"
+  }
+ ]
+}

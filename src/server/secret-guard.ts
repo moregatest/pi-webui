@@ -119,9 +119,27 @@ const DOTENV_RECON_RE = /(^|[\s'"/=(])\.env(\.(?!example|sample|tpl|dist|md)[A-Z
 // printenv 列舉。
 const PRINTENV_RE = /\bprintenv\b/;
 // W62-02（readyscript-ops#141 縱深 B3）：站台 ClientDB（api_tokens 存原站明文權杖，對原站有效）、
-// 站台 cache 目錄、站根備份 *.tgz。客戶協作只走 readyai-* 工具，不需直接讀這些檔。
+// 站台 cache 目錄、站根備份 *.tgz。客戶協作只走 readyai-* 工具與技能腳本，不需直接讀這些檔。
 // deny-list 縱深（可被拼接繞過）；根治是預覽機只存雜湊（#141）與非 root 執行（B2）。
+// 權杖表名一律擋（讀權杖的 SQL 必然帶表名）。
+const TOKEN_TABLE_RE = /\bapi_tokens\b/i;
 const CLIENTDB_RE = /clientdb/i;
+// RV62-02 高 1：customer 技能的站點脈絡步驟（customer-content-edit Step 0.7、customer-pgc-dialogue
+// 「改稿前必做」）以 `--db /var/www/html/<站>/cache/ClientDB.sqlite3` 呼叫唯讀的 site_context.py
+//（只讀 siteSetting.use_tpl）。只在「這支腳本＋這個 --db 形式」時放行；其他任何讀 ClientDB 的形式照擋。
+const SITE_CONTEXT_SCRIPT_RE =
+  /^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*python3?\s+(?:\.\/)?\.claude\/skills\/customer-pgc-dialogue\/scripts\/site_context\.py(?=\s|$)/;
+const SITE_CONTEXT_DB_ARG_RE =
+  /\s--db(?:\s+|=)(["']?)\/var\/www\/html\/(?:\$\{?DOMAIN\}?|[A-Za-z0-9.-]+)\/cache\/ClientDB\.sqlite3\1(?=\s|$)/g;
+
+/** 去掉「站點脈絡腳本的 --db 參數」後的命令，再交給站台機密路徑規則判斷。 */
+function withoutSiteContextDbArgs(command: string): string {
+  const joined = command.replace(/\\\r?\n/g, " "); // 反斜線續行併成一行
+  return joined
+    .split(/(\|\||&&|[|;&\n])/)
+    .map((segment) => (SITE_CONTEXT_SCRIPT_RE.test(segment) ? segment.replace(SITE_CONTEXT_DB_ARG_RE, " ") : segment))
+    .join("");
+}
 // cache/…（相對或絕對）或結尾的 /cache；不含 .cache（~/.cache、node_modules/.cache）與 `npm cache` 子命令。
 const SITE_CACHE_RE = /(^|[\s'"=(/])cache\/|\/cache(?=$|[\s'";|&)])/;
 const SITE_BACKUP_RE = /\/var\/www\/html\/[^\s'"]*\.tgz\b|\b(data|pc2-site)\.tgz\b/;
@@ -178,9 +196,11 @@ export function guardBashCommand(command: unknown, opts: BashGuardOptions = {}):
   if (DOTENV_RECON_RE.test(command)) return { block: true, reason: ".env recon (含 workspace token)" };
   if (PRINTENV_RE.test(command)) return { block: true, reason: "printenv enumeration" };
   if (opts.siteSecrets !== false) {
-    if (CLIENTDB_RE.test(command)) return { block: true, reason: "site ClientDB (api_tokens) access" };
-    if (SITE_CACHE_RE.test(command)) return { block: true, reason: "site cache directory access" };
-    if (SITE_BACKUP_RE.test(command)) return { block: true, reason: "site backup archive access" };
+    if (TOKEN_TABLE_RE.test(command)) return { block: true, reason: "site api_tokens table access" };
+    const rest = withoutSiteContextDbArgs(command);
+    if (CLIENTDB_RE.test(rest)) return { block: true, reason: "site ClientDB (api_tokens) access" };
+    if (SITE_CACHE_RE.test(rest)) return { block: true, reason: "site cache directory access" };
+    if (SITE_BACKUP_RE.test(rest)) return { block: true, reason: "site backup archive access" };
   }
   if (DUMP_BUILTIN_RE.test(command)) return { block: true, reason: "env dump builtin" };
   for (const seg of splitCommandSegments(command)) {

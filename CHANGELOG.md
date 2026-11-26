@@ -12,6 +12,12 @@
   - 站根備份 `data.tgz`／`pc2-site.tgz`，以及 `/var/www/html` 下的 `*.tgz`。
   - `~/.cache`、`node_modules/.cache`、`npm cache` 不受影響。
 - 員工／開發者模式維持原行為（技能要直接處理 ClientDB）：`guardBashCommand(cmd, { siteSecrets: false })`，預設開。
+- 權杖表名 `api_tokens` 一律擋。
+- customer 技能的站點脈絡步驟放行（RV62-02 高 1）：`customer-content-edit` Step 0.7 與 `customer-pgc-dialogue`
+  「改稿前必做」以 `--db /var/www/html/<站>/cache/ClientDB.sqlite3` 呼叫唯讀的 `site_context.py`。
+  - 只在 `.claude/skills/customer-pgc-dialogue/scripts/site_context.py` 加上這個 `--db` 形式時放行，其他讀 ClientDB 的形式照擋。
+  - 回歸測試：範本四個 customer 技能 SKILL.md 的 25 個 bash 區塊（`test/fixtures/customer-skill-bash-blocks.json`，
+    抽自範本 origin/main `37acab7`），整段與逐行都必須放行。
 - 這是 deny-list 縱深，可被拼接繞過；根治是預覽機只存雜湊（#141）與 pi-webui 非 root 執行。
 
 ## 2026-11-26 (信任上游身分、回到專案清單，W60-01)

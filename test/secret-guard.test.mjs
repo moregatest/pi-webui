@@ -227,6 +227,55 @@ test("guardBashCommand: 站台 ClientDB／cache／站根備份一律 block（W62
   assert.equal(guardBashCommand("printenv", { siteSecrets: false }).block, true);
 });
 
+// RV62-02 高 1：範本 customer 技能（customer-content-edit／customer-pgc-dialogue／customer-image-upload／
+// customer-attachment-upload）SKILL.md 的每個 bash 區塊都必須放行（fixture 由範本 origin/main 抽出，來源見檔內 source）。
+const CUSTOMER_SKILL_BLOCKS = JSON.parse(
+  fs.readFileSync(new URL("./fixtures/customer-skill-bash-blocks.json", import.meta.url), "utf8"),
+);
+
+test("guardBashCommand: 範本 customer 技能的 bash 區塊全部放行（含站點脈絡必做步驟）", () => {
+  assert.ok(CUSTOMER_SKILL_BLOCKS.blocks.length >= 20, "fixture 應含四個 customer 技能的 bash 區塊");
+  const skills = new Set(CUSTOMER_SKILL_BLOCKS.blocks.map((b) => b.skill));
+  for (const s of ["customer-content-edit", "customer-pgc-dialogue", "customer-image-upload", "customer-attachment-upload"]) {
+    assert.ok(skills.has(s), `fixture 缺 ${s}`);
+  }
+  for (const b of CUSTOMER_SKILL_BLOCKS.blocks) {
+    const whole = guardBashCommand(b.body);
+    assert.equal(whole.block, false, `${b.skill}#${b.index} 整段被擋: ${whole.reason}`);
+    // agent 也可能逐行送：反斜線續行併起來後逐行再驗一次
+    for (const line of b.body.replace(/\\\n/g, " ").split("\n").filter((l) => l.trim())) {
+      const v = guardBashCommand(line);
+      assert.equal(v.block, false, `${b.skill}#${b.index} 單行被擋: ${line} (${v.reason})`);
+    }
+  }
+  const siteContext = CUSTOMER_SKILL_BLOCKS.blocks.filter((b) => b.body.includes("site_context.py"));
+  assert.ok(siteContext.some((b) => b.skill === "customer-content-edit"), "Step 0.7 站點脈絡在 fixture 內");
+  assert.ok(siteContext.some((b) => b.skill === "customer-pgc-dialogue"), "改稿前必做的站點脈絡在 fixture 內");
+});
+
+test("guardBashCommand: 站點脈絡放行只限那支腳本與那個 --db 形式，其他讀 ClientDB／權杖表照擋", () => {
+  const ok = [
+    'python3 .claude/skills/customer-pgc-dialogue/scripts/site_context.py --workspace . --db "/var/www/html/$DOMAIN/cache/ClientDB.sqlite3" --custom-root /var/www/html/.custom_templates --skill customer-content-edit',
+    "python3 ./.claude/skills/customer-pgc-dialogue/scripts/site_context.py --workspace . --db=/var/www/html/www.example.com/cache/ClientDB.sqlite3 --custom-root /var/www/html/.custom_templates --skill x --json",
+    'python3 .claude/skills/customer-pgc-dialogue/scripts/site_context.py --db "/var/www/html/${DOMAIN}/cache/ClientDB.sqlite3" --workspace . --custom-root /var/www/html/.custom_templates --skill x | head -50',
+  ];
+  for (const cmd of ok) assert.equal(guardBashCommand(cmd).block, false, `不該 block: ${cmd}`);
+  const blocked = [
+    // 放行的腳本後面接別的讀取
+    'python3 .claude/skills/customer-pgc-dialogue/scripts/site_context.py --db "/var/www/html/$DOMAIN/cache/ClientDB.sqlite3"; sqlite3 /var/www/html/$DOMAIN/cache/ClientDB.sqlite3 .dump',
+    'cat /var/www/html/x.com/cache/ClientDB.sqlite3 && python3 .claude/skills/customer-pgc-dialogue/scripts/site_context.py --db "/var/www/html/x.com/cache/ClientDB.sqlite3"',
+    // 別的腳本、或 --db 不是站台 ClientDB 的標準路徑
+    "python3 .claude/skills/other/scripts/dump.py --db /var/www/html/x.com/cache/ClientDB.sqlite3",
+    "python3 .claude/skills/customer-pgc-dialogue/scripts/site_context.py --db /tmp/../var/www/html/x.com/cache/ClientDB.sqlite3",
+    "python3 .claude/skills/customer-pgc-dialogue/scripts/site_context.py --db /var/www/html/x.com/cache/ClientDB.sqlite3 --out /var/www/html/x.com/cache/copy",
+    "python3 -c \"import sqlite3;print(sqlite3.connect('/var/www/html/x.com/cache/ClientDB.sqlite3').execute('select 1').fetchall())\"",
+    // 權杖表名一律擋
+    "sqlite3 some.db 'select token from api_tokens'",
+    "python3 -c \"print('API_TOKENS')\"",
+  ];
+  for (const cmd of blocked) assert.equal(guardBashCommand(cmd).block, true, `應 block: ${cmd}`);
+});
+
 test("wrapBashWithCommandGuard: siteSecrets 選項傳到圍欄（customer 擋、staff 放行）", async () => {
   let ran = 0;
   const def = { name: "bash", execute: async () => { ran += 1; return { content: [{ type: "text", text: "ok" }] }; } };
