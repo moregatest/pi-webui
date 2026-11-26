@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { buildCustomerPublishTools, buildPublicationOperatorEnv, createLocalPublishDeps } from '../dist/tools/customer-publish-tools.js';
+import { buildCustomerPublishTools, buildPublicationOperatorEnv, createLocalPublishDeps, CHECK_ONLY_CONTENT_VERIFIED_NOTE } from '../dist/tools/customer-publish-tools.js';
 
 const origin = 'https://demo.example.com';
 const publicationId = 'pgc-confirmed-1';
@@ -646,6 +646,27 @@ describe('source-version v2 dynamic languages', () => {
     }, { resolveLanguages: async () => ['en', 'zh-TW'] });
   });
 
+  // W66-01（cm-skill3 fd18）：check_only 的訊息寫明 content_verified: false 的意思，避免模型自己補「還在檢查中」
+  it('check_only message explains content_verified false is not an ongoing check nor an error', async () => {
+    await fixture(async ({ tool, respond }) => {
+      respond(success(), 0, '', { summary: summaryOk({
+        en: counts([{ table: 'product', inserted: 0, updated: 1, deleted: 0 }]),
+        'zh-TW': counts([]),
+      }) });
+      const result = await execute(tool(), { check_only: true });
+      assert.equal(result.status, 'pending_confirmation');
+      // 欄位名與值不變
+      assert.equal(result.content_verified, false);
+      assert.ok(result.message.includes(CHECK_ONLY_CONTENT_VERIFIED_NOTE));
+      assert.match(result.message, /content_verified: false 只表示內容尚未逐項核對/);
+      assert.match(result.message, /這不代表系統正在檢查，也不是錯誤/);
+      assert.match(result.message, /不要對對方說「正在檢查」「驗證中」/);
+      // 說明放在結尾指示之前，結尾仍是帶 confirmation_id 的指示
+      assert.ok(result.message.indexOf(CHECK_ONLY_CONTENT_VERIFIED_NOTE) < result.message.indexOf('再帶 confirmation_id 呼叫發布'));
+      assert.doesNotMatch(result.message, /客戶/);
+    }, { resolveLanguages: async () => ['en', 'zh-TW'] });
+  });
+
   // W36R11：改 spec_ 欄位時 readyAI 摘要會多一張附屬規格表「<欄位>::<表>」；
   // 不可因此整份摘要判為格式不符，也不可把附屬表名念給對方。
   it('check_only keeps counts when a derived spec table changes and hides it from the reader', async () => {
@@ -835,6 +856,9 @@ describe('source-version v2 dynamic languages', () => {
         assert.equal(result.changes_available, false);
         assert.match(result.message, /無法取得逐表變動摘要/);
         assert.doesNotMatch(result.message, /客戶/);
+        // W66-01：讀不到摘要時同樣寫明 content_verified 的意思
+        assert.equal(result.content_verified, false);
+        assert.ok(result.message.includes(CHECK_ONLY_CONTENT_VERIFIED_NOTE));
       }, { resolveLanguages: async () => ['en', 'zh-TW'] });
     });
   }

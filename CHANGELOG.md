@@ -2,6 +2,15 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-11-26 (check_only 訊息寫明 content_verified 的意思，W66-01)
+
+### 修正
+
+- `publish_confirmed` 的 `check_only` 回覆訊息新增一句：`content_verified: false` 只表示內容尚未逐項核對（要等正式發布、上線驗收後才會核對），
+  這不代表系統正在檢查，也不是錯誤；不要對對方說「正在檢查」「驗證中」，也不要提這個欄位。
+  - 起因：瞭望台 cm-skill3 重播（範本 1.99.54），fd18 一次重播把只有 `content_verified: false` 的結果說成「系統還在做內容檢查中」。
+  - 欄位名與語意不變；讀不到逐表摘要的分支也帶同一句（`CHECK_ONLY_CONTENT_VERIFIED_NOTE`）。
+
 ## 2026-11-26 (customer bash 圍欄擋站台權杖檔，W62-02)
 
 ### 安全

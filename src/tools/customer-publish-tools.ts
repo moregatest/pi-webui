@@ -748,6 +748,14 @@ export function customerChanges(changes: LanguageChanges[]): LanguageChanges[] {
   });
 }
 
+/**
+ * W66-01（cm-skill3 重播 fd18）：check_only 回傳只有 content_verified: false 時，模型偶爾自己補一句「系統還在檢查中」。
+ * 訊息裡直接寫明這個欄位在此時的意思；欄位名與語意不變（仍是發布後上線驗收才可能為 true）。
+ */
+export const CHECK_ONLY_CONTENT_VERIFIED_NOTE =
+  "回傳裡的 content_verified: false 只表示內容尚未逐項核對（要等正式發布、上線驗收後才會核對）；"
+  + "這不代表系統正在檢查，也不是錯誤。不要對對方說「正在檢查」「驗證中」，也不要提這個欄位。";
+
 async function checkOnly(config: LocalPublishConfig): Promise<PublishResult> {
   const languages = [...config.languages];
   let changes: LanguageChanges[] | undefined;
@@ -774,7 +782,7 @@ async function checkOnly(config: LocalPublishConfig): Promise<PublishResult> {
   const only = config.assetOnly ? { asset_only: true as const } : {};
   if (!changes) return {
     ok: true, status: "pending_confirmation", languages, content_verified: false, changes_available: false, ...assetFields, ...only,
-    message: `${head}目前無法取得逐表變動摘要，請如實告訴對方（以「您」稱呼）目前只能確認語系。${assetText}${tail}`,
+    message: `${head}目前無法取得逐表變動摘要，請如實告訴對方（以「您」稱呼）目前只能確認語系。${assetText}${CHECK_ONLY_CONTENT_VERIFIED_NOTE}${tail}`,
   };
   // 逐筆差異：每個有變動的語系都要讀得到才列，否則照實說只能列筆數（不拼湊部分語系）
   const changedLangs = changes.filter(c => c.tables.length).map(c => c.lng);
@@ -790,7 +798,7 @@ async function checkOnly(config: LocalPublishConfig): Promise<PublishResult> {
   return {
     ok: true, status: "pending_confirmation", languages, content_verified: false, changes, changes_available: true,
     ...recordFields, ...assetFields, ...only,
-    message: `${head}資料庫變動（預覽站與原站目前內容比對）：${describeChanges(changes)}。${recordText}${assetText}${tail}`,
+    message: `${head}資料庫變動（預覽站與原站目前內容比對）：${describeChanges(changes)}。${recordText}${assetText}${CHECK_ONLY_CONTENT_VERIFIED_NOTE}${tail}`,
   };
 }
 
