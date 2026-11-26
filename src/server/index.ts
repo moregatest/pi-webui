@@ -67,8 +67,12 @@ import {
 import { createTurnWriteTracker, createWsHeartbeat, isEmbedRequest, reconnectTurnEnd } from "./embed.js";
 import {
   assertTrustUpstreamAllowed,
+  gatewaySecretMatches,
   isLoopbackAddress,
+  loadGatewaySecret,
+  originAllowed,
   parseHomeUrl,
+  parseTrustedOrigin,
   parseTrustUpstreamHeader,
   readUpstreamIdentity,
 } from "./upstream-identity.js";
@@ -307,6 +311,10 @@ function printHelp() {
     "  PI_WEBUI_TRUST_UPSTREAM_HEADER <name>  trust this request header as the login identity",
     "                             (no password). Only allowed when bound to 127.0.0.1 or ::1,",
     "                             not with --tunnel or a password; requests without it get 401.",
+    "  PI_WEBUI_TRUST_UPSTREAM_SECRET_FILE <path>  per-instance gateway secret (0600 file, read once",
+    "                             then deleted); requests must send it in X-ReadyAI-Gateway-Secret.",
+    "  PI_WEBUI_TRUSTED_ORIGIN    gateway origin (scheme://host[:port]) required on WebSocket upgrades",
+    "                             and non-GET requests that carry Origin (default: from PI_WEBUI_HOME_URL)",
     "  PI_WEBUI_HOME_URL          show a \"back to project list\" link to this http(s) URL or /path",
     "  PI_WEBUI_HIDE_MODEL        '1' to hide the model name in the status bar",
     "  PI_WEBUI_HIDE_THINKING     '1' to drop assistant thinking blocks",
@@ -838,15 +846,23 @@ if (process.env.PI_AGENT_DIR) {
 // 設定不合格（非本機綁定、與 tunnel／密碼並存、名稱或網址錯）一律拒絕啟動，不默默關掉。
 let trustUpstreamHeader: string | null = null;
 let homeUrl: string | null = null;
+// 閘道密鑰只放在這個模組變數（記憶體），不寫進 process.env、不記錄（RV60-01 高 1）
+let gatewaySecret: string | null = null;
+let trustedOrigin: string | null = null;
 try {
   trustUpstreamHeader = parseTrustUpstreamHeader(process.env.PI_WEBUI_TRUST_UPSTREAM_HEADER);
+  homeUrl = parseHomeUrl(process.env.PI_WEBUI_HOME_URL);
+  if (trustUpstreamHeader) trustedOrigin = parseTrustedOrigin(process.env.PI_WEBUI_TRUSTED_ORIGIN, homeUrl);
   assertTrustUpstreamAllowed({
     header: trustUpstreamHeader,
     host,
     tunnelEnabled,
     passwordSet: authPassword.length > 0,
+    secretFile: process.env.PI_WEBUI_TRUST_UPSTREAM_SECRET_FILE,
+    trustedOrigin,
   });
-  homeUrl = parseHomeUrl(process.env.PI_WEBUI_HOME_URL);
+  // 其他檢查都過了才讀（讀完即刪檔）：設定錯誤時不會白白吃掉閘道剛寫的密鑰檔
+  if (trustUpstreamHeader) gatewaySecret = loadGatewaySecret(String(process.env.PI_WEBUI_TRUST_UPSTREAM_SECRET_FILE));
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exit(2);
@@ -861,11 +877,18 @@ if (tunnelEnabled && !authPassword) {
 const authEnabled = authPassword.length > 0;
 const authStore = authEnabled ? createAuthStore() : null;
 
-/** 信任上游模式下的請求身分：對端必須是本機、標頭合格；否則 null。 */
+/** 信任上游模式下的請求身分：對端必須是本機、閘道密鑰相符、身分標頭合格；否則 null。 */
 function upstreamIdentityOf(req): string | null {
   if (!trustUpstreamHeader) return null;
   if (!isLoopbackAddress(req?.socket?.remoteAddress)) return null;
+  if (!gatewaySecretMatches(req.headers, gatewaySecret)) return null;
   return readUpstreamIdentity(req.headers, trustUpstreamHeader);
+}
+
+/** 信任上游模式：會改變狀態的請求（非 GET／HEAD）要過 Origin 檢查（RV60-01 中 1）。 */
+function upstreamOriginOk(req, method: string): boolean {
+  if (method === "GET" || method === "HEAD") return true;
+  return originAllowed(req.headers, trustedOrigin);
 }
 
 /** /login?next= 只收站內路徑（同 base path），其他一律回首頁，避免成為開放轉址。 */
@@ -1373,6 +1396,10 @@ async function handleUpstreamAuth(req, res, url, pathname, method) {
   }
   const identity = upstreamIdentityOf(req);
   if (identity) {
+    if (!upstreamOriginOk(req, method)) {
+      sendJsonHttp(res, 403, { ok: false, error: "Forbidden", reason: "origin_not_trusted" });
+      return true;
+    }
     req.upstreamUser = identity;
     if (pathname === LOGIN_PATH && method === "GET") {
       res.writeHead(302, { location: safeNextPath(url.searchParams.get("next")) });
@@ -3030,6 +3057,12 @@ server.on("upgrade", (req, socket, head) => {
     : authEnabled && !authStore.verify(readAuthCookie(req.headers));
   if (denied) {
     socket.write("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+  // 信任上游模式：瀏覽器的 WebSocket 一定帶 Origin，必須是閘道來源；沒有 Origin 的非瀏覽器用戶端放行
+  if (trustUpstreamHeader && !originAllowed(req.headers, trustedOrigin)) {
+    socket.write("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return;
   }

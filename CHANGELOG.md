@@ -12,6 +12,10 @@
   - `POST /api/login`、`/api/logout` 回 400 `upstream_identity`；`GET /login` 轉回 `next`（只收站內路徑，保留 `?session=`）。
   - `GET /api/session` 多回 `mode: "upstream"` 與 `user`；WebSocket 連線紀錄寫入身分。
   - 閘道轉發時必須移除外部送來的同名標頭。
+- 修訂（RV60-01 高 1、中 1）：
+  - 信任模式另外要求每個實例一把閘道密鑰：`PI_WEBUI_TRUST_UPSTREAM_SECRET_FILE` 指向只有擁有者可讀的檔（0600／0400，32～1024 個可見 ASCII 字元），啟動時讀一次就刪檔，只留在記憶體、不進行程環境（bash 與 `ps eww` 都看不到）。閘道每次轉發都帶 `X-ReadyAI-Gateway-Secret`，常數時間比對，缺或錯一律 401。
+  - 信任模式下，WebSocket 升級與非 GET 請求帶了 `Origin` 時，必須等於 `PI_WEBUI_TRUSTED_ORIGIN`（沒設時由絕對的 `PI_WEBUI_HOME_URL` 推得），否則 403 `origin_not_trusted`；沒有 `Origin` 的非瀏覽器用戶端放行。推不出閘道來源時拒絕啟動。
+  - `X-ReadyAI-Gateway-Secret` 列入禁用的身分標頭名稱。
 - `PI_WEBUI_HOME_URL`：設定時畫面上方顯示「回到專案清單」連結（server 的 `connected` 帶 `homeUrl`；只收 http(s) 網址或站內路徑）。
 - 輸入框、清單搜尋框、重新連線按鈕補 `aria-label`，方便 AI 操作者與輔助工具辨識。
 

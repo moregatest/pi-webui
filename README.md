@@ -115,6 +115,8 @@ environment variables:
 | `PI_WEBUI_PASSWORD` | (unset) | enable login with this password (same as `--password`) |
 | `PI_WEBUI_TRUST_PROXY` | `0` | `1` to honor `X-Forwarded-Proto` for cookie `Secure` flag |
 | `PI_WEBUI_TRUST_UPSTREAM_HEADER` | (unset) | trust this request header (e.g. `X-ReadyAI-User`) as the login identity instead of a password. only allowed when bound to `127.0.0.1`／`::1`; refuses to start with `--tunnel` or a password; requests without the header get `401` (see "trusted upstream identity") |
+| `PI_WEBUI_TRUST_UPSTREAM_SECRET_FILE` | (unset) | required with `PI_WEBUI_TRUST_UPSTREAM_HEADER`: path to a per-instance gateway secret (owner-only `0600`／`0400`, 32–1024 printable ASCII). read once at startup and deleted; never placed in the process environment |
+| `PI_WEBUI_TRUSTED_ORIGIN` | (from `PI_WEBUI_HOME_URL`) | gateway origin (`scheme://host[:port]`) that WebSocket upgrades and non-GET requests must match when they carry `Origin` (trusted upstream mode only) |
 | `PI_WEBUI_HOME_URL` | (unset) | show a "回到專案清單" link pointing at this `http(s)://` URL or `/path` |
 | `PI_WEBUI_SANDBOX` | `0` | `1` to run tools inside a Gondolin micro-VM (same as `--sandbox`) |
 | `PI_WEBUI_SANDBOX_WORKSPACE` | (launch cwd) | host directory mounted as `/workspace` (same as `--sandbox-workspace`) |
@@ -249,6 +251,22 @@ example the center gateway that checks the Tailscale identity), set
 header's value as the login identity and skips the password. it is off by
 default; preview sites keep their password login unchanged.
 
+- **per-instance gateway secret** (`PI_WEBUI_TRUST_UPSTREAM_SECRET_FILE`):
+  loopback alone is not enough — any other process on the host (including an
+  agent inside another instance) can reach the port. the gateway writes a
+  fresh random secret to an owner-only file, starts the instance with its
+  path, and sends it on every request as `X-ReadyAI-Gateway-Secret`. the
+  webui reads the file once, deletes it (refuses to start if it cannot),
+  keeps the value only in memory (not in `process.env`, so bash and
+  `ps eww` never see it) and compares it in constant time. a missing or
+  wrong secret is treated exactly like a missing identity: `401`.
+- **Origin check**: the identity is ambient (the gateway adds it by source
+  IP), so a cross-site page could make the browser open the WebSocket.
+  WebSocket upgrades and non-GET requests that carry `Origin` must match
+  `PI_WEBUI_TRUSTED_ORIGIN` (or the origin of an absolute
+  `PI_WEBUI_HOME_URL`), otherwise `403 origin_not_trusted`. requests
+  without `Origin` (curl, AI operators) are allowed. startup fails when no
+  gateway origin can be determined.
 - startup fails (exit 2) unless the bind address is `127.0.0.1` or `::1`
   (literal, not `localhost`), and when combined with `--tunnel` (cloudflared
   connects over loopback) or `--password`／`PI_WEBUI_PASSWORD`. the bound
@@ -263,8 +281,13 @@ default; preview sites keep their password login unchanged.
   `?session=<id>` survives) or to `/`.
 - `GET /api/session` returns `{"authenticated":true,"mode":"upstream","user":"<identity>"}`;
   the WebSocket connect log line records the identity.
-- **the gateway must strip any incoming header with the same name before
-  adding its own**; the webui only trusts loopback peers.
+- **the gateway must strip any incoming identity header and
+  `X-ReadyAI-Gateway-Secret` before adding its own** (HTTP and WebSocket);
+  the webui only trusts loopback peers.
+- do not enable this mode on a host until the gateway does all of the above.
+  `PI_WEBUI_HOME_URL`／`PI_WEBUI_TRUSTED_ORIGIN` accept `http://` for a
+  private network (e.g. Tailscale); use `https://` if the gateway is ever
+  reachable over the public internet.
 
 **鑲嵌模式 embed mode(`/?embed=1`):** 網站內的助理抽屜/手機全螢幕 iframe 用。
 不顯示品牌列、邊距縮小、觸控目標 44px、高度跟著 `visualViewport`;未登入導向的
