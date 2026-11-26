@@ -2,6 +2,18 @@
 
 本檔記錄重要變更。實作細節以對應 commit 為準。
 
+## 2026-11-26 (customer bash 圍欄擋站台權杖檔，W62-02)
+
+### 安全
+
+- customer 模式 bash 命令圍欄新增站台機密路徑規則（readyscript-ops#141 縱深 B3）：
+  - `ClientDB`（`api_tokens` 存原站明文權杖，對原站有效）；
+  - 站台 `cache/`；
+  - 站根備份 `data.tgz`／`pc2-site.tgz`，以及 `/var/www/html` 下的 `*.tgz`。
+  - `~/.cache`、`node_modules/.cache`、`npm cache` 不受影響。
+- 員工／開發者模式維持原行為（技能要直接處理 ClientDB）：`guardBashCommand(cmd, { siteSecrets: false })`，預設開。
+- 這是 deny-list 縱深，可被拼接繞過；根治是預覽機只存雜湊（#141）與 pi-webui 非 root 執行。
+
 ## 2026-11-26 (信任上游身分、回到專案清單，W60-01)
 
 ### 新增
